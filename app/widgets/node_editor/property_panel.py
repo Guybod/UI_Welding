@@ -2,8 +2,9 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
     QGroupBox, QFormLayout, QScrollArea, QDoubleSpinBox,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QEvent
 from app.i18n import I18nManager, tr
+from services.robot_realtime_state import RobotRealtimeState
 
 
 class PropertyPanel(QWidget):
@@ -53,6 +54,24 @@ class PropertyPanel(QWidget):
         self._scroll.setWidget(w)
         self._hint_label = hint
 
+    def _mk_spin(self, **kw):
+        """创建完全不响应滚轮的 QDoubleSpinBox"""
+        spin = QDoubleSpinBox()
+        spin.setFocusPolicy(Qt.StrongFocus)
+        spin.installEventFilter(self)
+        for k, v in kw.items():
+            method = getattr(spin, f"set{k[0].upper()}{k[1:]}")
+            if isinstance(v, tuple):
+                method(*v)
+            else:
+                method(v)
+        return spin
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel:
+            return True  # eat wheel event
+        return super().eventFilter(obj, event)
+
     def _show_position(self, node):
         data = node.node_data()
         w = QWidget()
@@ -72,8 +91,7 @@ class PropertyPanel(QWidget):
         jp = data.get("jp", [0, 0, 0, 0, 0, 0])
         self._jp_spins: list[QDoubleSpinBox] = []
         for i in range(6):
-            spin = QDoubleSpinBox()
-            spin.setRange(-360, 360)
+            spin = self._mk_spin(Range=(-360, 360))
             spin.setDecimals(2)
             spin.setValue(jp[i] if i < len(jp) else 0)
             spin.setSingleStep(1.0)
@@ -88,17 +106,13 @@ class PropertyPanel(QWidget):
         cp = data.get("cp", {"x": 0, "y": 0, "z": 0, "a": 0, "b": 0, "c": 0})
         self._cp_spins: dict[str, QDoubleSpinBox] = {}
         for key in ("x", "y", "z"):
-            spin = QDoubleSpinBox()
-            spin.setRange(-9999, 9999)
-            spin.setDecimals(1)
+            spin = self._mk_spin(Range=(-9999, 9999), Decimals=1)
             spin.setValue(cp.get(key, 0))
             spin.setSingleStep(10.0)
             cp_layout.addRow(f"{key.upper()}:", spin)
             self._cp_spins[key] = spin
         for key in ("a", "b", "c"):
-            spin = QDoubleSpinBox()
-            spin.setRange(-360, 360)
-            spin.setDecimals(2)
+            spin = self._mk_spin(Range=(-360, 360), Decimals=2)
             spin.setValue(cp.get(key, 0))
             spin.setSingleStep(1.0)
             cp_layout.addRow(f"{key.upper()}:", spin)
@@ -110,30 +124,24 @@ class PropertyPanel(QWidget):
         self._opt_group = QGroupBox(tr("pos_opt_group"))
         opt_layout = QFormLayout()
         opt = data.get("optional", {"speed": 200, "acc": 500, "blend": 0, "relativeBlend": 0})
-        self._opt_speed = QDoubleSpinBox()
-        self._opt_speed.setRange(1, 5000)
+        self._opt_speed = self._mk_spin(Range=(1, 5000))
         self._opt_speed.setDecimals(0)
         self._opt_speed.setValue(opt.get("speed", 200))
         self._opt_speed.setSuffix(" mm/s")
         self._opt_speed_label = QLabel(tr("pos_speed"))
         opt_layout.addRow(self._opt_speed_label, self._opt_speed)
-        self._opt_acc = QDoubleSpinBox()
-        self._opt_acc.setRange(1, 50000)
+        self._opt_acc = self._mk_spin(Range=(1, 50000))
         self._opt_acc.setDecimals(0)
         self._opt_acc.setValue(opt.get("acc", 500))
         self._opt_acc.setSuffix(" mm/s²")
         self._opt_acc_label = QLabel(tr("pos_acc"))
         opt_layout.addRow(self._opt_acc_label, self._opt_acc)
-        self._opt_blend = QDoubleSpinBox()
-        self._opt_blend.setRange(0, 1000)
-        self._opt_blend.setDecimals(1)
+        self._opt_blend = self._mk_spin(Range=(0, 1000), Decimals=1)
         self._opt_blend.setValue(opt.get("blend", 0))
         self._opt_blend.setSuffix(" mm")
         self._opt_blend_abs_label = QLabel(tr("pos_blend_abs"))
         opt_layout.addRow(self._opt_blend_abs_label, self._opt_blend)
-        self._opt_rel_blend = QDoubleSpinBox()
-        self._opt_rel_blend.setRange(0, 100)
-        self._opt_rel_blend.setDecimals(1)
+        self._opt_rel_blend = self._mk_spin(Range=(0, 100), Decimals=1)
         self._opt_rel_blend.setValue(opt.get("relativeBlend", 0))
         self._opt_rel_blend.setSuffix(" %")
         self._opt_rel_blend_rel_label = QLabel(tr("pos_blend_rel"))
@@ -143,8 +151,8 @@ class PropertyPanel(QWidget):
 
         # ── 按钮 ──
         self._btn_update_pos = QPushButton(tr("node_btn_update_pos"))
-        self._btn_update_pos.setEnabled(False)
-        self._btn_update_pos.setToolTip("需要 CRI 实时数据 (阶段 7)")
+        self._btn_update_pos.setEnabled(RobotRealtimeState.instance().is_valid())
+        self._btn_update_pos.clicked.connect(self._on_update_current)
         root.addWidget(self._btn_update_pos)
         self._btn_apply = QPushButton(tr("node_btn_apply"))
         self._btn_apply.clicked.connect(self._on_apply)
@@ -159,6 +167,22 @@ class PropertyPanel(QWidget):
             self.set_node(self._node)
         else:
             self._show_placeholder()
+
+    def _on_update_current(self):
+        state = RobotRealtimeState.instance()
+        if not state.is_valid():
+            return
+        joints = state.current_joints_deg()
+        for i, spin in enumerate(self._jp_spins):
+            if i < len(joints):
+                spin.setValue(round(joints[i], 2))
+        x, y, z, a, b, c = state.current_tcp_pose_mm_deg()
+        self._cp_spins["x"].setValue(round(x, 1))
+        self._cp_spins["y"].setValue(round(y, 1))
+        self._cp_spins["z"].setValue(round(z, 1))
+        self._cp_spins["a"].setValue(round(a, 2))
+        self._cp_spins["b"].setValue(round(b, 2))
+        self._cp_spins["c"].setValue(round(c, 2))
 
     def _on_apply(self):
         if not self._node:

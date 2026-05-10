@@ -9,6 +9,7 @@ from services.robot_service import RobotService
 from services.cri_service import CriService
 from core.robot_model_config import get_model_config
 from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
+from services.robot_realtime_state import RobotRealtimeState
 
 
 def main():
@@ -389,6 +390,9 @@ def main():
     # ── CRI 实时数据 → 抽屉 ──
 
     def _on_cri_frame(frame: dict):
+        # 更新全局实时状态缓存
+        RobotRealtimeState.instance().update_from_cri_frame(frame)
+
         joint_rad = frame.get("joint_position", [])
         if joint_rad:
             main_win._drawer.update_joint_display(rad_list_to_deg(joint_rad))

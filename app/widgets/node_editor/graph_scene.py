@@ -30,7 +30,29 @@ class GraphScene(QGraphicsScene):
         node = NodeItem(node_type)
         node.setPos(x, y)
         self.addItem(node)
+
+        # Position 节点创建时自动填入当前位置
+        if node_type == "Position":
+            self._init_position_data(node)
+
         return node
+
+    def _init_position_data(self, node: NodeItem):
+        from services.robot_realtime_state import RobotRealtimeState
+        state = RobotRealtimeState.instance()
+        if not state.is_valid():
+            return
+        joints = state.current_joints_deg()
+        x, y, z, a, b, c = state.current_tcp_pose_mm_deg()
+        data = {
+            "name": "",
+            "jp": [round(v, 2) for v in joints],
+            "cp": {"x": round(x, 1), "y": round(y, 1), "z": round(z, 1),
+                   "a": round(a, 2), "b": round(b, 2), "c": round(c, 2)},
+            "ep": [],
+            "optional": {"speed": 200, "acc": 500, "blend": 0, "relativeBlend": 0},
+        }
+        node.set_node_data(data)
 
     def remove_node(self, node: NodeItem):
         for port in node.ports():
