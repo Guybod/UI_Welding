@@ -155,3 +155,32 @@ _register(NodeSpec("String", "String", "变量", [
 _register(NodeSpec("Pose", "Pose", "变量", [
     PortSpec("pose", "pose", "output"),
 ]))
+
+# ── serialization data models ──
+
+GRAPH_VERSION = "1.0.0"
+
+
+@dataclass
+class NodeData:
+    node_id: str
+    node_type: str
+    title: str
+    x: float
+    y: float
+
+
+@dataclass
+class EdgeData:
+    edge_id: str
+    source_node_id: str
+    source_port_name: str
+    target_node_id: str
+    target_port_name: str
+
+
+@dataclass
+class GraphData:
+    graph_version: str = GRAPH_VERSION
+    nodes: list[NodeData] = field(default_factory=list)
+    edges: list[EdgeData] = field(default_factory=list)
