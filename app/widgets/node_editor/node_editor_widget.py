@@ -25,6 +25,13 @@ DEFAULT_PROJECTS_DIR = Path(__file__).parent.parent.parent.parent / "projects"
 class NodeEditorWidget(QWidget):
     """节点编辑器主组件 — 顶栏工程名 + 三栏 + 底部日志"""
 
+    # 全局发送回调, 由 main.py 注入
+    send_tcp = None  # callable(ty, db)
+
+    @classmethod
+    def set_global_send_callback(cls, cb):
+        cls.send_tcp = cb
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -56,6 +63,10 @@ class NodeEditorWidget(QWidget):
         self._btn_run = QPushButton("▶ 运行")
         self._btn_run.clicked.connect(self._on_run)
         top.addWidget(self._btn_run)
+        self._btn_online = QPushButton("⚡ 在线运行")
+        self._btn_online.clicked.connect(self._on_online_run)
+        self._btn_online.setStyleSheet("QPushButton{color:#FF9800;font-weight:bold;}")
+        top.addWidget(self._btn_online)
         self._btn_stop = QPushButton("⏹ 停止")
         self._btn_stop.clicked.connect(self._on_stop)
         self._btn_stop.hide()
@@ -111,6 +122,8 @@ class NodeEditorWidget(QWidget):
         QShortcut(QKeySequence.Open, self, self._on_load)
 
         self._engine = ExecutionEngine(self)
+        if NodeEditorWidget.send_tcp:
+            self._engine.set_send_callback(NodeEditorWidget.send_tcp)
         self._engine.log_emitted.connect(self._on_engine_log)
         self._engine.node_highlight.connect(self._on_node_highlight)
         self._engine.graph_started.connect(lambda: self._set_running(True))
@@ -140,15 +153,26 @@ class NodeEditorWidget(QWidget):
         os.makedirs(d, exist_ok=True)
         return d
 
+    def set_send_callback(self, cb):
+        self._engine.set_send_callback(cb)
+
     def _set_running(self, running: bool):
         self._btn_run.setVisible(not running)
         self._btn_run.setEnabled(not running)
+        self._btn_online.setVisible(not running)
+        self._btn_online.setEnabled(not running)
         self._btn_stop.setVisible(running)
 
     def _on_stop(self):
         self._engine.stop()
 
     def _on_run(self):
+        self._run_graph(online=False)
+
+    def _on_online_run(self):
+        self._run_graph(online=True)
+
+    def _run_graph(self, online: bool):
         data = self._scene.to_graph_data()
         v = GraphValidator()
         r = v.validate(data)
@@ -160,7 +184,10 @@ class NodeEditorWidget(QWidget):
                 log.appendPlainText(f"  - {err}")
             return
         self._log._log.clear()
-        self._engine.run_dry(data)
+        if online:
+            self._engine.run_online(data)
+        else:
+            self._engine.run_dry(data)
 
     def _on_engine_log(self, msg: str):
         self._log._log.appendPlainText(msg)

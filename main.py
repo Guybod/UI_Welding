@@ -10,6 +10,7 @@ from services.cri_service import CriService
 from core.robot_model_config import get_model_config
 from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
 from services.robot_realtime_state import RobotRealtimeState
+from app.widgets.node_editor.node_editor_widget import NodeEditorWidget
 
 
 def main():
@@ -28,6 +29,11 @@ def main():
 
     cm = ConnectionManager()
     robot_svc = RobotService(cm)
+
+    # 注入 TCP 发送回调给节点编辑器执行引擎
+    def _send_tcp(ty, db):
+        cm.send_call(ty, db, on_response=lambda r: None, on_error=lambda e: None)
+    NodeEditorWidget.set_global_send_callback(_send_tcp)
     cri_svc = CriService(cm)
 
     # ── login → main ──
