@@ -31,7 +31,7 @@ NODE_CATEGORY = {
     "SetRegister": "寄存器", "ReadRegister": "寄存器",
     "If": "逻辑", "For": "逻辑", "While": "逻辑",
     "Compare": "逻辑", "And": "逻辑", "Or": "逻辑", "Not": "逻辑",
-    "Number": "变量", "Boolean": "变量", "String": "变量", "Pose": "变量",
+    "Int": "变量", "Float": "变量", "Bool": "变量", "String": "变量", "Array": "变量",
 }
 
 
@@ -143,17 +143,20 @@ _register(NodeSpec("Compare", "Compare", "逻辑", [
     PortSpec("b", "any", "input"),
     PortSpec("result", "bool", "output"),
 ]))
-_register(NodeSpec("Number", "Number", "变量", [
+_register(NodeSpec("Int", "Int", "变量", [
     PortSpec("value", "number", "output"),
 ]))
-_register(NodeSpec("Boolean", "Boolean", "变量", [
+_register(NodeSpec("Float", "Float", "变量", [
+    PortSpec("value", "number", "output"),
+]))
+_register(NodeSpec("Bool", "Bool", "变量", [
     PortSpec("value", "bool", "output"),
 ]))
 _register(NodeSpec("String", "String", "变量", [
     PortSpec("value", "string", "output"),
 ]))
-_register(NodeSpec("Pose", "Pose", "变量", [
-    PortSpec("pose", "pose", "output"),
+_register(NodeSpec("Array", "Array", "变量", [
+    PortSpec("value", "any", "output"),
 ]))
 
 # ── serialization data models ──

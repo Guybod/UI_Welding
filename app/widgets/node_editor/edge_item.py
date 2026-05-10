@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QGraphicsPathItem
 from PySide6.QtGui import QPen, QColor, QPainterPath
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
 from app.widgets.node_editor.models import PORT_COLORS
 
 FLOW_COLOR = QColor(180, 180, 190)
@@ -19,6 +19,7 @@ class EdgeItem(QGraphicsPathItem):
         self.setPen(QPen(color, 2))
         self.setZValue(-1)
         self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
 
     def _edge_color(self):
         if self._source and self._source.port_type() == "flow":
@@ -59,3 +60,21 @@ class EdgeItem(QGraphicsPathItem):
             self._source.remove_edge(self)
         if self._target:
             self._target.remove_edge(self)
+
+    def hoverEnterEvent(self, event):
+        pen = self.pen()
+        pen.setWidth(4)
+        self.setPen(pen)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        pen = self.pen()
+        pen.setWidth(2)
+        self.setPen(pen)
+        super().hoverLeaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        s = self.scene()
+        if hasattr(s, "_remove_edge"):
+            s._remove_edge(self)
+        event.accept()

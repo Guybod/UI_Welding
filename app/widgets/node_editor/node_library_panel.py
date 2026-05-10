@@ -8,7 +8,7 @@ CATEGORIES = [
     ("IO", ["SetDO", "ReadDI", "SetAO", "ReadAI"]),
     ("寄存器", ["SetRegister", "ReadRegister"]),
     ("逻辑", ["If", "For", "While", "Compare", "And", "Or", "Not"]),
-    ("变量", ["Number", "Boolean", "String", "Pose"]),
+    ("变量", ["Int", "Float", "Bool", "String", "Array"]),
     ("自定义", []),
 ]
 

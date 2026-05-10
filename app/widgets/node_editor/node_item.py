@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QGraphicsItem, QStyle
+from PySide6.QtWidgets import QGraphicsItem, QStyle, QGraphicsSimpleTextItem, QInputDialog
 from PySide6.QtGui import QPen, QBrush, QColor, QFont, QPainter, QPainterPath
 from PySide6.QtCore import Qt, QRectF
 
@@ -41,17 +41,30 @@ class NodeItem(QGraphicsItem):
         left_ports = [p for p in spec.ports if p.direction == "input"]
         right_ports = [p for p in spec.ports if p.direction == "output"]
 
+        label_font = QFont()
+        label_font.setPointSize(7)
+
         for i, ps in enumerate(left_ports):
             y = TITLE_HEIGHT + PORT_SPACING * i + PORT_SPACING / 2
             port = PortItem(ps.name, ps.port_type, ps.direction, self)
             port.setPos(0, y)
             self._ports.append(port)
+            # label to the left of port
+            lbl = QGraphicsSimpleTextItem(ps.port_type, self)
+            lbl.setFont(label_font)
+            lbl.setBrush(QColor(180, 180, 180))
+            lbl.setPos(10, y - 7)
 
         for i, ps in enumerate(right_ports):
             y = TITLE_HEIGHT + PORT_SPACING * i + PORT_SPACING / 2
             port = PortItem(ps.name, ps.port_type, ps.direction, self)
             port.setPos(NODE_WIDTH, y)
             self._ports.append(port)
+            # label to the right of port
+            lbl = QGraphicsSimpleTextItem(ps.port_type, self)
+            lbl.setFont(label_font)
+            lbl.setBrush(QColor(180, 180, 180))
+            lbl.setPos(NODE_WIDTH - lbl.boundingRect().width() - 10, y - 7)
 
     def _calc_size(self):
         max_side = max(
@@ -114,3 +127,13 @@ class NodeItem(QGraphicsItem):
             for port in self._ports:
                 port.update_edges()
         return super().itemChange(change, value)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.pos().y() <= TITLE_HEIGHT:
+            name, ok = QInputDialog.getText(
+                None, "重命名节点", "名称:", text=self._title
+            )
+            if ok and name.strip():
+                self._title = name.strip()
+                self.update()
+        event.accept()

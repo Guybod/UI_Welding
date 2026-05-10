@@ -14,6 +14,7 @@ from app.widgets.node_editor.graph_serializer import graph_to_json, json_to_grap
 from app.widgets.node_editor.node_library_panel import NodeLibraryPanel
 from app.widgets.node_editor.property_panel import PropertyPanel
 from app.widgets.node_editor.execution_log_panel import ExecutionLogPanel
+from app.widgets.node_editor.graph_validator import GraphValidator
 
 DEFAULT_PROJECTS_DIR = Path(__file__).parent.parent.parent.parent / "projects"
 
@@ -42,6 +43,9 @@ class NodeEditorWidget(QWidget):
         self._project_name.setStyleSheet("background: #3a3a3d; border: 1px solid #555; padding: 2px 6px;")
         top.addWidget(self._project_name)
         top.addStretch()
+        btn_validate = QPushButton("校验")
+        btn_validate.clicked.connect(self._on_validate)
+        top.addWidget(btn_validate)
         btn_save = QPushButton("保存")
         btn_save.clicked.connect(self._on_save)
         top.addWidget(btn_save)
@@ -73,6 +77,21 @@ class NodeEditorWidget(QWidget):
         d = str(DEFAULT_PROJECTS_DIR)
         os.makedirs(d, exist_ok=True)
         return d
+
+    def _on_validate(self):
+        data = self._scene.to_graph_data()
+        v = GraphValidator()
+        r = v.validate(data)
+        log = self._log._log
+        log.clear()
+        if r.ok:
+            log.appendPlainText("✅ 校验通过")
+        else:
+            log.appendPlainText(f"❌ 校验失败 ({len(r.errors)} 个错误)")
+            for err in r.errors:
+                log.appendPlainText(f"  - {err}")
+        for w in r.warnings:
+            log.appendPlainText(f"  ⚠ {w}")
 
     def _on_add_node(self, node_type: str):
         view_center = self._view.mapToScene(
