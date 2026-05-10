@@ -17,6 +17,7 @@ from app.widgets.node_editor.node_library_panel import NodeLibraryPanel
 from app.widgets.node_editor.property_panel import PropertyPanel
 from app.widgets.node_editor.execution_log_panel import ExecutionLogPanel
 from app.widgets.node_editor.graph_validator import GraphValidator
+from app.widgets.node_editor.execution_engine import ExecutionEngine
 
 DEFAULT_PROJECTS_DIR = Path(__file__).parent.parent.parent.parent / "projects"
 
@@ -31,10 +32,16 @@ class NodeEditorWidget(QWidget):
         self._scene = GraphScene(self)
         self._view = GraphView(self._scene, self)
         self._library = NodeLibraryPanel(self)
+        self._view._library = self._library
         self._property = PropertyPanel(self)
         self._log = ExecutionLogPanel(self)
 
         self._library.node_requested.connect(self._on_add_node)
+        self._library.var_get_requested.connect(self._on_var_get)
+        self._library.var_set_requested.connect(self._on_var_set)
+        self._library.variables_changed.connect(self._on_variables_changed)
+        self._library.position_requested.connect(self._on_position_requested)
+        self._library.positions_changed.connect(self._on_positions_changed)
 
         # ── top bar ──
         top = QHBoxLayout()
@@ -46,6 +53,13 @@ class NodeEditorWidget(QWidget):
         self._project_name.setStyleSheet("background: #3a3a3d; border: 1px solid #555; padding: 2px 6px;")
         top.addWidget(self._project_name)
         top.addStretch()
+        self._btn_run = QPushButton("▶ 运行")
+        self._btn_run.clicked.connect(self._on_run)
+        top.addWidget(self._btn_run)
+        self._btn_stop = QPushButton("⏹ 停止")
+        self._btn_stop.clicked.connect(self._on_stop)
+        self._btn_stop.hide()
+        top.addWidget(self._btn_stop)
         self._btn_validate = QPushButton(tr("node_btn_validate"))
         self._btn_validate.clicked.connect(self._on_validate)
         top.addWidget(self._btn_validate)
@@ -96,6 +110,19 @@ class NodeEditorWidget(QWidget):
         QShortcut(QKeySequence.Save, self, self._on_save)
         QShortcut(QKeySequence.Open, self, self._on_load)
 
+        self._engine = ExecutionEngine(self)
+        self._engine.log_emitted.connect(self._on_engine_log)
+        self._engine.node_highlight.connect(self._on_node_highlight)
+        self._engine.graph_started.connect(lambda: self._set_running(True))
+        self._engine.graph_finished.connect(lambda: self._set_running(False))
+        self._engine.graph_stopped.connect(lambda: self._set_running(False))
+
+        self._view.add_variable_requested.connect(self._library._on_add_variable)
+        self._view.add_position_requested.connect(self._library._on_add_position)
+        self._view.var_get_requested.connect(self._on_var_get)
+        self._view.var_set_requested.connect(self._on_var_set)
+        self._view.position_requested.connect(self._on_position_requested)
+
         self._scene.selectionChanged.connect(self._on_selection_changed)
         I18nManager.instance().language_changed.connect(self._on_language_changed)
 
@@ -112,6 +139,37 @@ class NodeEditorWidget(QWidget):
         d = str(DEFAULT_PROJECTS_DIR)
         os.makedirs(d, exist_ok=True)
         return d
+
+    def _set_running(self, running: bool):
+        self._btn_run.setVisible(not running)
+        self._btn_stop.setVisible(running)
+
+    def _on_stop(self):
+        self._engine.stop()
+
+    def _on_run(self):
+        data = self._scene.to_graph_data()
+        v = GraphValidator()
+        r = v.validate(data)
+        if not r.ok:
+            log = self._log._log
+            log.clear()
+            log.appendPlainText(tr("node_valid_fail"))
+            for err in r.errors:
+                log.appendPlainText(f"  - {err}")
+            return
+        self._btn_run.setEnabled(False)
+        self._log._log.clear()
+        self._engine.run_dry(data)
+
+    def _on_engine_log(self, msg: str):
+        self._log._log.appendPlainText(msg)
+
+    def _on_node_highlight(self, node_id: str, on: bool):
+        for item in self._scene.items():
+            from app.widgets.node_editor.node_item import NodeItem
+            if isinstance(item, NodeItem) and item.data(0) == node_id:
+                item.set_highlight(on)
 
     def _on_validate(self):
         data = self._scene.to_graph_data()
@@ -134,6 +192,27 @@ class NodeEditorWidget(QWidget):
         )
         self._scene.add_node(node_type, view_center.x(), view_center.y())
 
+    def _on_var_get(self, name: str, var_type: str, port_type: str):
+        view_center = self._view.mapToScene(self._view.viewport().rect().center())
+        self._scene.add_var_node(name, var_type, port_type, "get", view_center.x(), view_center.y())
+
+    def _on_var_set(self, name: str, var_type: str, port_type: str):
+        view_center = self._view.mapToScene(self._view.viewport().rect().center())
+        self._scene.add_var_node(name, var_type, port_type, "set", view_center.x(), view_center.y())
+
+    def _on_variables_changed(self, variables: list):
+        pass
+
+    def _on_position_requested(self, name: str):
+        view_center = self._view.mapToScene(self._view.viewport().rect().center())
+        node = self._scene.add_node("Position", view_center.x(), view_center.y())
+        data = node.node_data()
+        data["name"] = name
+        node.set_node_data(data)
+
+    def _on_positions_changed(self, positions: list):
+        pass
+
     def _on_save(self):
         name = self._project_name.text().strip() or "未命名"
         path = os.path.join(self._projects_dir(), name)
@@ -141,6 +220,8 @@ class NodeEditorWidget(QWidget):
             path += ".json"
         try:
             data = self._scene.to_graph_data()
+            data.variables = self._library.variables()
+            data.positions = self._library.positions()
             text = graph_to_json(data)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
@@ -161,6 +242,8 @@ class NodeEditorWidget(QWidget):
                 text = f.read()
             data = json_to_graph(text)
             self._scene.load_from_graph_data(data)
+            self._library.set_variables(data.variables)
+            self._library.set_positions(data.positions)
             self._current_path = path
             name = os.path.splitext(os.path.basename(path))[0]
             self._project_name.setText(name)

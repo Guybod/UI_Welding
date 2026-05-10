@@ -1,12 +1,18 @@
 from PySide6.QtWidgets import QGraphicsView, QMenu, QApplication
 from PySide6.QtGui import QPainter, QWheelEvent, QMouseEvent, QAction
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, Signal
 
 from app.i18n import tr, tr_node
 
 
 class GraphView(QGraphicsView):
     """节点编辑器视图 — 滚轮缩放 + 中键平移 + 右键菜单 + 接受拖放"""
+
+    add_variable_requested = Signal()
+    add_position_requested = Signal()
+    var_get_requested = Signal(str, str, str)
+    var_set_requested = Signal(str, str, str)
+    position_requested = Signal(str)
 
     _zoom_min = 0.1
     _zoom_max = 3.0
@@ -23,6 +29,7 @@ class GraphView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setAcceptDrops(True)
         self._right_press_pos = QPoint()
+        self._library = None  # set by NodeEditorWidget
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
@@ -87,27 +94,41 @@ class GraphView(QGraphicsView):
             act_rename.triggered.connect(lambda: self._rename_node(clicked_node))
             menu.addAction(act_rename)
         else:
-            # add node submenus by category
-            cats = [
-                ("cat_base", ["Start", "End", "Print"]),
-                ("cat_motion", ["MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"]),
-                ("cat_position", ["Position"]),
-                ("cat_math", ["Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod",
-                              "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg",
-                              "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
-                ("cat_logic", ["If", "For", "While", "And", "Or", "Not", "Xor",
-                               "Gt", "Lt", "Eq", "Ge", "Le"]),
-                ("cat_string", ["StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen",
-                                "Num2Str", "Bool2Str"]),
-                ("cat_io", ["SetDO", "ReadDI", "SetAO", "ReadAI"]),
-                ("cat_register", ["SetRegister", "ReadRegister"]),
-                ("cat_variable", ["Int", "Float", "Bool", "String", "Array"]),
-            ]
-            for cat_key, node_types in cats:
-                sub = menu.addMenu(tr(cat_key))
-                for nt in node_types:
-                    act = QAction(tr_node(nt), sub)
-                    act.triggered.connect(self._make_add_handler(nt, scene_pos))
+            from app.widgets.node_editor.node_library_panel import CATEGORIES, CAT_I18N
+            for cat_name, items in CATEGORIES:
+                i18n_key = CAT_I18N.get(cat_name, cat_name)
+                sub = menu.addMenu(tr(i18n_key))
+                # dynamic categories: 变量 and 点位
+                if cat_name == "变量" and self._library:
+                    act_add = QAction(tr("var_add"), sub)
+                    act_add.triggered.connect(self.add_variable_requested.emit)
+                    sub.addAction(act_add)
+                    if self._library.variables():
+                        sub.addSeparator()
+                    for v in self._library.variables():
+                        var_menu = sub.addMenu(f"{v.name} ({v.var_type})")
+                        port_type = {"int":"number","float":"number","bool":"bool","string":"string","array":"any"}.get(v.var_type,"any")
+                        act_get = QAction(tr("var_get"), var_menu)
+                        act_get.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_get_requested.emit(n, t, p))
+                        var_menu.addAction(act_get)
+                        act_set = QAction(tr("var_set"), var_menu)
+                        act_set.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_set_requested.emit(n, t, p))
+                        var_menu.addAction(act_set)
+                    continue
+                if cat_name == "点位" and self._library:
+                    act_add = QAction(tr("pos_add"), sub)
+                    act_add.triggered.connect(self.add_position_requested.emit)
+                    sub.addAction(act_add)
+                    if self._library.positions():
+                        sub.addSeparator()
+                    for pname in self._library.positions():
+                        act = QAction(pname, sub)
+                        act.triggered.connect(lambda *a, n=pname: self.position_requested.emit(n))
+                        sub.addAction(act)
+                    continue
+                for node_name in items:
+                    act = QAction(tr_node(node_name), sub)
+                    act.triggered.connect(self._make_add_handler(node_name, scene_pos))
                     sub.addAction(act)
 
         menu.exec(self.mapToGlobal(view_pos))
@@ -127,22 +148,56 @@ class GraphView(QGraphicsView):
             node.update()
 
     def dragEnterEvent(self, event):
-        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE
-        if event.mimeData().hasFormat(MIME_NODE_TYPE):
+        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION
+        if any(event.mimeData().hasFormat(f) for f in [MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION]):
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
-        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE
-        if event.mimeData().hasFormat(MIME_NODE_TYPE):
+        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION
+        if any(event.mimeData().hasFormat(f) for f in [MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION]):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE
-        data = event.mimeData().data(MIME_NODE_TYPE)
-        if data:
-            node_type = data.data().decode()
-            scene_pos = self.mapToScene(event.position().toPoint())
-            s = self.scene()
+        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION as MP
+        scene_pos = self.mapToScene(event.position().toPoint())
+        s = self.scene()
+        md = event.mimeData()
+
+        # variable drop → show Get/Set menu
+        var_info = None
+        if md.hasFormat(MIME_VAR_GET):
+            var_info = md.data(MIME_VAR_GET).data().decode()
+        elif md.hasFormat(MIME_VAR_SET):
+            var_info = md.data(MIME_VAR_SET).data().decode()
+
+        if var_info and hasattr(s, "add_var_node"):
+            import json
+            info = json.loads(var_info)
+            menu = QMenu(self)
+            act_get = QAction(tr("var_get"), menu)
+            act_get.triggered.connect(lambda: s.add_var_node(info["name"], info["var_type"], info["port_type"], "get", scene_pos.x(), scene_pos.y()))
+            menu.addAction(act_get)
+            act_set = QAction(tr("var_set"), menu)
+            act_set.triggered.connect(lambda: s.add_var_node(info["name"], info["var_type"], info["port_type"], "set", scene_pos.x(), scene_pos.y()))
+            menu.addAction(act_set)
+            menu.exec(self.mapToGlobal(event.position().toPoint()))
+            event.acceptProposedAction()
+            return
+
+        # position drop
+        if md.hasFormat(MP):
+            pos_name = md.data(MP).data().decode()
+            if hasattr(s, "add_node"):
+                node = s.add_node("Position", scene_pos.x(), scene_pos.y())
+                data = node.node_data()
+                data["name"] = pos_name
+                node.set_node_data(data)
+            event.acceptProposedAction()
+            return
+
+        # regular node drop
+        if md.hasFormat(MIME_NODE_TYPE):
+            node_type = md.data(MIME_NODE_TYPE).data().decode()
             if hasattr(s, "add_node"):
                 s.add_node(node_type, scene_pos.x(), scene_pos.y())
             event.acceptProposedAction()

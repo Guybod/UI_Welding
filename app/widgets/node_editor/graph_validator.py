@@ -44,11 +44,16 @@ class GraphValidator:
         from app.widgets.node_editor.models import NODE_SPECS
         port_map: dict[str, list[tuple[str, str, str]]] = {}
         for n in graph.nodes:
-            spec = NODE_SPECS.get(n.node_type)
-            if spec:
-                port_map[n.node_id] = [(p.name, p.port_type, p.direction) for p in spec.ports]
+            # dynamic nodes (GetVar/SetVar) store ports in data
+            dynamic_ports = n.data.get("_ports") if n.data else None
+            if dynamic_ports:
+                port_map[n.node_id] = dynamic_ports
             else:
-                port_map[n.node_id] = []
+                spec = NODE_SPECS.get(n.node_type)
+                if spec:
+                    port_map[n.node_id] = [(p.name, p.port_type, p.direction) for p in spec.ports]
+                else:
+                    port_map[n.node_id] = []
 
         for e in graph.edges:
             if e.source_node_id not in node_ids:

@@ -26,8 +26,8 @@ class GraphScene(QGraphicsScene):
 
     # ── node management ──
 
-    def add_node(self, node_type: str, x: float = 0, y: float = 0) -> NodeItem:
-        node = NodeItem(node_type)
+    def add_node(self, node_type: str, x: float = 0, y: float = 0, override_spec: list = None) -> NodeItem:
+        node = NodeItem(node_type, override_spec=override_spec)
         node.setPos(x, y)
         self.addItem(node)
 
@@ -35,6 +35,26 @@ class GraphScene(QGraphicsScene):
         if node_type == "Position":
             self._init_position_data(node)
 
+        return node
+
+    def add_var_node(self, var_name: str, var_type: str, port_type: str, mode: str, x: float = 0, y: float = 0) -> NodeItem:
+        """创建 GetVar 或 SetVar 节点"""
+        from app.widgets.node_editor.models import PortSpec, NodeSpec
+        if mode == "get":
+            ports = [PortSpec("value", port_type, "output")]
+            spec = NodeSpec("GetVar", f"Get {var_name}", "变量", ports, color="#00BCD4")
+        else:
+            ports = [
+                PortSpec("flow", "flow", "input"),
+                PortSpec("flow", "flow", "output"),
+                PortSpec("value", port_type, "input"),
+            ]
+            spec = NodeSpec("SetVar", f"Set {var_name}", "变量", ports, color="#00BCD4")
+        node = NodeItem("GetVar" if mode == "get" else "SetVar", override_spec=spec)
+        # store port info in data for validator
+        node.set_node_data({"_ports": [(p.name, p.port_type, p.direction) for p in ports], "var_name": var_name, "var_type": var_type})
+        node.setPos(x, y)
+        self.addItem(node)
         return node
 
     def _init_position_data(self, node: NodeItem):

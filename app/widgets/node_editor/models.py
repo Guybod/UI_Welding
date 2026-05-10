@@ -22,10 +22,11 @@ NODE_COLORS = {
     "变量":   "#388E3C",
     "字符串": "#00ACC1",
     "自定义": "#616161",
+    "常量":   "#26A69A",
 }
 
 NODE_CATEGORY = {
-    "Start": "基础", "End": "基础", "Print": "基础",
+    "Start": "基础", "End": "基础", "Wait": "基础", "Print": "基础",
     "MoveJ": "运动", "MoveL": "运动", "MoveC": "运动",
     "MoveCircle": "运动", "MovePath": "运动",
     "Position": "点位",
@@ -33,7 +34,7 @@ NODE_CATEGORY = {
     "SetRegister": "寄存器", "ReadRegister": "寄存器",
     "If": "逻辑", "For": "逻辑", "While": "逻辑",
     "Compare": "逻辑", "And": "逻辑", "Or": "逻辑", "Not": "逻辑",
-    "Int": "变量", "Float": "变量", "Bool": "变量", "String": "变量", "Array": "变量",
+    "Int": "常量", "Float": "常量", "Bool": "常量", "String": "常量", "Array": "常量",
     "Add": "运算", "Sub": "运算", "Mul": "运算", "Div": "运算",
     "Square": "运算", "Sqrt": "运算", "MatMulL": "运算", "MatMulR": "运算",
     "Gt": "逻辑", "Lt": "逻辑", "Eq": "逻辑", "Ge": "逻辑", "Le": "逻辑",
@@ -79,8 +80,6 @@ _register(NodeSpec("End", "End", "基础", [
     PortSpec("flow", "flow", "input"),
 ]))
 _register(NodeSpec("Position", "Position", "点位", [
-    PortSpec("flow", "flow", "input"),
-    PortSpec("flow", "flow", "output"),
     PortSpec("pose", "pose", "output"),
 ]))
 _register(NodeSpec("MoveJ", "MoveJ", "运动", [
@@ -309,6 +308,11 @@ _register(NodeSpec("Bool2Str", "Bool2Str", "字符串", [
     PortSpec("result", "string", "output"),
 ]))
 # 字符串
+_register(NodeSpec("Wait", "Wait", "基础", [
+    PortSpec("flow", "flow", "input"),
+    PortSpec("flow", "flow", "output"),
+    PortSpec("duration", "number", "input"),
+]))
 _register(NodeSpec("Print", "Print", "基础", [
     PortSpec("flow", "flow", "input"),
     PortSpec("flow", "flow", "output"),
@@ -355,7 +359,16 @@ class EdgeData:
 
 
 @dataclass
+class VarDef:
+    name: str
+    var_type: str  # "int", "float", "bool", "string", "array"
+    initial: str = ""  # JSON-encoded initial value
+
+
+@dataclass
 class GraphData:
     graph_version: str = GRAPH_VERSION
     nodes: list[NodeData] = field(default_factory=list)
     edges: list[EdgeData] = field(default_factory=list)
+    variables: list[VarDef] = field(default_factory=list)
+    positions: list[str] = field(default_factory=list)

@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from app.widgets.node_editor.models import GraphData, NodeData, EdgeData, GRAPH_VERSION
+from app.widgets.node_editor.models import GraphData, NodeData, EdgeData, VarDef, GRAPH_VERSION
 
 
 def graph_to_json(graph: GraphData) -> str:
@@ -30,6 +30,11 @@ def graph_to_json(graph: GraphData) -> str:
             for e in graph.edges
         ],
     }
+    obj["positions"] = graph.positions
+    obj["variables"] = [
+        {"name": v.name, "var_type": v.var_type, "initial": v.initial}
+        for v in graph.variables
+    ]
     return json.dumps(obj, ensure_ascii=False, indent=2)
 
 
@@ -61,4 +66,9 @@ def json_to_graph(text: str) -> GraphData:
         )
         for e in obj.get("edges", [])
     ]
-    return GraphData(graph_version=version, nodes=nodes, edges=edges)
+    variables = [
+        VarDef(name=v["name"], var_type=v["var_type"], initial=v.get("initial", ""))
+        for v in obj.get("variables", [])
+    ]
+    positions = obj.get("positions", [])
+    return GraphData(graph_version=version, nodes=nodes, edges=edges, variables=variables, positions=positions)

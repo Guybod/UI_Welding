@@ -18,15 +18,16 @@ BORDER_SELECTED = QColor(100, 140, 220)
 class NodeItem(QGraphicsItem):
     """节点图元 — 圆角矩形 + 标题 + 端口"""
 
-    def __init__(self, node_type: str, parent=None):
+    def __init__(self, node_type: str, parent=None, override_spec=None):
         super().__init__(parent)
         self._node_type = node_type
-        spec = NODE_SPECS.get(node_type)
+        spec = override_spec or NODE_SPECS.get(node_type)
         self._spec = spec
         self._title = spec.title if spec else node_type
         self._color = QColor(spec.color if spec else "#616161")
         self._ports: list[PortItem] = []
         self._data: dict = {}
+        self._highlighted: bool = False
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
@@ -85,6 +86,11 @@ class NodeItem(QGraphicsItem):
     def set_node_data(self, data: dict):
         self._data = data
 
+    def set_highlight(self, on: bool):
+        """执行引擎高亮 — 绿色边框 + 浅色填充"""
+        self._highlighted = on
+        self.update()
+
     def ports(self) -> list[PortItem]:
         return self._ports
 
@@ -121,7 +127,9 @@ class NodeItem(QGraphicsItem):
         painter.drawText(QRectF(0, 0, NODE_WIDTH, TITLE_HEIGHT), Qt.AlignCenter, self._title)
 
         # border
-        if option.state & QStyle.State_Selected:
+        if self._highlighted:
+            pen = QPen(QColor("#4CAF50"), 3)
+        elif option.state & QStyle.State_Selected:
             pen = QPen(BORDER_SELECTED, 2)
         else:
             pen = QPen(BORDER_COLOR, 1)
