@@ -1,0 +1,1 @@
+from app.widgets.node_editor.node_editor_widget import NodeEditorWidget

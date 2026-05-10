@@ -1730,6 +1730,7 @@ robots:
 | 2026-05-10 | Part 5 | 连接后切模式再订阅 | 连接成功 → `Robot/toAuto` → 100ms → `Robot/toRemote` → 订阅。机器人要求远程模式才能接收订阅, 否则返回 err 10074 |
 | 2026-05-10 | Part 5 | 订阅 tc 全部为 0 | 硬性要求: 所有 `publish/*` 订阅请求的 `tc` 字段必须为 0 |
 | 2026-05-10 | Part 5 | 去 QTimer 跨线程 | `PendingRequest` 不再持有单个 QTimer, 改用 `time.monotonic()` + TcpAdapter 内 1s 周期 QTimer 统一检查超时, 避免跨线程 stop timer |
+| 2026-05-10 | Part 10 | 运动节点编排功能 | Part 10 原方向为表单式运动指令页(movJ/L/C/Circle/path)，现改为节点连线式编排器（类 ComfyUI）。详细 14 阶段计划见 `plan2.md`。运动页面复用现有"运动"标签页，不新增重复顶层标签。初期只做运动编排，不强依赖焊接/写字 |
 
 ---
 
@@ -1752,7 +1753,8 @@ robots:
 | Part 7 | ✅ | 连接→command_bar+drawer按钮启用; isMoving→运动暂停/恢复; ErrorDialog弹窗(只能清错关闭); 空Error(db=[])不弹窗不写日志; HomePage保持占位(状态全在底部栏和抽屉显示) |
 | Part 8 | ✅ | 使能开关→switchOn/Off; 模式三挡→toManual/Auto/Remote; 仿真开关→toSimulation/Actual; 运动控制→stopMove/pause/resume; 工程按钮→runByIndex(1)/stop/pause/resume; Jog: jog_pressed(mode,idx,sign)→jog+jogHeartbeat(500ms), jog_released→stopJog停心跳; moveTo: moveto_pressed(0-3)→Robot/moveTo+moveToHeartbeat(500ms), moveto_released→停心跳; 速度滑块松开→setManualMoveRate→100ms→setAutoMoveRate; 连接后自动发速度70%; 反馈循环防护(set_checked_silent); 心跳send/recv不写日志; stop_move同时停jog和moveTo心跳 |
 | Part 9 | ✅ | Jog/moveTo 改为 pressed/released 双信号模式, 抽屉 API 重构(jog_pressed/jog_released/moveto_pressed/moveto_released), _on_moveto_start_error 错误处理 |
-| Part 10 | ⏳ | 运动指令页: `app/pages/motion_page.py`(movJ/L/C/Circle/path+6目标+速度/加速度/过渡+发送+日志), 首页和焊接之间新增"运动"标签, 按钮未绑定API |
+| Part 10 | ⏳ | 运动页已有 `app/pages/motion_page.py`(当前为表单式占位，按钮未绑定API)。新方向: 改为节点连线式编排器，详见 `plan2.md`。阶段 0 已完成(plan.md 同步)。阶段 1 待开始 |
+| Part 10-Node | ⏳ | 运动节点编排 14 阶段计划(plan2.md): 阶段0文档同步✅ → 阶段1占位区✅ → 阶段2画布✅ → 阶段2.5三栏布局✅ → 阶段3节点拖拽✅ → 阶段4连线✅ → 阶段5保存加载 → 阶段5.5校验 → 阶段6属性面板 → 阶段7实时状态 → 阶段8 DryRun → 阶段9在线运动 → 阶段10 IO/寄存器 → 阶段11 If节点 → 阶段12 Path/MoveC → 阶段13自定义节点 → 阶段14完善 |
 | Part 11-15 | ⏳ | 见计划 |
 | CRI 配置 | ✅ | duration=2ms(500Hz), mask=0xFFFF, highPercision=true, 6轴, 308B |
 
