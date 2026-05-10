@@ -51,22 +51,20 @@ class NodeItem(QGraphicsItem):
             port = PortItem(ps.name, ps.port_type, ps.direction, self)
             port.setPos(0, y)
             self._ports.append(port)
-            if ps.port_type != "flow":
-                lbl = QGraphicsSimpleTextItem(ps.port_type, self)
-                lbl.setFont(label_font)
-                lbl.setBrush(QColor(180, 180, 180))
-                lbl.setPos(10, y - 7)
+            lbl = QGraphicsSimpleTextItem(ps.name, self)
+            lbl.setFont(label_font)
+            lbl.setBrush(QColor(180, 180, 180))
+            lbl.setPos(10, y - 7)
 
         for i, ps in enumerate(right_ports):
             y = TITLE_HEIGHT + PORT_SPACING * i + PORT_SPACING / 2
             port = PortItem(ps.name, ps.port_type, ps.direction, self)
             port.setPos(NODE_WIDTH, y)
             self._ports.append(port)
-            if ps.port_type != "flow":
-                lbl = QGraphicsSimpleTextItem(ps.port_type, self)
-                lbl.setFont(label_font)
-                lbl.setBrush(QColor(180, 180, 180))
-                lbl.setPos(NODE_WIDTH - lbl.boundingRect().width() - 10, y - 7)
+            lbl = QGraphicsSimpleTextItem(ps.name, self)
+            lbl.setFont(label_font)
+            lbl.setBrush(QColor(180, 180, 180))
+            lbl.setPos(NODE_WIDTH - lbl.boundingRect().width() - 10, y - 7)
 
     def _calc_size(self):
         left_count = sum(1 for p in self._ports if p.direction() == "input")

@@ -26,12 +26,16 @@ class EdgeItem(QGraphicsPathItem):
         self.setCursor(Qt.PointingHandCursor)
 
     def _is_flow(self) -> bool:
-        return self._source is not None and self._source.port_type() == "flow"
+        if self._source and self._source.port_type() == "flow":
+            return True
+        if self._target and self._target.port_type() == "flow":
+            return True
+        return False
 
     def _edge_color(self):
         if self._is_flow():
             return FLOW_COLOR
-        pt = self._source.port_type() if self._source else "any"
+        pt = self._source.port_type() if self._source else (self._target.port_type() if self._target else "any")
         return QColor(PORT_COLORS.get(pt, "#9E9E9E"))
 
     def source(self):
@@ -52,8 +56,9 @@ class EdgeItem(QGraphicsPathItem):
         p1 = self._source.scene_center() if self._source else self._temp_end
         p2 = self._target.scene_center() if self._target else self._temp_end
 
-        dx = abs(p2.x() - p1.x()) * 0.5
-        dx = max(dx, 40)
+        dx = (p2.x() - p1.x()) * 0.5
+        if abs(dx) < 40:
+            dx = 40 if dx >= 0 else -40
         cp1 = QPointF(p1.x() + dx, p1.y())
         cp2 = QPointF(p2.x() - dx, p2.y())
 

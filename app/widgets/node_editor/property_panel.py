@@ -43,7 +43,7 @@ class PropertyPanel(QWidget):
         elif nt in ("MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"):
             self._show_motion(node)
         elif nt == "Wait":
-            self._show_generic(node, [("duration", "number", "秒")])
+            self._show_placeholder()  # duration 完全由数据连线提供
         elif nt in ("Int",):
             self._show_generic(node, [("value", "int", "")])
         elif nt in ("Float",):
@@ -93,9 +93,10 @@ class PropertyPanel(QWidget):
         def apply():
             node.set_node_data({"speed": speed.value(), "acc": acc.value(),
                                 "blend": blend.value(), "relativeBlend": rel_blend.value()})
-        btn = QPushButton(tr("node_btn_apply"))
-        btn.clicked.connect(apply)
-        root.addWidget(btn)
+        speed.valueChanged.connect(apply)
+        acc.valueChanged.connect(apply)
+        blend.valueChanged.connect(apply)
+        rel_blend.valueChanged.connect(apply)
         root.addStretch()
         self._scroll.setWidget(w)
 
@@ -107,25 +108,18 @@ class PropertyPanel(QWidget):
         root.addWidget(QLabel(f"{node._title}"))
         cb = QCheckBox("True")
         cb.setChecked(data.get("value", False))
+        cb.toggled.connect(lambda v: node.set_node_data({"value": v}))
         root.addWidget(cb)
         root.addStretch()
-
-        def apply():
-            node.set_node_data({"value": cb.isChecked()})
-        btn = QPushButton(tr("node_btn_apply"))
-        btn.clicked.connect(apply)
-        root.addWidget(btn)
         self._scroll.setWidget(w)
 
     def _show_var_value(self, node):
-        """GetVar 节点 — 显示变量当前值, 可修改"""
+        """GetVar 节点 — 显示变量当前值, 可修改, 同步全局"""
         data = node.node_data()
+        var_id = data.get("var_id", "")
         var_name = data.get("var_name", "?")
         var_type = data.get("var_type", "int")
-        val = data.get("var_value")
-        # try to read from library variables if not stored locally
-        if val is None:
-            val = data.get("value", 0)
+        val = data.get("value", 0)
 
         w = QWidget()
         root = QVBoxLayout(w)
@@ -166,10 +160,24 @@ class PropertyPanel(QWidget):
                     v = wdg.isChecked()
                 else:
                     v = wdg.text()
-                node.set_node_data({"var_name": var_name, "var_type": var_type, "var_value": v, "value": v})
+                # update library
+                s = node.scene()
+                lib = getattr(s, '_library', None)
+                if lib and var_id:
+                    for var in lib.variables():
+                        if var.var_id == var_id:
+                            var.value = str(v)
+                            break
+                # update all GetVar nodes for same var_id on canvas
+                if s:
+                    from app.widgets.node_editor.node_item import NodeItem
+                    for item in s.items():
+                        if isinstance(item, NodeItem) and item.node_type() == "GetVar":
+                            d = item.node_data()
+                            if d.get("var_id") == var_id:
+                                d["value"] = v
+                                item.set_node_data(d)
         btn = QPushButton(tr("node_btn_apply"))
-        btn.clicked.connect(apply)
-        root.addWidget(btn)
         root.addStretch()
         self._scroll.setWidget(w)
 
@@ -211,9 +219,6 @@ class PropertyPanel(QWidget):
                 elif ftype == "string":
                     d[key] = wdg.text()
             node.set_node_data(d)
-        btn = QPushButton(tr("node_btn_apply"))
-        btn.clicked.connect(apply)
-        root.addWidget(btn)
         root.addStretch()
         self._scroll.setWidget(w)
 
@@ -253,16 +258,25 @@ class PropertyPanel(QWidget):
         w = QWidget()
         root = QVBoxLayout(w)
 
+        jp_checked = data.get("jp_enabled", True)
+        cp_checked = data.get("cp_enabled", False)
+
         # ── 名称 ──
         name_layout = QFormLayout()
         self._pos_name = QLineEdit(data.get("name", ""))
         self._pos_name.setPlaceholderText("P1")
         self._pos_name_label = QLabel(tr("pos_name"))
+        self._pos_name.textChanged.connect(lambda: self._pos_apply(node))
         name_layout.addRow(self._pos_name_label, self._pos_name)
         root.addLayout(name_layout)
 
-        # ── 关节角 jp ──
-        self._jp_group = QGroupBox(tr("pos_jp_group"))
+        # ── 关节角 jp (带勾选框) ──
+        from PySide6.QtWidgets import QCheckBox
+        self._jp_cb = QCheckBox(tr("pos_jp_group"))
+        self._jp_cb.setChecked(jp_checked)
+        self._jp_cb.toggled.connect(lambda checked: self._jp_toggle(node, checked))
+        root.addWidget(self._jp_cb)
+        self._jp_group = QGroupBox()
         jp_layout = QFormLayout()
         jp = data.get("jp", [0, 0, 0, 0, 0, 0])
         self._jp_spins: list[QDoubleSpinBox] = []
@@ -271,13 +285,19 @@ class PropertyPanel(QWidget):
             spin.setDecimals(2)
             spin.setValue(jp[i] if i < len(jp) else 0)
             spin.setSingleStep(1.0)
+            spin.valueChanged.connect(lambda v, n=node: self._pos_apply(n))
             jp_layout.addRow(f"J{i + 1}:", spin)
             self._jp_spins.append(spin)
         self._jp_group.setLayout(jp_layout)
+        self._jp_group.setVisible(jp_checked)
         root.addWidget(self._jp_group)
 
-        # ── 笛卡尔 cp ──
-        self._cp_group = QGroupBox(tr("pos_cp_group"))
+        # ── 笛卡尔 cp (带勾选框) ──
+        self._cp_cb = QCheckBox(tr("pos_cp_group"))
+        self._cp_cb.setChecked(cp_checked)
+        self._cp_cb.toggled.connect(lambda checked: self._cp_toggle(node, checked))
+        root.addWidget(self._cp_cb)
+        self._cp_group = QGroupBox()
         cp_layout = QFormLayout()
         cp = data.get("cp", {"x": 0, "y": 0, "z": 0, "a": 0, "b": 0, "c": 0})
         self._cp_spins: dict[str, QDoubleSpinBox] = {}
@@ -285,15 +305,18 @@ class PropertyPanel(QWidget):
             spin = self._mk_spin(Range=(-9999, 9999), Decimals=1)
             spin.setValue(cp.get(key, 0))
             spin.setSingleStep(10.0)
+            spin.valueChanged.connect(lambda v, n=node: self._pos_apply(n))
             cp_layout.addRow(f"{key.upper()}:", spin)
             self._cp_spins[key] = spin
         for key in ("a", "b", "c"):
             spin = self._mk_spin(Range=(-360, 360), Decimals=2)
             spin.setValue(cp.get(key, 0))
             spin.setSingleStep(1.0)
+            spin.valueChanged.connect(lambda v, n=node: self._pos_apply(n))
             cp_layout.addRow(f"{key.upper()}:", spin)
             self._cp_spins[key] = spin
         self._cp_group.setLayout(cp_layout)
+        self._cp_group.setVisible(cp_checked)
         root.addWidget(self._cp_group)
 
         # ── optional ──
@@ -304,22 +327,26 @@ class PropertyPanel(QWidget):
         self._opt_speed.setDecimals(0)
         self._opt_speed.setValue(opt.get("speed", 200))
         self._opt_speed.setSuffix(" mm/s")
+        self._opt_speed.valueChanged.connect(lambda v: self._pos_apply(node))
         self._opt_speed_label = QLabel(tr("pos_speed"))
         opt_layout.addRow(self._opt_speed_label, self._opt_speed)
         self._opt_acc = self._mk_spin(Range=(1, 50000))
         self._opt_acc.setDecimals(0)
         self._opt_acc.setValue(opt.get("acc", 500))
         self._opt_acc.setSuffix(" mm/s²")
+        self._opt_acc.valueChanged.connect(lambda v: self._pos_apply(node))
         self._opt_acc_label = QLabel(tr("pos_acc"))
         opt_layout.addRow(self._opt_acc_label, self._opt_acc)
         self._opt_blend = self._mk_spin(Range=(0, 1000), Decimals=1)
         self._opt_blend.setValue(opt.get("blend", 0))
         self._opt_blend.setSuffix(" mm")
+        self._opt_blend.valueChanged.connect(lambda v: self._pos_apply(node))
         self._opt_blend_abs_label = QLabel(tr("pos_blend_abs"))
         opt_layout.addRow(self._opt_blend_abs_label, self._opt_blend)
         self._opt_rel_blend = self._mk_spin(Range=(0, 100), Decimals=1)
         self._opt_rel_blend.setValue(opt.get("relativeBlend", 0))
         self._opt_rel_blend.setSuffix(" %")
+        self._opt_rel_blend.valueChanged.connect(lambda v: self._pos_apply(node))
         self._opt_rel_blend_rel_label = QLabel(tr("pos_blend_rel"))
         opt_layout.addRow(self._opt_rel_blend_rel_label, self._opt_rel_blend)
         self._opt_group.setLayout(opt_layout)
@@ -328,14 +355,39 @@ class PropertyPanel(QWidget):
         # ── 按钮 ──
         self._btn_update_pos = QPushButton(tr("node_btn_update_pos"))
         self._btn_update_pos.setEnabled(RobotRealtimeState.instance().is_valid())
-        self._btn_update_pos.clicked.connect(self._on_update_current)
+        self._btn_update_pos.clicked.connect(lambda: self._on_update_current(node))
         root.addWidget(self._btn_update_pos)
-        self._btn_apply = QPushButton(tr("node_btn_apply"))
-        self._btn_apply.clicked.connect(self._on_apply)
-        root.addWidget(self._btn_apply)
 
         root.addStretch()
         self._scroll.setWidget(w)
+
+    def _pos_apply(self, node):
+        """即时应用 Position 修改"""
+        jp = [s.value() for s in self._jp_spins] if hasattr(self, '_jp_spins') else []
+        cp = {k: s.value() for k, s in self._cp_spins.items()} if hasattr(self, '_cp_spins') else {}
+        data = {
+            "name": self._pos_name.text().strip(),
+            "jp": jp, "cp": cp, "ep": [],
+            "jp_enabled": self._jp_cb.isChecked() if hasattr(self, '_jp_cb') else True,
+            "cp_enabled": self._cp_cb.isChecked() if hasattr(self, '_cp_cb') else False,
+            "optional": {
+                "speed": self._opt_speed.value(), "acc": self._opt_acc.value(),
+                "blend": self._opt_blend.value(), "relativeBlend": self._opt_rel_blend.value(),
+            },
+        }
+        node.set_node_data(data)
+        name = data["name"] or "Position"
+        if node._title != name:
+            node._title = name
+            node.update()
+
+    def _jp_toggle(self, node, checked):
+        self._jp_group.setVisible(checked)
+        self._pos_apply(node)
+
+    def _cp_toggle(self, node, checked):
+        self._cp_group.setVisible(checked)
+        self._pos_apply(node)
 
     def _on_language_changed(self, lang: str):
         # 重建面板避免已销毁控件的引用
@@ -344,7 +396,7 @@ class PropertyPanel(QWidget):
         else:
             self._show_placeholder()
 
-    def _on_update_current(self):
+    def _on_update_current(self, node):
         state = RobotRealtimeState.instance()
         if not state.is_valid():
             return
@@ -359,6 +411,7 @@ class PropertyPanel(QWidget):
         self._cp_spins["a"].setValue(round(a, 2))
         self._cp_spins["b"].setValue(round(b, 2))
         self._cp_spins["c"].setValue(round(c, 2))
+        self._pos_apply(node)
 
     def _on_apply(self):
         if not self._node:

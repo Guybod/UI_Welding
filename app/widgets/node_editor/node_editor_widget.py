@@ -40,6 +40,7 @@ class NodeEditorWidget(QWidget):
         self._view = GraphView(self._scene, self)
         self._library = NodeLibraryPanel(self)
         self._view._library = self._library
+        self._scene._library = self._library
         self._property = PropertyPanel(self)
         self._log = ExecutionLogPanel(self)
 
@@ -219,26 +220,35 @@ class NodeEditorWidget(QWidget):
         )
         self._scene.add_node(node_type, view_center.x(), view_center.y())
 
-    def _on_var_get(self, name: str, var_type: str, port_type: str):
+    def _on_var_get(self, var_id: str, name: str, var_type: str, port_type: str):
         view_center = self._view.mapToScene(self._view.viewport().rect().center())
-        node = self._scene.add_var_node(name, var_type, port_type, "get", view_center.x(), view_center.y())
-        # select the node so property panel shows its value
+        node = self._scene.add_var_node(var_id, name, var_type, port_type, "get", view_center.x(), view_center.y())
         self._scene.clearSelection()
         node.setSelected(True)
 
-    def _on_var_set(self, name: str, var_type: str, port_type: str):
+    def _on_var_set(self, var_id: str, name: str, var_type: str, port_type: str):
         view_center = self._view.mapToScene(self._view.viewport().rect().center())
-        self._scene.add_var_node(name, var_type, port_type, "set", view_center.x(), view_center.y())
+        self._scene.add_var_node(var_id, name, var_type, port_type, "set", view_center.x(), view_center.y())
 
     def _on_variables_changed(self, variables: list):
         pass
 
-    def _on_position_requested(self, name: str):
+    def _on_position_requested(self, pos_id: str, name: str):
         view_center = self._view.mapToScene(self._view.viewport().rect().center())
         node = self._scene.add_node("Position", view_center.x(), view_center.y())
-        data = node.node_data()
-        data["name"] = name
-        node.set_node_data(data)
+        # lookup position data from library
+        for p in self._library.positions():
+            if p.pos_id == pos_id:
+                data = {"pos_id": pos_id, "name": p.name, "jp": list(p.jp),
+                        "cp": dict(p.cp), "ep": list(p.ep), "optional": dict(p.optional)}
+                node.set_node_data(data)
+                node._title = p.name
+                node.update()
+                return
+        # fallback
+        node.set_node_data({"pos_id": pos_id, "name": name})
+        node._title = name
+        node.update()
 
     def _on_positions_changed(self, positions: list):
         pass

@@ -2183,7 +2183,120 @@ GraphValidator 必须检查 payload。
 
 ---
 
-## 30. 当前优先级建议
+## 30. 节点数据模型与交互规则 (2026-05-11)
+
+### 30.1 全局变量系统
+
+变量不在画布上存储，而是在 `GraphData.variables` 中统一管理：
+
+```python
+@dataclass
+class VarDef:
+    var_id: str    # 自动生成 UUID 前8位
+    name: str      # 变量名
+    var_type: str  # "int", "float", "bool", "string", "array"
+    value: str     # 当前值 (JSON 兼容字符串)
+```
+
+规则：
+- 创建变量时生成唯一 `var_id`
+- GetVar/SetVar 节点通过 `var_id` 引用变量，非 `var_name`
+- 修改 GetVar 属性面板的值 → 同步更新 `GraphData.variables[var_id].value` + 所有引用同 `var_id` 的 GetVar 节点
+- 再次拖入同一变量不会创建新变量定义，复用已有 `var_id`
+- 保存 JSON 必须保存 `variables` 数组
+- 加载 JSON 必须先加载 variables，再 nodes，再 edges
+- 如果加载时 `var_id` 对应的变量不存在，节点显示灰色，GraphValidator 报错
+
+### 30.2 flow 主线连接规则
+
+| 端口类型 | 方向 | 最多连接数 |
+|----------|------|------------|
+| flow | input | 1 |
+| flow | output | 1 |
+| data | input | 1 |
+| data | output | 无限 |
+
+- `_add_edge` 创建边时检查：flow 输出已有连接→拒绝；flow/数据输入已有连接→拒绝
+- GraphValidator 检查 flow 输出唯一性，重复时报错
+- If/For/While 逻辑节点以后单独处理
+
+### 30.3 拖节点插入主线
+
+- 拖拽带有 flow_in + flow_out 的节点到现有 flow Edge 上 → 自动插入
+- 删除旧边，创建 source→新节点、新节点→target 两条新边
+- Start/End/Position/Int/Float/Bool/String/Array 不允许插入
+- If/For/While 暂不做自动插入
+
+### 30.4 Wait 单位
+
+- Wait 字段统一用 `duration_ms`，单位毫秒
+- UI 显示 `ms`
+- 旧 JSON 的 `duration`(秒)/`duration_sec`(秒) 自动 ×1000 迁移为 `duration_ms`
+- 所有涉及时间的字段统一后缀 `_ms`
+
+### 30.5 Position 显示名
+
+- Position 节点创建时使用用户输入的名称作为 `title`
+- 属性面板修改 `name` → 同步更新 NodeItem.title
+- 保存 JSON 后重新加载，名称不变
+
+### 30.6 变量端口统一
+
+- 所有变量引用节点（GetVar/SetVar）输出端口统一为 `value`
+- GraphValidator 和 Serializer 使用 `value`
+- 加载旧 JSON 时 `out`/`value_out` 自动迁移为 `value`
+
+### 30.7 动态节点加载
+
+- GetVar/SetVar 的端口定义存储在 `node_data._ports` 中
+- 加载 JSON 时检测 `_ports` 字段，使用 `override_spec` 重建动态端口
+- 如果 `_ports` 不存在或 var_id 无效，节点显示为缺失
+
+## 30.9 全部节点执行逻辑 (2026-05-11)
+
+### 数据节点 (递归求值)
+
+所有数据节点通过 `_eval_data(node_id)` 递归求值，结果缓存避免重复计算。
+
+| 类别 | 节点 | 计算逻辑 |
+|------|------|----------|
+| 常量 | Int, Float, Bool, String | 返回 data["value"] |
+| 变量 | GetVar | 返回 VarDef.value |
+| 数学 | Add/Sub/Mul/Div/Pow/Mod | a op b |
+| | Square/Sqrt/Abs/Neg | unary math |
+| | Sin/Cos/Tan | 三角函数(输入度) |
+| | Deg2Rad/Rad2Deg | 单位换算 |
+| 比较 | Gt/Lt/Ge/Le/Eq | a op b → bool |
+| 逻辑 | And/Or/Not/Xor | 布尔运算 |
+| 字符串 | StrConcat/Split/Find/Replace/Len | 字符串操作 |
+| | Num2Str/Bool2Str | 类型转换 |
+| 数组 | ArrayGet | arr[index] |
+| | ArrayLen | len(arr) |
+| 点位 | BreakPosition | pose→jp+cp, 右键拆分 |
+| | MakePosition | jp+cp→pose |
+| For | For | 输出当前 _for_index |
+
+### 控制流节点
+
+| 节点 | 行为 |
+|------|------|
+| **If** | condition=True→走true分支, False→走false分支 |
+| **For** | start/end/step, 循环执行body, 结束走done. 输出index供ArrayGet |
+| **While** | condition=True→循环body, False→走done |
+
+### 循环体返回
+
+For/While 的 body 执行完后，通过 `_return_stack` 自动跳回循环节点继续迭代。body 分支内的节点不需要手动连回 For。
+
+### 交互增强
+
+- **端口标签**：所有端口显示名称(boddy/done/condition/start/end/step等)，非类型名
+- **Flow 端口**：三角▶形状，非圆形
+- **拖线创建常量**：从输入端口拖到空白→自动创建 Int/Bool/String 常量并连线
+- **右键拆分点位**：BreakPosition/MakePosition 的 jp/cp 端口右键→拆分/合并为 J1~J6 或 XYZABC
+- **属性即时应用**：所有属性面板改值即生效，无"应用"按钮
+
+## 30.10 当前优先级建议
 
 真正开发时优先做到：
 

@@ -23,6 +23,7 @@ class GraphScene(QGraphicsScene):
         self.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
         self._temp_edge: EdgeItem | None = None
         self._drag_source: PortItem | None = None
+        self._library = None  # set by NodeEditorWidget
 
     # ── node management ──
 
@@ -37,8 +38,8 @@ class GraphScene(QGraphicsScene):
 
         return node
 
-    def add_var_node(self, var_name: str, var_type: str, port_type: str, mode: str, x: float = 0, y: float = 0) -> NodeItem:
-        """创建 GetVar 或 SetVar 节点"""
+    def add_var_node(self, var_id: str, var_name: str, var_type: str, port_type: str, mode: str, x: float = 0, y: float = 0) -> NodeItem:
+        """创建 GetVar 或 SetVar 节点，绑定到 var_id"""
         from app.widgets.node_editor.models import PortSpec, NodeSpec
         if mode == "get":
             ports = [PortSpec("value", port_type, "output")]
@@ -51,23 +52,22 @@ class GraphScene(QGraphicsScene):
             ]
             spec = NodeSpec("SetVar", f"Set {var_name}", "变量", ports, color="#00BCD4")
         node = NodeItem("GetVar" if mode == "get" else "SetVar", override_spec=spec)
-        # store port info in data for validator
-        # get initial value from library variables if available
         init_val = 0
-        try:
-            parent_widget = self.parent()
-            lib = parent_widget._library if hasattr(parent_widget, '_library') else None
-            if lib:
-                for v in lib.variables():
-                    if v.name == var_name:
-                        if var_type == "int": init_val = int(float(v.initial))
-                        elif var_type == "float": init_val = float(v.initial)
-                        elif var_type == "bool": init_val = v.initial.lower() in ("true", "1", "yes")
-                        else: init_val = v.initial
-                        break
-        except Exception:
-            pass
-        node.set_node_data({"_ports": [(p.name, p.port_type, p.direction) for p in ports], "var_name": var_name, "var_type": var_type, "var_value": init_val, "value": init_val})
+        if self._library:
+            for v in self._library.variables():
+                if v.var_id == var_id:
+                    try:
+                        if var_type == "int": init_val = int(float(v.value))
+                        elif var_type == "float": init_val = float(v.value)
+                        elif var_type == "bool": init_val = v.value.lower() in ("true", "1", "yes")
+                        else: init_val = v.value
+                    except (ValueError, TypeError):
+                        pass
+                    break
+        node.set_node_data({
+            "_ports": [(p.name, p.port_type, p.direction) for p in ports],
+            "var_id": var_id, "var_name": var_name, "var_type": var_type, "value": init_val,
+        })
         node.setPos(x, y)
         self.addItem(node)
         return node
@@ -158,11 +158,20 @@ class GraphScene(QGraphicsScene):
         self.clear_all()
         node_map: dict[str, NodeItem] = {}
         for nd in data.nodes:
-            node = self.add_node(nd.node_type, nd.x, nd.y)
+            node = None
+            # rebuild dynamic nodes (GetVar/SetVar) with correct ports
+            if nd.node_type in ("GetVar", "SetVar") and nd.data.get("_ports"):
+                from app.widgets.node_editor.models import PortSpec, NodeSpec
+                ports = [PortSpec(p[0], p[1], p[2]) for p in nd.data["_ports"]]
+                spec = NodeSpec(nd.node_type, nd.title, "变量", ports, color="#00BCD4")
+                node = self.add_node(nd.node_type, nd.x, nd.y, override_spec=spec)
+            else:
+                node = self.add_node(nd.node_type, nd.x, nd.y)
             node.setData(0, nd.node_id)
             node.set_node_data(nd.data)
-            if nd.title != nd.node_type:
+            if nd.title not in (nd.node_type, "", None):
                 node._title = nd.title
+                node.update()
             node_map[nd.node_id] = node
 
         for ed in data.edges:
@@ -189,6 +198,13 @@ class GraphScene(QGraphicsScene):
             return
         if src.port_type() != tgt.port_type() and src.port_type() != "any" and tgt.port_type() != "any":
             return
+        # auto-disconnect old connection on same target port
+        for old_edge in list(tgt.connected_edges):
+            self._remove_edge(old_edge)
+        # flow output can't fork, auto-disconnect if already connected
+        if src.port_type() == "flow":
+            for old_edge in list(src.connected_edges):
+                self._remove_edge(old_edge)
 
         edge = EdgeItem(src, tgt)
         src.add_edge(edge)
@@ -204,7 +220,12 @@ class GraphScene(QGraphicsScene):
 
     def start_connect(self, port: PortItem):
         self._drag_source = port
-        self._temp_edge = EdgeItem(port, None)
+        self._drag_from_input = (port.direction() == "input")
+        if self._drag_from_input:
+            # dragging from input: temp edge goes from mouse to input port
+            self._temp_edge = EdgeItem(None, port)
+        else:
+            self._temp_edge = EdgeItem(port, None)
         self.addItem(self._temp_edge)
 
     def update_connect(self, pos: QPointF):
@@ -222,7 +243,34 @@ class GraphScene(QGraphicsScene):
 
         target = self._port_at(pos)
         if target and target is not src:
-            self._add_edge(src, target)
+            # connect src→target (src is output, target is input)
+            if src.direction() == "output":
+                self._add_edge(src, target)
+            else:
+                self._add_edge(target, src)
+        elif not target and src.direction() == "input":
+            # dragged from input port to empty space → create constant
+            pt = src.port_type()
+            if pt in ("number", "int", "float"):
+                node_type = "Int"
+            elif pt == "bool":
+                node_type = "Bool"
+            elif pt == "string":
+                node_type = "String"
+            elif pt == "pose":
+                node_type = "Position"
+            else:
+                node_type = "Int"
+            node = self.add_node(node_type, pos.x(), pos.y())
+            # set sensible defaults
+            default_vals = {"Int": 1, "Float": 1.0, "Bool": True, "String": ""}
+            if node_type in default_vals:
+                node.set_node_data({"value": default_vals[node_type]})
+                node._title = str(default_vals[node_type])
+                node.update()
+            out_port = node.output_ports()[0] if node.output_ports() else None
+            if out_port:
+                self._add_edge(out_port, src)
 
     def _port_at(self, pos: QPointF, radius: float = 16.0) -> PortItem | None:
         """在 pos 周围 radius 范围内查找最近端口"""

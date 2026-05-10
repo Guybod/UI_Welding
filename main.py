@@ -31,8 +31,15 @@ def main():
     robot_svc = RobotService(cm)
 
     # 注入 TCP 发送回调给节点编辑器执行引擎
-    def _send_tcp(ty, db):
-        cm.send_call(ty, db, on_response=lambda r: None, on_error=lambda e: None)
+    # 推荐签名：send_cb(ty, db, on_response=None, on_error=None)
+    # 这样执行引擎可以正确处理 TCP err/response，而不是 fire-and-forget。
+    def _send_tcp(ty, db, on_response=None, on_error=None):
+        cm.send_call(
+            ty,
+            db,
+            on_response=(on_response if on_response else (lambda r: None)),
+            on_error=(on_error if on_error else (lambda e: print(f"[NodeEditor] {ty} 失败: {e}"))),
+        )
     NodeEditorWidget.set_global_send_callback(_send_tcp)
     cri_svc = CriService(cm)
 

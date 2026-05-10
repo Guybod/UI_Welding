@@ -1,12 +1,12 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem, QAbstractItemView,
     QDialog, QFormLayout, QLineEdit, QComboBox, QDialogButtonBox,
-    QMenu, QInputDialog, QMessageBox,
+    QMenu, QInputDialog, QMessageBox, QPlainTextEdit,
 )
 from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
 from PySide6.QtGui import QAction
 from app.i18n import I18nManager, tr, tr_node
-from app.widgets.node_editor.models import VarDef
+from app.widgets.node_editor.models import VarDef, PositionDef, VAR_PORT_TYPE
 
 CAT_I18N = {
     "基础": "cat_base", "运动": "cat_motion", "点位": "cat_position",
@@ -20,7 +20,7 @@ CATEGORIES = [
     ("变量", []),
     ("点位", []),
     ("运动", ["MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"]),
-    ("运算", ["BreakPosition", "MakePosition", "Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod", "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
+    ("运算", ["BreakPosition", "MakePosition", "ArrayGet", "ArrayLen", "Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod", "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
     ("逻辑", ["If", "For", "While", "And", "Or", "Not", "Xor", "Gt", "Lt", "Eq", "Ge", "Le"]),
     ("字符串", ["StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen", "Num2Str", "Bool2Str"]),
     ("IO", ["SetDO", "ReadDI", "SetAO", "ReadAI"]),
@@ -59,7 +59,8 @@ class _DraggableTree(QTreeWidget):
                 var_name = item.data(0, Qt.UserRole + 1)
                 var_type = item.data(0, Qt.UserRole + 2) or ""
                 port_type = item.data(0, Qt.UserRole + 3) or "any"
-                info = json.dumps({"name": var_name, "var_type": var_type, "port_type": port_type})
+                var_id = item.data(0, Qt.UserRole + 4) or ""
+                info = json.dumps({"var_id": var_id, "name": var_name, "var_type": var_type, "port_type": port_type})
                 mime.setData(MIME_VAR_GET, info.encode())
             elif node_type == "__pos__":
                 pos_name = item.data(0, Qt.UserRole + 1) or ""
@@ -79,26 +80,51 @@ class _VarDialog(QDialog):
         layout.addRow(tr("var_name"), self._name)
         self._type = QComboBox()
         self._type.addItems(["int", "float", "bool", "string", "array"])
+        self._type.currentTextChanged.connect(self._on_type_changed)
         if var:
             self._type.setCurrentText(var.var_type)
         layout.addRow(tr("var_type"), self._type)
-        self._init = QLineEdit(var.initial if var else "0")
-        layout.addRow(tr("var_initial"), self._init)
+        # 普通类型的 QLineEdit
+        self._init_line = QLineEdit()
+        # 数组类型的多行编辑
+        self._init_array = QPlainTextEdit()
+        self._init_array.setPlaceholderText('[1, 2, 3]\n或每行一个元素')
+        self._init_array.setMaximumHeight(120)
+        layout.addRow(tr("var_initial"), self._init_line)
+        layout.addRow("", self._init_array)
+        self._init_array.hide()
+        # 设置初始值
+        init_val = var.value if var else "0"
+        if (var and var.var_type == "array") or (not var and False):
+            self._init_array.setPlainText(init_val)
+        else:
+            self._init_line.setText(init_val)
+        self._on_type_changed(self._type.currentText())
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addRow(btns)
 
+    def _on_type_changed(self, t: str):
+        is_array = (t == "array")
+        self._init_line.setVisible(not is_array)
+        self._init_array.setVisible(is_array)
+
     def result(self) -> VarDef:
-        return VarDef(name=self._name.text().strip(), var_type=self._type.currentText(), initial=self._init.text())
+        t = self._type.currentText()
+        if t == "array":
+            val = self._init_array.toPlainText().strip()
+        else:
+            val = self._init_line.text().strip()
+        return VarDef(name=self._name.text().strip(), var_type=t, value=val)
 
 
 class NodeLibraryPanel(QWidget):
     node_requested = Signal(str)
-    var_get_requested = Signal(str, str, str)   # var_name, var_type, port_type
-    var_set_requested = Signal(str, str, str)
+    var_get_requested = Signal(str, str, str, str)   # var_id, var_name, var_type, port_type
+    var_set_requested = Signal(str, str, str, str)
     variables_changed = Signal(list)
-    position_requested = Signal(str)  # position name
+    position_requested = Signal(str, str)  # pos_id, name
     positions_changed = Signal(list)
 
     def __init__(self, parent=None):
@@ -107,7 +133,7 @@ class NodeLibraryPanel(QWidget):
         self.setMinimumWidth(180)
         self.setMaximumWidth(280)
         self._variables: list[VarDef] = []
-        self._positions: list[str] = []  # position names
+        self._positions: list[PositionDef] = []
         self._var_category: QTreeWidgetItem | None = None
         self._pos_category: QTreeWidgetItem | None = None
 
@@ -161,11 +187,11 @@ class NodeLibraryPanel(QWidget):
     def variables(self) -> list[VarDef]:
         return self._variables
 
-    def set_positions(self, positions: list[str]):
+    def set_positions(self, positions: list[PositionDef]):
         self._positions = positions
         self._refresh_pos_items()
 
-    def positions(self) -> list[str]:
+    def positions(self) -> list[PositionDef]:
         return self._positions
 
     def _refresh_pos_items(self):
@@ -173,10 +199,11 @@ class NodeLibraryPanel(QWidget):
             return
         for i in range(self._pos_category.childCount() - 1, -1, -1):
             self._pos_category.removeChild(self._pos_category.child(i))
-        for pname in self._positions:
-            item = QTreeWidgetItem([pname])
+        for p in self._positions:
+            item = QTreeWidgetItem([p.name])
             item.setData(0, Qt.UserRole, "__pos__")
-            item.setData(0, Qt.UserRole + 1, pname)
+            item.setData(0, Qt.UserRole + 1, p.name)
+            item.setData(0, Qt.UserRole + 2, p.pos_id)
             item.setFlags(item.flags() | Qt.ItemIsDragEnabled)
             self._pos_category.addChild(item)
 
@@ -194,6 +221,7 @@ class NodeLibraryPanel(QWidget):
             item.setData(0, Qt.UserRole + 1, v.name)
             item.setData(0, Qt.UserRole + 2, v.var_type)
             item.setData(0, Qt.UserRole + 3, port_type)
+            item.setData(0, Qt.UserRole + 4, v.var_id)
             item.setFlags(item.flags() | Qt.ItemIsDragEnabled)
             self._var_category.addChild(item)
 
@@ -243,18 +271,25 @@ class NodeLibraryPanel(QWidget):
     def _emit_var_get(self, name):
         v = next((x for x in self._variables if x.name == name), None)
         if v:
-            self.var_get_requested.emit(name, v.var_type, VAR_TYPES.get(v.var_type, "any"))
+            port_type = VAR_PORT_TYPE.get(v.var_type, "any")
+            self.var_get_requested.emit(v.var_id, name, v.var_type, port_type)
 
     def _emit_var_set(self, name):
         v = next((x for x in self._variables if x.name == name), None)
         if v:
-            self.var_set_requested.emit(name, v.var_type, VAR_TYPES.get(v.var_type, "any"))
+            port_type = VAR_PORT_TYPE.get(v.var_type, "any")
+            self.var_set_requested.emit(v.var_id, name, v.var_type, port_type)
 
     def _on_add_variable(self):
         dlg = _VarDialog(self)
         if dlg.exec():
             v = dlg.result()
             if v.name:
+                # 禁止同名变量
+                existing = self._variables
+                if any(x.name == v.name for x in existing):
+                    QMessageBox.warning(self, tr("var_edit"), f"变量名 '{v.name}' 已存在")
+                    return
                 self._variables.append(v)
                 self._refresh_var_items()
                 self.variables_changed.emit(self._variables)
@@ -267,7 +302,11 @@ class NodeLibraryPanel(QWidget):
     def _on_add_position(self):
         name, ok = QInputDialog.getText(self, tr("pos_add"), tr("pos_name"))
         if ok and name.strip():
-            self._positions.append(name.strip())
+            if any(p.name == name.strip() for p in self._positions):
+                QMessageBox.warning(self, tr("pos_add"), f"点位名 '{name.strip()}' 已存在")
+                return
+            p = PositionDef(name=name.strip())
+            self._positions.append(p)
             self._refresh_pos_items()
             self.positions_changed.emit(self._positions)
 
@@ -300,7 +339,8 @@ class NodeLibraryPanel(QWidget):
                 self._tree.visualItemRect(item).center()
             ))
         elif node_type == "__pos__":
-            name = item.data(0, Qt.UserRole + 1)
-            self.position_requested.emit(name)
+            pos_id = item.data(0, Qt.UserRole + 2) or ""
+            name = item.data(0, Qt.UserRole + 1) or ""
+            self.position_requested.emit(pos_id, name)
         elif node_type:
             self.node_requested.emit(node_type)

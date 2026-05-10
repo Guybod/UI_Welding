@@ -35,6 +35,7 @@ NODE_CATEGORY = {
     "If": "逻辑", "For": "逻辑", "While": "逻辑",
     "Compare": "逻辑", "And": "逻辑", "Or": "逻辑", "Not": "逻辑",
     "Int": "常量", "Float": "常量", "Bool": "常量", "String": "常量", "Array": "常量",
+    "ArrayGet": "运算", "ArrayLen": "运算",
     "BreakPosition": "运算", "MakePosition": "运算",
     "Add": "运算", "Sub": "运算", "Mul": "运算", "Div": "运算",
     "Square": "运算", "Sqrt": "运算", "MatMulL": "运算", "MatMulR": "运算",
@@ -108,8 +109,11 @@ _register(NodeSpec("MoveCircle", "MoveCircle", "运动", [
 _register(NodeSpec("MovePath", "MovePath", "运动", [
     PortSpec("flow", "flow", "input"),
     PortSpec("flow", "flow", "output"),
-    PortSpec("poses", "pose", "input"),
-    PortSpec("poses", "pose", "input"),
+    # 初版先给 3 个固定点位输入，避免多个端口同名导致保存/加载/连线覆盖。
+    # 后续如果要任意数量点位，再做动态端口。
+    PortSpec("pose_1", "pose", "input"),
+    PortSpec("pose_2", "pose", "input"),
+    PortSpec("pose_3", "pose", "input"),
 ]))
 _register(NodeSpec("SetDO", "SetDO", "IO", [
     PortSpec("flow", "flow", "input"),
@@ -146,9 +150,12 @@ _register(NodeSpec("If", "If", "逻辑", [
 ]))
 _register(NodeSpec("For", "For", "逻辑", [
     PortSpec("flow", "flow", "input"),
-    PortSpec("count", "number", "input"),
+    PortSpec("start", "number", "input"),
+    PortSpec("end", "number", "input"),
+    PortSpec("step", "number", "input"),
     PortSpec("body", "flow", "output"),
     PortSpec("done", "flow", "output"),
+    PortSpec("index", "number", "output"),
 ]))
 _register(NodeSpec("Compare", "Compare", "逻辑", [
     PortSpec("a", "any", "input"),
@@ -170,6 +177,10 @@ _register(NodeSpec("String", "String", "变量", [
 _register(NodeSpec("Array", "Array", "变量", [
     PortSpec("value", "any", "output"),
 ]))
+# 变量引用节点 (动态端口, 运行时根据 var_type 创建)
+_register(NodeSpec("GetVar", "GetVar", "变量", []))
+_register(NodeSpec("SetVar", "SetVar", "变量", []))
+VAR_PORT_TYPE = {"int": "number", "float": "number", "bool": "bool", "string": "string", "array": "any"}
 # 点位拆分/组合
 _register(NodeSpec("BreakPosition", "BreakPos", "运算", [
     PortSpec("pose", "pose", "input"),
@@ -182,31 +193,31 @@ _register(NodeSpec("MakePosition", "MakePos", "运算", [
     PortSpec("pose", "pose", "output"),
 ]))
 # 运算
-_register(NodeSpec("Add", "Add", "运算", [
+_register(NodeSpec("Add", "A + B", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Sub", "Sub", "运算", [
+_register(NodeSpec("Sub", "A - B", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Mul", "Mul", "运算", [
+_register(NodeSpec("Mul", "A x B", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Div", "Div", "运算", [
+_register(NodeSpec("Div", "A / B", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Square", "Square", "运算", [
+_register(NodeSpec("Square", "A^2", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Sqrt", "Sqrt", "运算", [
+_register(NodeSpec("Sqrt", "VA", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
@@ -221,47 +232,47 @@ _register(NodeSpec("MatMulR", "MatMulR", "运算", [
     PortSpec("result", "pose", "output"),
 ]))
 # 比较
-_register(NodeSpec("Gt", "Gt", "逻辑", [
+_register(NodeSpec("Gt", "A > B", "逻辑", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "bool", "output"),
 ]))
-_register(NodeSpec("Lt", "Lt", "逻辑", [
+_register(NodeSpec("Lt", "A < B", "逻辑", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "bool", "output"),
 ]))
-_register(NodeSpec("Eq", "Eq", "逻辑", [
+_register(NodeSpec("Eq", "A == B", "逻辑", [
     PortSpec("a", "any", "input"),
     PortSpec("b", "any", "input"),
     PortSpec("result", "bool", "output"),
 ]))
-_register(NodeSpec("Ge", "Ge", "逻辑", [
+_register(NodeSpec("Ge", "A >= B", "逻辑", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "bool", "output"),
 ]))
-_register(NodeSpec("Le", "Le", "逻辑", [
+_register(NodeSpec("Le", "A <= B", "逻辑", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "bool", "output"),
 ]))
 # 数学补充
-_register(NodeSpec("Pow", "Pow", "运算", [
+_register(NodeSpec("Pow", "A^B", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Mod", "Mod", "运算", [
+_register(NodeSpec("Mod", "A % B", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("b", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Abs", "Abs", "运算", [
+_register(NodeSpec("Abs", "|A|", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
-_register(NodeSpec("Neg", "Neg", "运算", [
+_register(NodeSpec("Neg", "-A", "运算", [
     PortSpec("a", "number", "input"),
     PortSpec("result", "number", "output"),
 ]))
@@ -286,19 +297,19 @@ _register(NodeSpec("Rad2Deg", "Rad2Deg", "运算", [
     PortSpec("result", "number", "output"),
 ]))
 # 逻辑补充
-_register(NodeSpec("Xor", "Xor", "逻辑", [
+_register(NodeSpec("Xor", "A ^ B", "逻辑", [
     PortSpec("a", "bool", "input"),
     PortSpec("b", "bool", "input"),
     PortSpec("result", "bool", "output"),
 ]))
 # 字符串补充
-_register(NodeSpec("StrReplace", "StrReplace", "字符串", [
+_register(NodeSpec("StrReplace", "Replace", "字符串", [
     PortSpec("str", "string", "input"),
     PortSpec("old", "string", "input"),
     PortSpec("new", "string", "input"),
     PortSpec("result", "string", "output"),
 ]))
-_register(NodeSpec("StrLen", "StrLen", "字符串", [
+_register(NodeSpec("StrLen", "Length", "字符串", [
     PortSpec("str", "string", "input"),
     PortSpec("result", "number", "output"),
 ]))
@@ -319,28 +330,38 @@ _register(NodeSpec("Bool2Str", "Bool2Str", "字符串", [
     PortSpec("a", "bool", "input"),
     PortSpec("result", "string", "output"),
 ]))
-# 字符串
+# 数组
+_register(NodeSpec("ArrayGet", "Array[i]", "运算", [
+    PortSpec("array", "any", "input"),
+    PortSpec("index", "number", "input"),
+    PortSpec("value", "any", "output"),
+]))
+_register(NodeSpec("ArrayLen", "Length", "运算", [
+    PortSpec("array", "any", "input"),
+    PortSpec("count", "number", "output"),
+]))
+# 基础
 _register(NodeSpec("Wait", "Wait", "基础", [
     PortSpec("flow", "flow", "input"),
     PortSpec("flow", "flow", "output"),
-    PortSpec("duration", "number", "input"),
+    PortSpec("duration_ms", "number", "input"),
 ]))
 _register(NodeSpec("Print", "Print", "基础", [
     PortSpec("flow", "flow", "input"),
     PortSpec("flow", "flow", "output"),
     PortSpec("value", "any", "input"),
 ]))
-_register(NodeSpec("StrConcat", "StrConcat", "字符串", [
+_register(NodeSpec("StrConcat", "A + B", "字符串", [
     PortSpec("a", "string", "input"),
     PortSpec("b", "string", "input"),
     PortSpec("result", "string", "output"),
 ]))
-_register(NodeSpec("StrSplit", "StrSplit", "字符串", [
+_register(NodeSpec("StrSplit", "Split", "字符串", [
     PortSpec("str", "string", "input"),
     PortSpec("sep", "string", "input"),
     PortSpec("result", "any", "output"),
 ]))
-_register(NodeSpec("StrFind", "StrFind", "字符串", [
+_register(NodeSpec("StrFind", "Find", "字符串", [
     PortSpec("str", "string", "input"),
     PortSpec("sub", "string", "input"),
     PortSpec("result", "number", "output"),
@@ -372,9 +393,30 @@ class EdgeData:
 
 @dataclass
 class VarDef:
-    name: str
-    var_type: str  # "int", "float", "bool", "string", "array"
-    initial: str = ""  # JSON-encoded initial value
+    var_id: str = ""
+    name: str = ""
+    var_type: str = "int"  # "int", "float", "bool", "string", "array"
+    value: str = ""  # current value (JSON-compatible string)
+
+    def __post_init__(self):
+        if not self.var_id:
+            import uuid
+            self.var_id = str(uuid.uuid4())[:8]
+
+
+@dataclass
+class PositionDef:
+    pos_id: str = ""
+    name: str = ""
+    jp: list = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    cp: dict = field(default_factory=lambda: {"x": 0, "y": 0, "z": 0, "a": 0, "b": 0, "c": 0})
+    ep: list = field(default_factory=list)
+    optional: dict = field(default_factory=lambda: {"speed": 200, "acc": 500, "blend": 0, "relativeBlend": 0})
+
+    def __post_init__(self):
+        if not self.pos_id:
+            import uuid
+            self.pos_id = str(uuid.uuid4())[:8]
 
 
 @dataclass
@@ -383,4 +425,4 @@ class GraphData:
     nodes: list[NodeData] = field(default_factory=list)
     edges: list[EdgeData] = field(default_factory=list)
     variables: list[VarDef] = field(default_factory=list)
-    positions: list[str] = field(default_factory=list)
+    positions: list[PositionDef] = field(default_factory=list)

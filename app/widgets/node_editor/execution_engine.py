@@ -1,10 +1,23 @@
+import inspect
 import time
+from typing import Any, Callable
+
+import math as _math
+
 from PySide6.QtCore import QObject, Signal, QTimer
-from app.widgets.node_editor.models import GraphData, NODE_SPECS
+
+from app.widgets.node_editor.models import GraphData, NodeData, NODE_SPECS
 
 
 class ExecutionEngine(QObject):
-    """图执行引擎 — DryRun + Online(真实TCP指令)"""
+    """节点图执行引擎。
+
+    设计原则：
+    - DryRun 只模拟执行，不发送 TCP。
+    - Online 只允许已明确实现的节点真实发送 TCP。
+    - 运动节点发送 Robot/move 后，不能用 TCP response 判断完成，必须等待 CRI moving。
+    - 禁止 time.sleep / 阻塞 while，全部用 QTimer 状态机推进。
+    """
 
     node_highlight = Signal(str, bool)
     log_emitted = Signal(str)
@@ -12,28 +25,50 @@ class ExecutionEngine(QObject):
     graph_finished = Signal()
     graph_stopped = Signal()
 
-    MOTION_TIMEOUT_START = 3000    # ms to wait for moving=true
-    MOTION_TIMEOUT_FINISH = 60000  # ms to wait for moving=false
-    POLL_INTERVAL = 100            # ms between polls
+    MOTION_TIMEOUT_START = 1000      # 等待 moving false -> true 的默认超时，ms
+    MOTION_TIMEOUT_FINISH = 60000    # 等待 moving true -> false 的默认超时，ms
+    POLL_INTERVAL = 100              # CRI 状态轮询周期，ms
+
+    MOTION_TYPE_MAP = {
+        "MoveJ": "movJ",
+        "MoveL": "movL",
+        "MoveC": "movC",
+        "MoveCircle": "movCircle",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._send_cb = None       # callable(ty, db) for TCP commands
+        self._send_cb: Callable | None = None
         self._graph: GraphData | None = None
         self._flow_map: dict[str, str] = {}
         self._data_sources: dict[tuple[str, str], tuple[str, str]] = {}
-        self._node_idx: dict = {}
+        self._node_idx: dict[str, NodeData] = {}
         self._path: list[str] = []
         self._cursor: int = 0
         self._running: bool = False
         self._online: bool = False
+        self._stopping: bool = False
+
         self._poll_timer: QTimer | None = None
         self._motion_started: bool = False
-        self._wait_start: float = 0
+        self._motion_phase: str = "idle"
+        self._wait_start_ms: float = 0.0
+        self._active_node: NodeData | None = None
+        self._active_target: dict | None = None
+        self._run_token: int = 0
+        self._return_stack: list[tuple[str, float, float, float]] = []  # (for_node_id, current_i, end, step)
 
-    # ── public ──
+    # ───────────────────────── public ─────────────────────────
 
-    def set_send_callback(self, cb):
+    def set_send_callback(self, cb: Callable):
+        """设置 TCP 发送回调。
+
+        推荐签名：
+            cb(ty, db, on_response=None, on_error=None)
+
+        兼容旧签名：
+            cb(ty, db)
+        """
         self._send_cb = cb
 
     def run_dry(self, graph: GraphData):
@@ -43,295 +78,787 @@ class ExecutionEngine(QObject):
         self._start(graph, online=True)
 
     def stop(self):
+        """停止图执行。
+
+        Online 模式下会尽量发送 Robot/stopMove。这里不处理 Jog/moveTo，
+        因为节点执行引擎当前不应该启动 Jog/moveTo 心跳。
+        """
         if not self._running:
             return
+
+        self._stopping = True
         self._running = False
-        if self._poll_timer:
-            self._poll_timer.stop()
+        self._run_token += 1
+        self._stop_poll_timer()
         self._clear_highlight()
-        # send stopMove if in online mode
-        if self._online and self._send_cb:
-            try:
-                self._send_cb("Robot/stopMove", {})
-            except Exception:
-                pass
-        self.log_emitted.emit("[执行] 已停止")
+
+        if self._online:
+            self._send_command(
+                "Robot/stopMove",
+                {},
+                on_response=lambda _db: None,
+                on_error=lambda e: self._log(f"[停止] Robot/stopMove 失败: {e}"),
+            )
+
+        self._log("[执行] 已停止")
         self.graph_stopped.emit()
 
-    # ── start ──
+    # ───────────────────────── start / step ─────────────────────────
 
     def _start(self, graph: GraphData, online: bool):
+        self._stop_poll_timer()
         self._graph = graph
         self._online = online
+        self._stopping = False
+        self._run_token += 1
         self._build_maps()
         self._build_path()
         self._cursor = 0
         self._running = True
         self._motion_started = False
+        self._motion_phase = "idle"
+        self._active_node = None
+        self._active_target = None
+
         mode = "[在线]" if online else "[DryRun]"
         self.graph_started.emit()
-        self.log_emitted.emit(f"{mode} 开始执行")
-        self._step()
+        self._log(f"{mode} 开始执行")
 
-    # ── step ──
+        if not self._path:
+            self._fail_graph("未找到从 Start 开始的 flow 执行路径")
+            return
+
+        QTimer.singleShot(0, self._step)
 
     def _step(self):
         if not self._running:
             return
+
         if self._cursor >= len(self._path):
-            self._running = False
-            self.log_emitted.emit("[执行] 完成")
-            self.graph_finished.emit()
-            self._clear_highlight()
+            # check return stack: loop body finished, return to For/While
+            if self._return_stack:
+                ret = self._return_stack.pop()
+                for_node_id, i, end, step = ret
+                cursor = self._index_of(for_node_id)
+                if cursor < len(self._path):
+                    self._cursor = cursor
+                    QTimer.singleShot(50, lambda: self._step())
+                    return
+            self._finish_graph()
             return
 
         node_id = self._path[self._cursor]
-        node = self._node_idx[node_id]
+        node = self._node_idx.get(node_id)
+        if not node:
+            self._fail_graph(f"执行路径中的节点不存在: {node_id}")
+            return
+
         self._clear_highlight()
         self.node_highlight.emit(node_id, True)
+        self._active_node = node
 
         nt = node.node_type
-        self.log_emitted.emit(f"  ▶ {node.title} ({nt})")
+        self._log(f"  ▶ {node.title} ({nt})")
+
+        if nt in ("Start", "End", "Position"):
+            self._execute_passive(node)
+            return
+
+        if nt == "Wait":
+            self._exec_wait(node)
+            return
 
         if nt in ("MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"):
             if self._online:
                 self._exec_motion_online(node)
-                return  # will continue in poll
             else:
                 self._exec_motion_dry(node)
-        else:
-            self._execute_dry(node)
-
-        self._cursor += 1
-        QTimer.singleShot(100 if self._online else 150, self._step)
-
-    # ── motion online ──
-
-    def _exec_motion_online(self, node):
-        """发送 Robot/move 指令, 等待 CRI moving"""
-        payload = self._build_move_payload(node)
-        if payload is None:
-            self.log_emitted.emit(f"    ⚠ {node.node_type}: 无法构建运动指令")
-            self._cursor += 1
-            QTimer.singleShot(50, self._step)
             return
 
-        self.log_emitted.emit(f"    📤 Robot/move db={payload}")
-        if self._send_cb:
-            self._send_cb("Robot/move", payload)
+        if nt in ("SetDO", "SetAO", "ReadDI", "ReadAI", "SetRegister", "ReadRegister"):
+            if self._online:
+                self._exec_io_register_online(node)
+            else:
+                self._execute_dry(node)
+                self._advance_later(150)
+            return
 
+        if nt in ("If", "For", "While"):
+            self._exec_control_flow(node)
+            return
+
+        self._execute_dry(node)
+        self._advance_later(100 if self._online else 150)
+
+    def _execute_passive(self, node: NodeData):
+        if node.node_type == "End":
+            self._log("  ⏹ 到达 End")
+        elif node.node_type == "Position":
+            self._log(f"    点位: {node.data.get('name', node.title)}")
+        self._advance_later(80)
+
+    def _advance_later(self, delay_ms: int = 50):
+        token = self._run_token
+        self._cursor += 1
+        QTimer.singleShot(delay_ms, lambda t=token: self._step_if_token(t))
+
+    def _step_if_token(self, token: int):
+        if token != self._run_token or not self._running:
+            return
+        self._step()
+
+    # ───────────────────────── online motion ─────────────────────────
+
+    def _exec_motion_online(self, node: NodeData):
+        if node.node_type == "MovePath":
+            self._fail_node(node, "MovePath 在线执行暂未开放，请先使用 MoveJ/MoveL 或 DryRun")
+            return
+
+        db = self._build_move_db(node)
+        if db is None:
+            self._fail_node(node, f"{node.node_type}: 无法构建合法运动指令")
+            return
+
+        self._log(f"    📤 发送运动指令")
+        token = self._run_token
+
+        def _on_response(_db):
+            if token != self._run_token or not self._running:
+                return
+            self._begin_motion_wait(node, db)
+
+        def _on_error(e):
+            if token != self._run_token:
+                return
+            self._fail_node(node, f"Robot/move 发送失败: {e}")
+
+        self._send_command("Robot/move", db, on_response=_on_response, on_error=_on_error)
+
+    def _begin_motion_wait(self, node: NodeData, db: list[dict]):
+        self._active_node = node
+        self._active_target = self._extract_motion_target(node, db)
         self._motion_started = False
-        self._wait_start = time.time() * 1000
+        self._motion_phase = "wait_start"
+        self._wait_start_ms = self._now_ms()
+        self._stop_poll_timer()
         self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(self.POLL_INTERVAL)
         self._poll_timer.timeout.connect(self._poll_motion)
-        self._poll_timer.start(self.POLL_INTERVAL)
+        self._poll_timer.start()
+        self._log("    ⏳ 等待 CRI moving: false → true")
 
     def _poll_motion(self):
+        if not self._running or not self._active_node:
+            self._stop_poll_timer()
+            return
+
         from services.robot_realtime_state import RobotRealtimeState
+
         state = RobotRealtimeState.instance()
-        moving = state.is_moving()
-        elapsed = time.time() * 1000 - self._wait_start
+        moving = bool(state.is_moving())
+        elapsed = self._now_ms() - self._wait_start_ms
 
         if not self._motion_started:
             if moving:
                 self._motion_started = True
-                self._wait_start = time.time() * 1000
-                self.log_emitted.emit("    🏃 运动中...")
-            elif elapsed > self.MOTION_TIMEOUT_START:
-                self.log_emitted.emit("    ⚠ 运动启动超时, 跳过")
-                self._finish_motion_poll()
+                self._motion_phase = "wait_finish"
+                self._wait_start_ms = self._now_ms()
+                self._log("    🏃 CRI moving=true，运动已开始")
                 return
+
+            if elapsed >= self.MOTION_TIMEOUT_START:
+                if self._is_target_reached(state, self._active_target):
+                    self._log("    ✅ 未检测到 moving=true，但当前位置已接近目标，按短运动完成处理")
+                    self._finish_motion_success()
+                else:
+                    self._fail_node(self._active_node, "运动启动超时，且当前位置未接近目标")
+                return
+
         else:
             if not moving:
-                self.log_emitted.emit(f"    ✅ 运动完成 ({elapsed:.0f}ms)")
-                self._finish_motion_poll()
-                return
-            if elapsed > self.MOTION_TIMEOUT_FINISH:
-                self.log_emitted.emit("    ⚠ 运动完成超时, 跳过")
-                self._finish_motion_poll()
+                self._log(f"    ✅ CRI moving=false，运动完成 ({elapsed:.0f}ms)")
+                self._finish_motion_success()
                 return
 
-    def _finish_motion_poll(self):
-        if self._poll_timer:
-            self._poll_timer.stop()
-            self._poll_timer = None
-        self._cursor += 1
-        if self._running:
-            QTimer.singleShot(50, self._step)
+            if elapsed >= self.MOTION_TIMEOUT_FINISH:
+                self._fail_node(self._active_node, "运动完成超时")
+                return
 
-    def _build_move_payload(self, node) -> list | None:
-        """构建 Robot/move 的 db 数组"""
+    def _finish_motion_success(self):
+        self._stop_poll_timer()
+        self._active_target = None
+        self._motion_started = False
+        self._motion_phase = "idle"
+        self._advance_later(50)
+
+    def _build_move_db(self, node: NodeData) -> list[dict] | None:
+        """构建 Robot/move 的 db 数组。"""
         nt = node.node_type
-        data = node.data
-        spec = NODE_SPECS.get(nt)
-        if not spec:
+        if nt not in self.MOTION_TYPE_MAP:
             return None
 
-        jp = None
-        cp = None
-        for p in spec.ports:
-            if p.port_type == "pose" and p.direction == "input":
-                src = self._data_sources.get((node.node_id, p.name))
-                if src:
-                    src_node = self._node_idx.get(src[0])
-                    if src_node and src_node.node_type == "Position":
-                        pd = src_node.data
-                        jp = pd.get("jp")
-                        cp_raw = pd.get("cp", {})
-                        if isinstance(cp_raw, dict):
-                            cp = [cp_raw.get("x",0), cp_raw.get("y",0), cp_raw.get("z",0),
-                                  cp_raw.get("a",0), cp_raw.get("b",0), cp_raw.get("c",0)]
-
-        if nt == "MoveJ" and jp:
-            tp = {"jp": jp, "ep": []}
-        elif cp:
-            tp = {"cp": cp, "ep": []}
-        else:
-            return None
-
-        motion = {
-            "type": nt if nt != "MovePath" else "movJ",
-            "speed": data.get("speed", 200),
-            "acc": data.get("acc", 500),
-            "blend": data.get("blend", 0),
-            "targetPoint": tp,
+        data = node.data or {}
+        motion: dict[str, Any] = {
+            "type": self.MOTION_TYPE_MAP[nt],
+            "speed": self._num(data.get("speed", 200), 200),
+            "acc": self._num(data.get("acc", 500), 500),
+            "blend": self._num(data.get("blend", 0), 0),
         }
-        return [motion]
 
-    # ── motion dryrun ──
+        if data.get("relativeBlend") not in (None, "", "?"):
+            motion["relativeBlend"] = self._num(data.get("relativeBlend"), 0)
 
-    def _exec_motion_dry(self, node):
-        spec = NODE_SPECS.get(node.node_type)
-        if not spec:
+        if nt == "MoveJ":
+            pos = self._position_for_input(node, "target")
+            jp = self._valid_jp(pos)
+            if not jp:
+                return None
+            target = {"jp": jp, "ep": self._valid_ep(pos)}
+            motion["targetPoint"] = target
+            return [motion]
+
+        if nt == "MoveL":
+            pos = self._position_for_input(node, "target")
+            cp = self._valid_cp(pos)
+            if not cp:
+                return None
+            target = {"cp": cp, "ep": self._valid_ep(pos)}
+            motion["targetPoint"] = target
+            return [motion]
+
+        if nt in ("MoveC", "MoveCircle"):
+            target_pos = self._position_for_input(node, "target")
+            middle_pos = self._position_for_input(node, "middle")
+            target_cp = self._valid_cp(target_pos)
+            middle_cp = self._valid_cp(middle_pos)
+            if not target_cp or not middle_cp:
+                return None
+            motion["targetPoint"] = {"cp": target_cp, "ep": self._valid_ep(target_pos)}
+            motion["middlePoint"] = {"cp": middle_cp}
+            if nt == "MoveCircle":
+                motion["circleNum"] = int(self._num(data.get("circleNum", 1), 1))
+            return [motion]
+
+        return None
+
+    # ───────────────────────── dry motion ─────────────────────────
+
+    def _exec_motion_dry(self, node: NodeData):
+        if node.node_type == "MovePath":
+            self._log("    🧪 MovePath DryRun：当前版本仅占位，在线执行未开放")
+            self._advance_later(150)
             return
-        for p in spec.ports:
-            if p.port_type == "pose" and p.direction == "input":
-                src = self._data_sources.get((node.node_id, p.name))
-                if src:
-                    src_node = self._node_idx.get(src[0])
-                    if src_node and src_node.node_type == "Position":
-                        pos_data = src_node.data
-                        name = pos_data.get("name", src_node.title)
-                        jp = pos_data.get("jp", [])
-                        cp = pos_data.get("cp", {})
-                        data = node.data
-                        if node.node_type == "MoveJ":
-                            target = f"jp={jp}"
-                        else:
-                            target = f"cp={cp}"
-                        self.log_emitted.emit(
-                            f"    🏃 {node.node_type} → {name} {target}"
-                            f" speed={data.get('speed','?')}mm/s"
-                        )
-                        return
-        self.log_emitted.emit(f"    ⚠ {node.node_type}: 未找到点位数据")
 
-    # ── common dryrun ──
+        db = self._build_move_db(node)
+        if db is None:
+            self._log(f"    ⚠ {node.node_type}: 无法构建合法运动指令")
+        else:
+            self._log(f"    🧪 {node.node_type} 将发送 Robot/move db={db}")
+        self._advance_later(150)
 
-    def _execute_dry(self, node):
+    # ───────────────────────── control flow: If / For / While ─────────────────────────
+
+    def _exec_control_flow(self, node: NodeData):
         nt = node.node_type
-        if nt in ("Start", "End"):
-            if nt == "End":
-                self.log_emitted.emit("  ⏹ 到达 End")
-        elif nt == "Position":
-            data = node.data
-            self.log_emitted.emit(f"    点位: {data.get('name', node.title)}")
-        elif nt == "Print":
+        if nt == "If":
+            cond = bool(self._resolve_input_raw(node, "condition"))
+            self._log(f"    ? 条件: {'True' if cond else 'False'}")
+            branch = "true" if cond else "false"
+            target = self._flow_target(node, branch)
+            if target:
+                self._cursor = self._index_of(target)
+                self._advance_later(50)
+            else:
+                self._advance_later(50)
+        elif nt == "For":
+            start = self._num(self._resolve_input_raw(node, "start"), 0)
+            end = self._num(self._resolve_input_raw(node, "end"), 10)
+            step = self._num(self._resolve_input_raw(node, "step"), 1)
+            if step == 0:
+                step = 1
+            loop_key = f"for_{node.node_id}"
+            if not hasattr(self, '_loop_counters'):
+                self._loop_counters: dict[str, float] = {}
+            if loop_key not in self._loop_counters:
+                self._loop_counters[loop_key] = start
+            i = self._loop_counters[loop_key]
+            if (step > 0 and i < end) or (step < 0 and i > end):
+                self._log(f"    🔁 For i={i}")
+                # store current index so data edges (ArrayGet) can read it
+                node.data["_for_index"] = i
+                self._loop_counters[loop_key] = i + step
+                self._return_stack.append((node.node_id, i + step, end, step))
+                target = self._flow_target(node, "body")
+                if target:
+                    self._cursor = self._index_of(target)
+                    self._advance_later(50)
+                    return
+            else:
+                self._log(f"    ✅ For 完成")
+                del self._loop_counters[loop_key]
+                target = self._flow_target(node, "done")
+                if target:
+                    self._cursor = self._index_of(target)
+            self._advance_later(50)
+        elif nt == "While":
+            cond = bool(self._resolve_input_raw(node, "condition"))
+            if cond:
+                self._log(f"    🔁 While 条件为 True, 执行循环体")
+                target = self._flow_target(node, "body")
+                if target:
+                    self._cursor = self._index_of(target)
+                    self._advance_later(50)
+                    return
+            else:
+                self._log(f"    ✅ While 条件为 False, 退出")
+                target = self._flow_target(node, "done")
+                if target:
+                    self._cursor = self._index_of(target)
+            self._advance_later(50)
+
+    def _flow_target(self, node: NodeData, port_name: str) -> str | None:
+        """找到某 flow 输出端口连接的目标节点"""
+        for e in self._graph.edges:
+            if e.source_node_id == node.node_id and e.source_port_name == port_name:
+                return e.target_node_id
+        return None
+
+    def _index_of(self, node_id: str) -> int:
+        """找到 node_id 在 _path 中的索引"""
+        for i, nid in enumerate(self._path):
+            if nid == node_id:
+                return i
+        return len(self._path)
+
+    # ───────────────────────── wait / IO / register ─────────────────────────
+
+    def _exec_wait(self, node: NodeData):
+        ms = self._num(self._resolve_input_raw(node, "duration_ms"), 0)
+        if ms < 0:
+            self._fail_node(node, f"Wait duration_ms 不能为负数: {ms}")
+            return
+        ms = int(ms)
+        self._log(f"    ⏱ 等待 {ms} ms")
+        token = self._run_token
+        QTimer.singleShot(ms, lambda t=token: self._wait_done(t))
+
+    def _wait_done(self, token: int):
+        if token != self._run_token or not self._running:
+            return
+        self._advance_later(0)
+
+    def _exec_io_register_online(self, node: NodeData):
+        nt = node.node_type
+        cmd = self._build_io_register_command(node)
+        if cmd is None:
+            self._fail_node(node, f"在线模式无法构建 {nt} 指令")
+            return
+
+        ty, db = cmd
+        self._log(f"    📤 {ty} db={db}")
+        token = self._run_token
+
+        def _on_response(resp_db):
+            if token != self._run_token or not self._running:
+                return
+            self._log(f"    ✅ {nt} 完成 response={resp_db}")
+            self._advance_later(50)
+
+        def _on_error(e):
+            if token != self._run_token:
+                return
+            self._fail_node(node, f"{nt} 执行失败: {e}")
+
+        self._send_command(ty, db, on_response=_on_response, on_error=_on_error)
+
+    def _build_io_register_command(self, node: NodeData) -> tuple[str, Any] | None:
+        nt = node.node_type
+        data = node.data or {}
+
+        if nt in ("SetDO", "SetAO"):
+            io_type = "DO" if nt == "SetDO" else "AO"
+            port = int(self._num(self._resolve_input_raw(node, "port"), data.get("port", 0)))
+            value = self._resolve_input_raw(node, "value")
+            if value == "?":
+                value = data.get("value", 0)
+            return "IOManager/SetIOValue", {"type": io_type, "port": port, "value": value}
+
+        if nt in ("ReadDI", "ReadAI"):
+            io_type = "DI" if nt == "ReadDI" else "AI"
+            port = int(self._num(self._resolve_input_raw(node, "port"), data.get("port", 0)))
+            return "IOManager/GetIOValue", [{"type": io_type, "port": port}]
+
+        if nt == "SetRegister":
+            address = int(self._num(self._resolve_input_raw(node, "address"), data.get("address", 0)))
+            value = self._resolve_input_raw(node, "value")
+            if value == "?":
+                value = data.get("value", 0)
+            return "RegisterManager/SetRegisterValue", {"address": address, "value": value}
+
+        if nt == "ReadRegister":
+            address = int(self._num(self._resolve_input_raw(node, "address"), data.get("address", 0)))
+            return "RegisterManager/GetRegisterValue", [address]
+
+        return None
+
+    # ───────────────────────── dry common ─────────────────────────
+
+    def _execute_dry(self, node: NodeData):
+        nt = node.node_type
+        if nt == "Print":
             val = self._resolve_input_raw(node, "value")
-            self.log_emitted.emit(f"    🖨 打印: {val}")
-        elif nt == "Wait":
-            dur = self._resolve_input_raw(node, "duration")
-            self.log_emitted.emit(f"    等待 {dur} 秒")
+            self._log(f"    🖨 打印: {val}")
         elif nt in ("SetDO", "SetAO"):
             port = self._resolve_input_raw(node, "port")
             value = self._resolve_input_raw(node, "value")
-            self.log_emitted.emit(f"    设置 {nt} port={port} val={value}")
+            self._log(f"    设置 {nt} port={port} val={value}")
         elif nt in ("ReadDI", "ReadAI"):
             port = self._resolve_input_raw(node, "port")
-            self.log_emitted.emit(f"    读取 {nt} port={port}")
+            self._log(f"    读取 {nt} port={port}")
         elif nt in ("SetRegister", "ReadRegister"):
             addr = self._resolve_input_raw(node, "address")
             val = self._resolve_input_raw(node, "value")
-            self.log_emitted.emit(f"    {nt} addr={addr} val={val}")
-        elif nt in ("Add", "Sub", "Mul", "Div", "Pow", "Mod",
-                     "Gt", "Lt", "Eq", "Ge", "Le"):
-            a = self._resolve_input_raw(node, "a")
-            b = self._resolve_input_raw(node, "b")
-            self.log_emitted.emit(f"    {nt}: {a} {self._op_symbol(nt)} {b}")
-        elif nt in ("Int", "Float", "Bool", "String", "Array"):
-            self.log_emitted.emit(f"    常量 {nt}")
+            self._log(f"    {nt} addr={addr} val={val}")
+        elif nt in ("Add", "Sub", "Mul", "Div", "Pow", "Mod", "Square", "Sqrt", "Abs", "Neg",
+                     "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "Int2Float", "Float2Int",
+                     "And", "Or", "Not", "Xor", "Gt", "Lt", "Eq", "Ge", "Le",
+                     "StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen", "Num2Str", "Bool2Str",
+                     "MatMulL", "MatMulR", "BreakPosition", "MakePosition"):
+            val = self._eval_data(node.node_id)
+            self._log(f"    {node.title} = {val}")
+        elif nt in ("Int", "Float", "Bool", "String", "Array", "GetVar", "SetVar"):
+            pass  # 被动数据节点，不打印
+        else:
+            self._log(f"    {nt}: 当前阶段仅记录日志")
 
-    def _resolve_input_raw(self, node, port_name):
-        """解析输入端口的值 (返回原始 Python 值)"""
-        src = self._data_sources.get((node.node_id, port_name))
-        if not src:
-            return node.data.get(port_name, "?")
-        src_node_id, src_port_name = src
-        src_node = self._node_idx.get(src_node_id)
-        if not src_node:
-            return "?"
-        if src_node.node_type == "GetVar":
-            return src_node.data.get("var_value", "?")
-        if src_node.node_type in ("Int",):
-            return src_node.data.get("value", 0)
-        if src_node.node_type in ("Float",):
-            return src_node.data.get("value", 0.0)
-        if src_node.node_type == "Bool":
-            return src_node.data.get("value", False)
-        if src_node.node_type == "String":
-            return src_node.data.get("value", "")
-        if src_node.node_type == "Position":
-            return src_node.data.get("name", src_node.title)
-        return "?"
-
-    # ── common ──
+    # ───────────────────────── graph maps ─────────────────────────
 
     def _build_maps(self):
+        if not self._graph:
+            return
         self._node_idx = {n.node_id: n for n in self._graph.nodes}
         self._flow_map.clear()
         self._data_sources.clear()
+
         for e in self._graph.edges:
-            is_flow = False
             src_node = self._node_idx.get(e.source_node_id)
-            if src_node:
-                src_spec = NODE_SPECS.get(src_node.node_type)
-                if src_spec:
-                    for p in src_spec.ports:
-                        if p.name == e.source_port_name and p.port_type == "flow" and p.direction == "output":
-                            is_flow = True
-                            break
-            # also check dynamic ports stored in data
-            if not is_flow and src_node and src_node.data.get("_ports"):
-                for pn, pt, pd in src_node.data["_ports"]:
-                    if pn == e.source_port_name and pt == "flow" and pd == "output":
-                        is_flow = True
-                        break
-            if is_flow:
-                self._flow_map[e.source_node_id] = e.target_node_id
+            if self._is_flow_output(src_node, e.source_port_name):
+                # 控制流节点优先用 done/false 端作为主线，body/true 由引擎分支跳转
+                existing = self._flow_map.get(e.source_node_id)
+                if existing and e.source_port_name in ("done", "false"):
+                    self._flow_map[e.source_node_id] = e.target_node_id
+                elif not existing:
+                    self._flow_map[e.source_node_id] = e.target_node_id
             else:
-                self._data_sources[(e.target_node_id, e.target_port_name)] = (e.source_node_id, e.source_port_name)
+                self._data_sources[(e.target_node_id, e.target_port_name)] = (
+                    e.source_node_id,
+                    e.source_port_name,
+                )
 
     def _build_path(self):
         self._path = []
-        start_id = None
-        for n in self._graph.nodes:
-            if n.node_type == "Start":
-                start_id = n.node_id
-                break
+        if not self._graph:
+            return
+        start_id = next((n.node_id for n in self._graph.nodes if n.node_type == "Start"), None)
         if not start_id:
             return
+
         cur = start_id
-        while cur:
+        visited: set[str] = set()
+        while cur and cur not in visited:
+            visited.add(cur)
             self._path.append(cur)
-            if self._node_idx[cur].node_type == "End":
+            node = self._node_idx.get(cur)
+            if not node or node.node_type == "End":
                 break
             cur = self._flow_map.get(cur)
 
-    def _op_symbol(self, nt: str) -> str:
-        syms = {"Add": "+", "Sub": "-", "Mul": "x", "Div": "/", "Pow": "^",
-                "Mod": "%", "Gt": ">", "Lt": "<", "Eq": "==", "Ge": ">=", "Le": "<="}
-        return syms.get(nt, nt)
+    def _is_flow_output(self, node: NodeData | None, port_name: str) -> bool:
+        if not node:
+            return False
+        spec = NODE_SPECS.get(node.node_type)
+        if spec:
+            for p in spec.ports:
+                if p.name == port_name and p.port_type == "flow" and p.direction == "output":
+                    return True
+        for pn, pt, pd in (node.data or {}).get("_ports", []):
+            if pn == port_name and pt == "flow" and pd == "output":
+                return True
+        return False
+
+    # ───────────────────────── data helpers ─────────────────────────
+
+    def _position_for_input(self, node: NodeData, port_name: str) -> dict | None:
+        src = self._data_sources.get((node.node_id, port_name))
+        if not src:
+            return None
+        src_node = self._node_idx.get(src[0])
+        if not src_node or src_node.node_type != "Position":
+            return None
+        return src_node.data or {}
+
+    def _valid_jp(self, pos: dict | None) -> list[float] | None:
+        if not pos:
+            return None
+        jp = pos.get("jp")
+        if not isinstance(jp, list) or len(jp) < 6:
+            return None
+        try:
+            return [float(x) for x in jp[:6]]
+        except (TypeError, ValueError):
+            return None
+
+    def _valid_cp(self, pos: dict | None) -> list[float] | None:
+        if not pos:
+            return None
+        cp = pos.get("cp")
+        if isinstance(cp, dict):
+            keys = ("x", "y", "z", "a", "b", "c")
+            try:
+                return [float(cp[k]) for k in keys]
+            except (KeyError, TypeError, ValueError):
+                return None
+        if isinstance(cp, list) and len(cp) >= 6:
+            try:
+                return [float(x) for x in cp[:6]]
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _valid_ep(self, pos: dict | None) -> list:
+        if not pos:
+            return []
+        ep = pos.get("ep", [])
+        return ep if isinstance(ep, list) else []
+
+    def _extract_motion_target(self, node: NodeData, db: list[dict]) -> dict | None:
+        if not db:
+            return None
+        target = db[0].get("targetPoint", {})
+        if "jp" in target:
+            return {"kind": "jp", "value": target.get("jp")}
+        if "cp" in target:
+            return {"kind": "cp", "value": target.get("cp")}
+        return None
+
+    def _is_target_reached(self, state, target: dict | None) -> bool:
+        """短运动兜底：当前位置是否已接近目标。
+
+        初版使用保守阈值：关节 0.5deg，TCP 2mm / 1deg。
+        """
+        if not target or not state.is_valid():
+            return False
+        try:
+            if target.get("kind") == "jp":
+                current = state.current_joints_deg()
+                target_jp = target.get("value") or []
+                if len(current) < 6 or len(target_jp) < 6:
+                    return False
+                return max(abs(float(current[i]) - float(target_jp[i])) for i in range(6)) <= 0.5
+
+            if target.get("kind") == "cp":
+                current = state.current_tcp_pose_mm_deg()
+                target_cp = target.get("value") or []
+                if len(current) < 6 or len(target_cp) < 6:
+                    return False
+                pos_err = max(abs(float(current[i]) - float(target_cp[i])) for i in range(3))
+                rot_err = max(abs(float(current[i]) - float(target_cp[i])) for i in range(3, 6))
+                return pos_err <= 2.0 and rot_err <= 1.0
+        except Exception:
+            return False
+        return False
+
+    def _resolve_input_raw(self, node: NodeData, port_name: str):
+        """递归解析输入端口的计算值。"""
+        src = self._data_sources.get((node.node_id, port_name))
+        if not src:
+            return (node.data or {}).get(port_name, "?")
+        src_node_id, _src_port_name = src
+        return self._eval_data(src_node_id)
+
+    def _eval_data(self, node_id: str):
+        """递归求值数据节点, 返回其 output 值。缓存避免重复计算。"""
+        if not hasattr(self, '_value_cache'):
+            self._value_cache: dict[str, object] = {}
+        if node_id in self._value_cache:
+            return self._value_cache[node_id]
+
+        node = self._node_idx.get(node_id)
+        if not node:
+            return "?"
+        nt = node.node_type
+        data = node.data or {}
+
+        def resolve(port_name, default="?"):
+            src = self._data_sources.get((node_id, port_name))
+            if src:
+                return self._eval_data(src[0])
+            return data.get(port_name, default)
+
+        result = self._compute_node(nt, resolve, data)
+        self._value_cache[node_id] = result
+        return result
+
+    def _compute_node(self, nt: str, resolve, data: dict):
+        """根据节点类型计算结果值"""
+        if nt == "GetVar":
+            return data.get("value", 0)
+        if nt == "Int":
+            return int(self._num(data.get("value", 0)))
+        if nt == "Float":
+            return data.get("value", 0.0)
+        if nt == "Bool":
+            return data.get("value", False)
+        if nt == "String":
+            return data.get("value", "")
+        if nt == "For":
+            return data.get("_for_index", 0)
+        if nt == "Position":
+            return data
+
+        # math binary
+        if nt in ("Add", "Sub", "Mul", "Div", "Pow", "Mod"):
+            a = self._num(resolve("a"))
+            b = self._num(resolve("b"))
+            if nt == "Add": return a + b
+            if nt == "Sub": return a - b
+            if nt == "Mul": return a * b
+            if nt == "Div": return a / b if b != 0 else float('inf')
+            if nt == "Pow": return a ** b
+            if nt == "Mod": return a % b
+        # math unary
+        if nt == "Square": return self._num(resolve("a")) ** 2
+        if nt == "Sqrt": return _math.sqrt(max(0, self._num(resolve("a"))))
+        if nt == "Abs": return abs(self._num(resolve("a")))
+        if nt == "Neg": return -self._num(resolve("a"))
+        if nt == "Sin": return _math.sin(_math.radians(self._num(resolve("a"))))
+        if nt == "Cos": return _math.cos(_math.radians(self._num(resolve("a"))))
+        if nt == "Tan": return _math.tan(_math.radians(self._num(resolve("a"))))
+        if nt == "Deg2Rad": return _math.radians(self._num(resolve("a")))
+        if nt == "Rad2Deg": return _math.degrees(self._num(resolve("a")))
+        if nt == "Int2Float": return float(self._num(resolve("a")))
+        if nt == "Float2Int": return int(self._num(resolve("a")))
+        # logic
+        if nt == "And": return bool(resolve("a")) and bool(resolve("b"))
+        if nt == "Or": return bool(resolve("a")) or bool(resolve("b"))
+        if nt == "Not": return not bool(resolve("a"))
+        if nt == "Xor": return bool(resolve("a")) ^ bool(resolve("b"))
+        # comparison
+        if nt == "Gt": return self._num(resolve("a")) > self._num(resolve("b"))
+        if nt == "Lt": return self._num(resolve("a")) < self._num(resolve("b"))
+        if nt == "Ge": return self._num(resolve("a")) >= self._num(resolve("b"))
+        if nt == "Le": return self._num(resolve("a")) <= self._num(resolve("b"))
+        if nt == "Eq":
+            a = resolve("a"); b = resolve("b")
+            try: return float(a) == float(b)
+            except: return str(a) == str(b)
+        # string
+        if nt == "StrConcat": return str(resolve("a", "")) + str(resolve("b", ""))
+        if nt == "StrSplit": return str(resolve("str", "")).split(str(resolve("sep", ",")))
+        if nt == "StrFind": return str(resolve("str", "")).find(str(resolve("sub", "")))
+        if nt == "StrReplace": return str(resolve("str", "")).replace(str(resolve("old", "")), str(resolve("new", "")))
+        if nt == "StrLen": return len(str(resolve("str", "")))
+        if nt == "Num2Str": return str(self._num(resolve("a")))
+        if nt == "Bool2Str": return str(bool(resolve("a")))
+        # pose
+        if nt == "BreakPosition":
+            pos_src = self._data_sources.get((node.node_id, "pose"))
+            pos_data = (self._eval_data(pos_src[0]) if pos_src else data) or {}
+            return pos_data  # caller extracts specific fields
+        if nt == "MakePosition":
+            return data
+        if nt == "ArrayGet":
+            arr = resolve("array")
+            idx = int(self._num(resolve("index")))
+            if isinstance(arr, str):
+                arr = [x.strip() for x in arr.replace("[","").replace("]","").split(",") if x.strip()]
+            if isinstance(arr, list) and 0 <= idx < len(arr):
+                try: return float(arr[idx])
+                except: return arr[idx]
+            return "?"
+        if nt == "ArrayLen":
+            arr = resolve("array")
+            if isinstance(arr, str):
+                arr = [x.strip() for x in arr.replace("[","").replace("]","").split(",") if x.strip()]
+            return len(arr) if isinstance(arr, list) else 0
+        return "?"
+
+    # ───────────────────────── command / failure helpers ─────────────────────────
+
+    def _send_command(self, ty: str, db: Any, on_response=None, on_error=None):
+        if not self._send_cb:
+            if on_error:
+                on_error("TCP send callback 未设置")
+            return
+
+        try:
+            # 新回调签名：cb(ty, db, on_response=None, on_error=None)
+            self._send_cb(ty, db, on_response=on_response, on_error=on_error)
+        except TypeError:
+            # 兼容旧回调签名：cb(ty, db)。旧签名无法得知真实 response，
+            # 因此只在发送不抛异常时模拟 response，避免 UI 卡死。
+            try:
+                self._send_cb(ty, db)
+                if on_response:
+                    QTimer.singleShot(0, lambda: on_response(None))
+            except Exception as e:
+                if on_error:
+                    on_error(e)
+        except Exception as e:
+            if on_error:
+                on_error(e)
+
+    def _fail_node(self, node: NodeData | None, message: str):
+        node_desc = f"{node.title}({node.node_id})" if node else "<unknown>"
+        self._fail_graph(f"节点失败: {node_desc}: {message}")
+
+    def _fail_graph(self, message: str):
+        self._running = False
+        self._stopping = False
+        self._run_token += 1
+        self._stop_poll_timer()
+        self._log(f"[错误] {message}")
+        self._clear_highlight()
+        self.graph_stopped.emit()
+
+    def _finish_graph(self):
+        self._running = False
+        self._stopping = False
+        self._stop_poll_timer()
+        self._clear_highlight()
+        self._log("[执行] 完成")
+        self.graph_finished.emit()
+
+    def _stop_poll_timer(self):
+        if self._poll_timer:
+            self._poll_timer.stop()
+            self._poll_timer.deleteLater()
+            self._poll_timer = None
 
     def _clear_highlight(self):
         for nid in self._path:
             self.node_highlight.emit(nid, False)
+
+    def _log(self, msg: str):
+        self.log_emitted.emit(msg)
+
+    @staticmethod
+    def _now_ms() -> float:
+        return time.monotonic() * 1000.0
+
+    @staticmethod
+    def _num(value, default=0.0) -> float:
+        try:
+            if value in (None, "", "?"):
+                return float(default)
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _op_symbol(self, nt: str) -> str:
+        syms = {
+            "Add": "+", "Sub": "-", "Mul": "x", "Div": "/",
+            "Pow": "^", "Mod": "%", "Gt": ">", "Lt": "<",
+            "Eq": "==", "Ge": ">=", "Le": "<=",
+        }
+        return syms.get(nt, nt)

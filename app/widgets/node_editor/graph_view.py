@@ -10,9 +10,9 @@ class GraphView(QGraphicsView):
 
     add_variable_requested = Signal()
     add_position_requested = Signal()
-    var_get_requested = Signal(str, str, str)
-    var_set_requested = Signal(str, str, str)
-    position_requested = Signal(str)
+    var_get_requested = Signal(str, str, str, str)
+    var_set_requested = Signal(str, str, str, str)
+    position_requested = Signal(str, str)
 
     _zoom_min = 0.1
     _zoom_max = 3.0
@@ -110,10 +110,10 @@ class GraphView(QGraphicsView):
                     var_menu = sub.addMenu(f"{v.name} ({v.var_type})")
                     port_type = {"int":"number","float":"number","bool":"bool","string":"string","array":"any"}.get(v.var_type,"any")
                     act_get = QAction(tr("var_get"), var_menu)
-                    act_get.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_get_requested.emit(n, t, p))
+                    act_get.triggered.connect(lambda *a, vid=v.var_id, n=v.name, t=v.var_type, p=port_type: self.var_get_requested.emit(vid, n, t, p))
                     var_menu.addAction(act_get)
                     act_set = QAction(tr("var_set"), var_menu)
-                    act_set.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_set_requested.emit(n, t, p))
+                    act_set.triggered.connect(lambda *a, vid=v.var_id, n=v.name, t=v.var_type, p=port_type: self.var_set_requested.emit(vid, n, t, p))
                     var_menu.addAction(act_set)
                 continue
             if cat_name == "点位" and self._library:
@@ -122,9 +122,9 @@ class GraphView(QGraphicsView):
                 sub.addAction(act_add)
                 if self._library.positions():
                     sub.addSeparator()
-                for pname in self._library.positions():
-                    act = QAction(pname, sub)
-                    act.triggered.connect(lambda *a, n=pname: self.position_requested.emit(n))
+                for pos in self._library.positions():
+                    act = QAction(pos.name, sub)
+                    act.triggered.connect(lambda *a, pid=pos.pos_id, n=pos.name: self.position_requested.emit(pid, n))
                     sub.addAction(act)
                 continue
             for node_name in items:
@@ -160,6 +160,7 @@ class GraphView(QGraphicsView):
 
     def dropEvent(self, event):
         from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION as MP
+        from app.widgets.node_editor.models import NODE_SPECS
         scene_pos = self.mapToScene(event.position().toPoint())
         s = self.scene()
         md = event.mimeData()
@@ -176,10 +177,10 @@ class GraphView(QGraphicsView):
             info = json.loads(var_info)
             menu = QMenu(self)
             act_get = QAction(tr("var_get"), menu)
-            act_get.triggered.connect(lambda: s.add_var_node(info["name"], info["var_type"], info["port_type"], "get", scene_pos.x(), scene_pos.y()))
+            act_get.triggered.connect(lambda: s.add_var_node(info.get("var_id",""), info["name"], info["var_type"], info["port_type"], "get", scene_pos.x(), scene_pos.y()))
             menu.addAction(act_get)
             act_set = QAction(tr("var_set"), menu)
-            act_set.triggered.connect(lambda: s.add_var_node(info["name"], info["var_type"], info["port_type"], "set", scene_pos.x(), scene_pos.y()))
+            act_set.triggered.connect(lambda: s.add_var_node(info.get("var_id",""), info["name"], info["var_type"], info["port_type"], "set", scene_pos.x(), scene_pos.y()))
             menu.addAction(act_set)
             menu.exec(self.mapToGlobal(event.position().toPoint()))
             event.acceptProposedAction()
@@ -188,17 +189,61 @@ class GraphView(QGraphicsView):
         # position drop
         if md.hasFormat(MP):
             pos_name = md.data(MP).data().decode()
-            if hasattr(s, "add_node"):
-                node = s.add_node("Position", scene_pos.x(), scene_pos.y())
-                data = node.node_data()
-                data["name"] = pos_name
-                node.set_node_data(data)
+            if hasattr(s, "add_node") and s._library:
+                for p in s._library.positions():
+                    if p.name == pos_name:
+                        node = s.add_node("Position", scene_pos.x(), scene_pos.y())
+                        data = {"pos_id": p.pos_id, "name": p.name, "jp": list(p.jp),
+                                "cp": dict(p.cp), "ep": list(p.ep), "optional": dict(p.optional)}
+                        node.set_node_data(data)
+                        node._title = p.name
+                        node.update()
+                        break
             event.acceptProposedAction()
             return
 
-        # regular node drop
+        # regular node drop — try insert onto flow edge
         if md.hasFormat(MIME_NODE_TYPE):
             node_type = md.data(MIME_NODE_TYPE).data().decode()
+            spec = NODE_SPECS.get(node_type)
+            has_flow_io = (spec and
+                any(p.port_type == "flow" and p.direction == "input" for p in spec.ports) and
+                any(p.port_type == "flow" and p.direction == "output" for p in spec.ports))
+            # check if dropped on a flow edge
+            edge_at = self._edge_at(scene_pos)
+            if has_flow_io and edge_at and hasattr(s, "add_node"):
+                src_port = edge_at.source()
+                tgt_port = edge_at.target()
+                if src_port and tgt_port:
+                    s._remove_edge(edge_at)
+                    node = s.add_node(node_type, scene_pos.x(), scene_pos.y())
+                    s._add_edge(src_port, node.input_ports()[0])
+                    s._add_edge(node.output_ports()[0], tgt_port)
+                    event.acceptProposedAction()
+                    return
+            # normal add
             if hasattr(s, "add_node"):
                 s.add_node(node_type, scene_pos.x(), scene_pos.y())
             event.acceptProposedAction()
+
+    def _edge_at(self, scene_pos):
+        """在 scene_pos 15px 范围内查找最近的 EdgeItem"""
+        from app.widgets.node_editor.edge_item import EdgeItem
+        s = self.scene()
+        best = None
+        best_dist = 15.0
+        for item in s.items():
+            if isinstance(item, EdgeItem):
+                # sample points along the path to find closest distance
+                path = item.path()
+                length = path.length()
+                step = max(length / 20, 1.0)
+                d = 0.0
+                while d <= length:
+                    pt = path.pointAtPercent(d / length if length > 0 else 0)
+                    dist = (pt - scene_pos).manhattanLength()
+                    if dist < best_dist:
+                        best_dist = dist
+                        best = item
+                    d += step
+        return best
