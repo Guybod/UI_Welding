@@ -142,6 +142,7 @@ class NodeEditorWidget(QWidget):
 
     def _set_running(self, running: bool):
         self._btn_run.setVisible(not running)
+        self._btn_run.setEnabled(not running)
         self._btn_stop.setVisible(running)
 
     def _on_stop(self):
@@ -158,7 +159,6 @@ class NodeEditorWidget(QWidget):
             for err in r.errors:
                 log.appendPlainText(f"  - {err}")
             return
-        self._btn_run.setEnabled(False)
         self._log._log.clear()
         self._engine.run_dry(data)
 
@@ -194,7 +194,10 @@ class NodeEditorWidget(QWidget):
 
     def _on_var_get(self, name: str, var_type: str, port_type: str):
         view_center = self._view.mapToScene(self._view.viewport().rect().center())
-        self._scene.add_var_node(name, var_type, port_type, "get", view_center.x(), view_center.y())
+        node = self._scene.add_var_node(name, var_type, port_type, "get", view_center.x(), view_center.y())
+        # select the node so property panel shows its value
+        self._scene.clearSelection()
+        node.setSelected(True)
 
     def _on_var_set(self, name: str, var_type: str, port_type: str):
         view_center = self._view.mapToScene(self._view.viewport().rect().center())

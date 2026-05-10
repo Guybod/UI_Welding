@@ -74,6 +74,8 @@ _STRINGS = {
     "var_edit":             {"zh": "编辑变量",    "en": "Edit Variable"},
     "pos_add":              {"zh": "添加点位",    "en": "Add Position"},
     "pos_delete":           {"zh": "删除点位",    "en": "Delete Position"},
+    "port_split":           {"zh": "拆分",        "en": "Split"},
+    "port_merge":           {"zh": "合并",        "en": "Merge"},
     "node_save_graph":      {"zh": "保存节点图",  "en": "Save Graph"},
     "node_load_graph":      {"zh": "加载节点图",  "en": "Load Graph"},
 
@@ -118,6 +120,8 @@ _STRINGS = {
     "node_MatMulL":     {"zh": "矩阵左乘",   "en": "MatMulL"},
     "node_MatMulR":     {"zh": "矩阵右乘",   "en": "MatMulR"},
     "node_Int2Float":   {"zh": "整转浮",     "en": "Int2Float"},
+    "node_BreakPosition": {"zh": "拆分点位",   "en": "BreakPosition"},
+    "node_MakePosition": {"zh": "组合点位",   "en": "MakePosition"},
     "node_Float2Int":   {"zh": "浮转整",     "en": "Float2Int"},
     "node_And":         {"zh": "与",         "en": "And"},
     "node_Or":          {"zh": "或",         "en": "Or"},

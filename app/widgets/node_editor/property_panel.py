@@ -36,10 +36,186 @@ class PropertyPanel(QWidget):
         self._node = node
         if node is None:
             self._show_placeholder()
-        elif node.node_type() == "Position":
+            return
+        nt = node.node_type()
+        if nt == "Position":
             self._show_position(node)
+        elif nt in ("MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"):
+            self._show_motion(node)
+        elif nt == "Wait":
+            self._show_generic(node, [("duration", "number", "秒")])
+        elif nt in ("Int",):
+            self._show_generic(node, [("value", "int", "")])
+        elif nt in ("Float",):
+            self._show_generic(node, [("value", "float", "")])
+        elif nt == "Bool":
+            self._show_bool(node)
+        elif nt == "String":
+            self._show_generic(node, [("value", "string", "")])
+        elif nt in ("SetDO", "SetAO"):
+            self._show_generic(node, [("port", "int", ""), ("value", "int", "")])
+        elif nt in ("ReadDI", "ReadAI"):
+            self._show_generic(node, [("port", "int", "")])
+        elif nt == "GetVar":
+            self._show_var_value(node)
+        elif nt == "SetRegister":
+            self._show_generic(node, [("address", "int", ""), ("value", "int", "")])
+        elif nt == "ReadRegister":
+            self._show_generic(node, [("address", "int", "")])
         else:
             self._show_placeholder()
+
+    def _show_motion(self, node):
+        """MoveJ/L/C/Circle/Path 运动参数"""
+        data = node.node_data()
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(f"{node._title} - {tr('pos_opt_group')}"))
+        form = QFormLayout()
+        speed = self._mk_spin(Range=(1, 5000))
+        speed.setValue(data.get("speed", 200))
+        speed.setSuffix(" mm/s")
+        form.addRow(tr("pos_speed"), speed)
+        acc = self._mk_spin(Range=(1, 50000))
+        acc.setValue(data.get("acc", 500))
+        acc.setSuffix(" mm/s²")
+        form.addRow(tr("pos_acc"), acc)
+        blend = self._mk_spin(Range=(0, 1000), Decimals=1)
+        blend.setValue(data.get("blend", 0))
+        blend.setSuffix(" mm")
+        form.addRow(tr("pos_blend_abs"), blend)
+        rel_blend = self._mk_spin(Range=(0, 100), Decimals=1)
+        rel_blend.setValue(data.get("relativeBlend", 0))
+        rel_blend.setSuffix(" %")
+        form.addRow(tr("pos_blend_rel"), rel_blend)
+        root.addLayout(form)
+
+        def apply():
+            node.set_node_data({"speed": speed.value(), "acc": acc.value(),
+                                "blend": blend.value(), "relativeBlend": rel_blend.value()})
+        btn = QPushButton(tr("node_btn_apply"))
+        btn.clicked.connect(apply)
+        root.addWidget(btn)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_bool(self, node):
+        from PySide6.QtWidgets import QCheckBox
+        data = node.node_data()
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(f"{node._title}"))
+        cb = QCheckBox("True")
+        cb.setChecked(data.get("value", False))
+        root.addWidget(cb)
+        root.addStretch()
+
+        def apply():
+            node.set_node_data({"value": cb.isChecked()})
+        btn = QPushButton(tr("node_btn_apply"))
+        btn.clicked.connect(apply)
+        root.addWidget(btn)
+        self._scroll.setWidget(w)
+
+    def _show_var_value(self, node):
+        """GetVar 节点 — 显示变量当前值, 可修改"""
+        data = node.node_data()
+        var_name = data.get("var_name", "?")
+        var_type = data.get("var_type", "int")
+        val = data.get("var_value")
+        # try to read from library variables if not stored locally
+        if val is None:
+            val = data.get("value", 0)
+
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(f"变量: {var_name} ({var_type})"))
+
+        form = QFormLayout()
+        widgets = {}
+        if var_type in ("int",):
+            spin = self._mk_spin(Range=(-999999, 999999))
+            spin.setDecimals(0)
+            spin.setValue(int(float(str(val))))
+            form.addRow("值:", spin)
+            widgets["value"] = ("int", spin)
+        elif var_type in ("float",):
+            spin = self._mk_spin(Range=(-999999, 999999), Decimals=4)
+            spin.setValue(float(val))
+            form.addRow("值:", spin)
+            widgets["value"] = ("float", spin)
+        elif var_type == "bool":
+            from PySide6.QtWidgets import QCheckBox
+            cb = QCheckBox("True")
+            cb.setChecked(bool(val))
+            root.addWidget(cb)
+            widgets["value"] = ("bool", cb)
+        elif var_type == "string":
+            line = QLineEdit(str(val))
+            form.addRow("值:", line)
+            widgets["value"] = ("string", line)
+        root.addLayout(form)
+
+        def apply():
+            for key, (ftype, wdg) in widgets.items():
+                if ftype in ("int",):
+                    v = int(wdg.value())
+                elif ftype == "float":
+                    v = wdg.value()
+                elif ftype == "bool":
+                    v = wdg.isChecked()
+                else:
+                    v = wdg.text()
+                node.set_node_data({"var_name": var_name, "var_type": var_type, "var_value": v, "value": v})
+        btn = QPushButton(tr("node_btn_apply"))
+        btn.clicked.connect(apply)
+        root.addWidget(btn)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_generic(self, node, fields: list[tuple[str, str, str]]):
+        """通用属性面板: fields = [(key, type, suffix), ...]"""
+        data = node.node_data()
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        form = QFormLayout()
+        widgets = {}
+        for key, ftype, suffix in fields:
+            if ftype == "int":
+                spin = self._mk_spin(Range=(-999999, 999999))
+                spin.setDecimals(0)
+                spin.setValue(int(float(str(data.get(key, 0)))))
+                spin.setSuffix(f" {suffix}" if suffix else "")
+                form.addRow(f"{key}:", spin)
+                widgets[key] = ("int", spin)
+            elif ftype == "number" or ftype == "float":
+                spin = self._mk_spin(Range=(-999999, 999999), Decimals=2)
+                spin.setValue(float(data.get(key, 0)))
+                spin.setSuffix(f" {suffix}" if suffix else "")
+                form.addRow(f"{key}:", spin)
+                widgets[key] = ("float", spin)
+            elif ftype == "string":
+                line = QLineEdit(str(data.get(key, "")))
+                form.addRow(f"{key}:", line)
+                widgets[key] = ("string", line)
+        root.addLayout(form)
+
+        def apply():
+            d = {}
+            for key, (ftype, wdg) in widgets.items():
+                if ftype in ("int",):
+                    d[key] = int(wdg.value())
+                elif ftype == "float":
+                    d[key] = wdg.value()
+                elif ftype == "string":
+                    d[key] = wdg.text()
+            node.set_node_data(d)
+        btn = QPushButton(tr("node_btn_apply"))
+        btn.clicked.connect(apply)
+        root.addWidget(btn)
+        root.addStretch()
+        self._scroll.setWidget(w)
 
     def _show_placeholder(self):
         w = QWidget()

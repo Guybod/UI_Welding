@@ -35,6 +35,7 @@ NODE_CATEGORY = {
     "If": "逻辑", "For": "逻辑", "While": "逻辑",
     "Compare": "逻辑", "And": "逻辑", "Or": "逻辑", "Not": "逻辑",
     "Int": "常量", "Float": "常量", "Bool": "常量", "String": "常量", "Array": "常量",
+    "BreakPosition": "运算", "MakePosition": "运算",
     "Add": "运算", "Sub": "运算", "Mul": "运算", "Div": "运算",
     "Square": "运算", "Sqrt": "运算", "MatMulL": "运算", "MatMulR": "运算",
     "Gt": "逻辑", "Lt": "逻辑", "Eq": "逻辑", "Ge": "逻辑", "Le": "逻辑",
@@ -168,6 +169,17 @@ _register(NodeSpec("String", "String", "变量", [
 ]))
 _register(NodeSpec("Array", "Array", "变量", [
     PortSpec("value", "any", "output"),
+]))
+# 点位拆分/组合
+_register(NodeSpec("BreakPosition", "BreakPos", "运算", [
+    PortSpec("pose", "pose", "input"),
+    PortSpec("jp", "pose", "output"),
+    PortSpec("cp", "pose", "output"),
+]))
+_register(NodeSpec("MakePosition", "MakePos", "运算", [
+    PortSpec("jp", "pose", "input"),
+    PortSpec("cp", "pose", "input"),
+    PortSpec("pose", "pose", "output"),
 ]))
 # 运算
 _register(NodeSpec("Add", "Add", "运算", [

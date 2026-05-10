@@ -93,43 +93,44 @@ class GraphView(QGraphicsView):
             act_rename = QAction(tr("node_rename_title"), menu)
             act_rename.triggered.connect(lambda: self._rename_node(clicked_node))
             menu.addAction(act_rename)
-        else:
-            from app.widgets.node_editor.node_library_panel import CATEGORIES, CAT_I18N
-            for cat_name, items in CATEGORIES:
-                i18n_key = CAT_I18N.get(cat_name, cat_name)
-                sub = menu.addMenu(tr(i18n_key))
-                # dynamic categories: 变量 and 点位
-                if cat_name == "变量" and self._library:
-                    act_add = QAction(tr("var_add"), sub)
-                    act_add.triggered.connect(self.add_variable_requested.emit)
-                    sub.addAction(act_add)
-                    if self._library.variables():
-                        sub.addSeparator()
-                    for v in self._library.variables():
-                        var_menu = sub.addMenu(f"{v.name} ({v.var_type})")
-                        port_type = {"int":"number","float":"number","bool":"bool","string":"string","array":"any"}.get(v.var_type,"any")
-                        act_get = QAction(tr("var_get"), var_menu)
-                        act_get.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_get_requested.emit(n, t, p))
-                        var_menu.addAction(act_get)
-                        act_set = QAction(tr("var_set"), var_menu)
-                        act_set.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_set_requested.emit(n, t, p))
-                        var_menu.addAction(act_set)
-                    continue
-                if cat_name == "点位" and self._library:
-                    act_add = QAction(tr("pos_add"), sub)
-                    act_add.triggered.connect(self.add_position_requested.emit)
-                    sub.addAction(act_add)
-                    if self._library.positions():
-                        sub.addSeparator()
-                    for pname in self._library.positions():
-                        act = QAction(pname, sub)
-                        act.triggered.connect(lambda *a, n=pname: self.position_requested.emit(n))
-                        sub.addAction(act)
-                    continue
-                for node_name in items:
-                    act = QAction(tr_node(node_name), sub)
-                    act.triggered.connect(self._make_add_handler(node_name, scene_pos))
+            menu.addSeparator()
+        # node library menu (shown both on empty and on node right-click)
+        from app.widgets.node_editor.node_library_panel import CATEGORIES, CAT_I18N
+        for cat_name, items in CATEGORIES:
+            i18n_key = CAT_I18N.get(cat_name, cat_name)
+            sub = menu.addMenu(tr(i18n_key))
+            # dynamic categories: 变量 and 点位
+            if cat_name == "变量" and self._library:
+                act_add = QAction(tr("var_add"), sub)
+                act_add.triggered.connect(self.add_variable_requested.emit)
+                sub.addAction(act_add)
+                if self._library.variables():
+                    sub.addSeparator()
+                for v in self._library.variables():
+                    var_menu = sub.addMenu(f"{v.name} ({v.var_type})")
+                    port_type = {"int":"number","float":"number","bool":"bool","string":"string","array":"any"}.get(v.var_type,"any")
+                    act_get = QAction(tr("var_get"), var_menu)
+                    act_get.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_get_requested.emit(n, t, p))
+                    var_menu.addAction(act_get)
+                    act_set = QAction(tr("var_set"), var_menu)
+                    act_set.triggered.connect(lambda *a, n=v.name, t=v.var_type, p=port_type: self.var_set_requested.emit(n, t, p))
+                    var_menu.addAction(act_set)
+                continue
+            if cat_name == "点位" and self._library:
+                act_add = QAction(tr("pos_add"), sub)
+                act_add.triggered.connect(self.add_position_requested.emit)
+                sub.addAction(act_add)
+                if self._library.positions():
+                    sub.addSeparator()
+                for pname in self._library.positions():
+                    act = QAction(pname, sub)
+                    act.triggered.connect(lambda *a, n=pname: self.position_requested.emit(n))
                     sub.addAction(act)
+                continue
+            for node_name in items:
+                act = QAction(tr_node(node_name), sub)
+                act.triggered.connect(self._make_add_handler(node_name, scene_pos))
+                sub.addAction(act)
 
         menu.exec(self.mapToGlobal(view_pos))
 

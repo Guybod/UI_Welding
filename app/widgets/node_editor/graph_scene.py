@@ -52,7 +52,22 @@ class GraphScene(QGraphicsScene):
             spec = NodeSpec("SetVar", f"Set {var_name}", "变量", ports, color="#00BCD4")
         node = NodeItem("GetVar" if mode == "get" else "SetVar", override_spec=spec)
         # store port info in data for validator
-        node.set_node_data({"_ports": [(p.name, p.port_type, p.direction) for p in ports], "var_name": var_name, "var_type": var_type})
+        # get initial value from library variables if available
+        init_val = 0
+        try:
+            parent_widget = self.parent()
+            lib = parent_widget._library if hasattr(parent_widget, '_library') else None
+            if lib:
+                for v in lib.variables():
+                    if v.name == var_name:
+                        if var_type == "int": init_val = int(float(v.initial))
+                        elif var_type == "float": init_val = float(v.initial)
+                        elif var_type == "bool": init_val = v.initial.lower() in ("true", "1", "yes")
+                        else: init_val = v.initial
+                        break
+        except Exception:
+            pass
+        node.set_node_data({"_ports": [(p.name, p.port_type, p.direction) for p in ports], "var_name": var_name, "var_type": var_type, "var_value": init_val, "value": init_val})
         node.setPos(x, y)
         self.addItem(node)
         return node

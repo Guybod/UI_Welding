@@ -3,7 +3,7 @@ from PySide6.QtGui import QPen, QBrush, QColor, QFont, QPainter, QPainterPath
 from PySide6.QtCore import Qt, QRectF
 
 from app.widgets.node_editor.models import NodeSpec, NODE_SPECS
-from app.widgets.node_editor.port_item import PortItem, PORT_RADIUS
+from app.widgets.node_editor.port_item import PortItem, PORT_SIZE
 
 TITLE_HEIGHT = 22
 PORT_SPACING = 20
@@ -51,29 +51,27 @@ class NodeItem(QGraphicsItem):
             port = PortItem(ps.name, ps.port_type, ps.direction, self)
             port.setPos(0, y)
             self._ports.append(port)
-            # label to the left of port
-            lbl = QGraphicsSimpleTextItem(ps.port_type, self)
-            lbl.setFont(label_font)
-            lbl.setBrush(QColor(180, 180, 180))
-            lbl.setPos(10, y - 7)
+            if ps.port_type != "flow":
+                lbl = QGraphicsSimpleTextItem(ps.port_type, self)
+                lbl.setFont(label_font)
+                lbl.setBrush(QColor(180, 180, 180))
+                lbl.setPos(10, y - 7)
 
         for i, ps in enumerate(right_ports):
             y = TITLE_HEIGHT + PORT_SPACING * i + PORT_SPACING / 2
             port = PortItem(ps.name, ps.port_type, ps.direction, self)
             port.setPos(NODE_WIDTH, y)
             self._ports.append(port)
-            # label to the right of port
-            lbl = QGraphicsSimpleTextItem(ps.port_type, self)
-            lbl.setFont(label_font)
-            lbl.setBrush(QColor(180, 180, 180))
-            lbl.setPos(NODE_WIDTH - lbl.boundingRect().width() - 10, y - 7)
+            if ps.port_type != "flow":
+                lbl = QGraphicsSimpleTextItem(ps.port_type, self)
+                lbl.setFont(label_font)
+                lbl.setBrush(QColor(180, 180, 180))
+                lbl.setPos(NODE_WIDTH - lbl.boundingRect().width() - 10, y - 7)
 
     def _calc_size(self):
-        max_side = max(
-            sum(1 for p in self._spec.ports if p.direction == "input") if self._spec else 1,
-            sum(1 for p in self._spec.ports if p.direction == "output") if self._spec else 1,
-            1,
-        )
+        left_count = sum(1 for p in self._ports if p.direction() == "input")
+        right_count = sum(1 for p in self._ports if p.direction() == "output")
+        max_side = max(left_count, right_count, 1)
         body_h = PORT_SPACING * max_side + V_PADDING_BOTTOM
         self._body_height = TITLE_HEIGHT + max(body_h, 20)
 
@@ -90,6 +88,60 @@ class NodeItem(QGraphicsItem):
         """执行引擎高亮 — 绿色边框 + 浅色填充"""
         self._highlighted = on
         self.update()
+
+    def split_port(self, port_name: str, sub_ports: list[tuple[str, str, str]]):
+        """展开某端口为多个子端口 (name, port_type, direction)"""
+        target = None
+        for p in self._ports:
+            if p.port_name() == port_name:
+                target = p
+                break
+        if target is None:
+            return
+        direction = target.direction()
+        for edge in list(target.connected_edges):
+            s = self.scene()
+            if s and hasattr(s, '_remove_edge'):
+                s._remove_edge(edge)
+        self.scene().removeItem(target)
+        self._ports.remove(target)
+        for name, ptype, _ in sub_ports:
+            port = PortItem(name, ptype, direction, self)
+            self._ports.append(port)
+        self._reposition_ports(direction)
+        self._calc_size()
+        self.update()
+
+    def merge_port(self, port_name: str, sub_names: list[str], new_name: str, new_type: str):
+        """合并多个子端口为一个端口"""
+        direction = None
+        for p in self._ports:
+            if p.port_name() in sub_names:
+                direction = p.direction()
+                break
+        if direction is None:
+            return
+        for p in list(self._ports):
+            if p.port_name() in sub_names:
+                for edge in list(p.connected_edges):
+                    s = self.scene()
+                    if s and hasattr(s, '_remove_edge'):
+                        s._remove_edge(edge)
+                self.scene().removeItem(p)
+                self._ports.remove(p)
+        port = PortItem(new_name, new_type, direction, self)
+        self._ports.append(port)
+        self._reposition_ports(direction)
+        self._calc_size()
+        self.update()
+
+    def _reposition_ports(self, direction: str):
+        """重排某侧(左/右)的所有端口位置"""
+        side_ports = [p for p in self._ports if p.direction() == direction]
+        x = 0 if direction == "input" else NODE_WIDTH
+        for i, port in enumerate(side_ports):
+            y = TITLE_HEIGHT + PORT_SPACING * i + PORT_SPACING / 2
+            port.setPos(x, y)
 
     def ports(self) -> list[PortItem]:
         return self._ports

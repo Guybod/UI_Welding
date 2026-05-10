@@ -20,7 +20,7 @@ CATEGORIES = [
     ("变量", []),
     ("点位", []),
     ("运动", ["MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"]),
-    ("运算", ["Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod", "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
+    ("运算", ["BreakPosition", "MakePosition", "Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod", "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
     ("逻辑", ["If", "For", "While", "And", "Or", "Not", "Xor", "Gt", "Lt", "Eq", "Ge", "Le"]),
     ("字符串", ["StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen", "Num2Str", "Bool2Str"]),
     ("IO", ["SetDO", "ReadDI", "SetAO", "ReadAI"]),
@@ -150,7 +150,7 @@ class NodeLibraryPanel(QWidget):
             elif cat_name == "点位":
                 self._pos_category = cat_item
 
-        self._tree.expandAll()
+        self._tree.collapseAll()
         layout.addWidget(self._tree)
         I18nManager.instance().language_changed.connect(self._on_language_changed)
 
