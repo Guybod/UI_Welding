@@ -2229,8 +2229,115 @@ CRI 实时状态缓存
 4. 明确 Graph 数据模型。
 5. 明确机器人 API payload。
 6. 明确 CRI moving 完成判断。
-7. 明确执行日志格式。
-8. 明确停止/异常清理。
-9. 明确高风险开发坑。
-10. 明确手工测试用例。
+7. 明确停止/异常清理。
+8. 明确高风险开发坑。
+9. 明确手工测试用例。
 ```
+
+## 32. 已实现功能详情 (阶段 0-6)
+
+### 32.1 节点清单 (54 种)
+
+| 分类 | 颜色 | 节点 | 端口 |
+|------|------|------|------|
+| **基础** | `#607D8B` | Start | flow(output) |
+| | | End | flow(input) |
+| **运动** | `#1976D2` | MoveJ, MoveL, MoveC, MoveCircle, MovePath | flow(in/out) + pose 输入(连 Position) |
+| **点位** | `#F57C00` | Position | flow(in/out) + pose(output), 存 jp+cp+optional |
+| **运算** | `#00897B` | Add, Sub, Mul, Div, Pow, Mod | a(number in) + b(number in) → result(number out) |
+| | | Square, Sqrt, Abs, Neg | a(number in) → result(number out) |
+| | | Sin, Cos, Tan | a(number in) → result(number out) |
+| | | Deg2Rad, Rad2Deg | 单位换算 |
+| | | MatMulL, MatMulR | a(pose in) + b(pose in) → result(pose out) |
+| | | Int2Float, Float2Int | 类型转换 |
+| **逻辑** | `#7B1FA2` | If, For, While | 控制流分支/循环 |
+| | | And, Or, Not, Xor | bool 逻辑运算 |
+| | | Gt, Lt, Eq, Ge, Le | 数值/任意值比较 |
+| **字符串** | `#00ACC1` | StrConcat | a(string) + b(string) → result(string) |
+| | | StrSplit | str + sep → result(any) |
+| | | StrFind, StrReplace, StrLen | 查找/替换/长度 |
+| | | Num2Str, Bool2Str | 类型转字符串 |
+| **IO** | `#FBC02D` | SetDO, ReadDI, SetAO, ReadAI | IO 读写 |
+| **寄存器** | `#C2185B` | SetRegister, ReadRegister | 寄存器读写 |
+| **变量** | `#388E3C` | Int, Float, Bool, String, Array | 纯数据输出(无 flow) |
+
+### 32.2 交互特性
+
+| 功能 | 说明 |
+|------|------|
+| **双击添加节点** | 节点库双击 → 画布中心创建 |
+| **拖拽添加节点** | 节点库拖拽到画布 → 落点位置创建 |
+| **双击删除连线** | 双击贝塞尔曲线即删除 |
+| **悬停高亮** | 连线悬停变粗 + 手型光标 |
+| **双击重命名** | 双击节点标题栏可改名 |
+| **Delete/Backspace** | 删除选中节点(含关联连线) |
+| **16px 端口吸附** | 拖线松手时自动吸附附近合法端口 |
+
+### 32.3 Position 属性面板
+
+选中 Position 节点后右侧面板显示：
+
+```
+┌─────────────────────────────┐
+│ 名称: [P1___________]       │
+├─────────────────────────────┤
+│ 关节角 jp (deg)             │
+│   J1: [0.00]  J2: [0.00]   │
+│   J3: [90.00] J4: [0.00]   │
+│   J5: [0.00]  J6: [0.00]   │
+├─────────────────────────────┤
+│ 笛卡尔位姿 cp (mm / deg)    │
+│   X: [500.0]  Y: [0.0]     │
+│   Z: [300.0]                │
+│   A: [180.00] B: [0.00]    │
+│   C: [90.00]                │
+├─────────────────────────────┤
+│ 默认运动参数 optional       │
+│   速度: [200] mm/s          │
+│   加速度: [500] mm/s²       │
+│   过渡半径(绝对): [0.0] mm  │
+│   过渡半径(相对): [0.0] %   │
+├─────────────────────────────┤
+│ [更新为当前位置] (阶段7启用) │
+│ [应用]                      │
+└─────────────────────────────┘
+```
+
+数据与节点一起保存到 JSON，加载后完整恢复。
+
+### 32.4 运动参数优先级
+
+```
+Move 节点自身 speed/acc/blend  (最高)
+ └→ Position.optional          (次之)
+     └→ 系统默认               (最低)
+```
+
+### 32.5 图校验规则
+
+| 规则 | 级别 |
+|------|------|
+| 必须有 Start 节点 | ❌ Error |
+| 必须有 End 节点 | ❌ Error |
+| 节点 ID 唯一 | ❌ Error |
+| 边引用源/目标存在 | ❌ Error |
+| 端口类型匹配 (flow→flow, pose→pose...) | ❌ Error |
+| Start→End flow 路径连通 | ❌ Error |
+| 运动节点 pose 输入必须连 Position | ❌ Error |
+| 非 Start/End 的 flow 输入未连接 | ⚠ Warning |
+
+### 32.6 中英文双语
+
+- 菜单栏 `设置 → 语言 → 中文/English` 切换
+- QSettings 持久化语言选择，启动时自动加载
+- 覆盖：菜单栏、标签页、状态栏、节点编辑器全部文本
+- 登录页不翻译
+- 翻译引擎：`app/i18n.py`，I18nManager + Signal 驱动 UI 刷新
+
+### 32.7 工程名与保存
+
+- 顶栏：`工程: [名称] [校验] [保存] [加载]`
+- 保存：直接写入 `projects/<名称>.json`，无弹窗
+- 加载：文件对话框，默认打开 `projects/` 目录
+- Ctrl+S / Ctrl+O 快捷键
+- JSON 含 graph_version + updated_at + nodes[].data

@@ -15,6 +15,7 @@ def graph_to_json(graph: GraphData) -> str:
                 "title": n.title,
                 "x": n.x,
                 "y": n.y,
+                "data": n.data,
             }
             for n in graph.nodes
         ],
@@ -46,6 +47,7 @@ def json_to_graph(text: str) -> GraphData:
             title=n.get("title", n["node_type"]),
             x=n["x"],
             y=n["y"],
+            data=n.get("data", {}),
         )
         for n in obj.get("nodes", [])
     ]

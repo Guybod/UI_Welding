@@ -1,0 +1,61 @@
+{
+  "graph_version": "1.0.0",
+  "updated_at": "2026-05-10 21:24:37",
+  "nodes": [
+    {
+      "node_id": "9eb37d83",
+      "node_type": "String",
+      "title": "String",
+      "x": -861.0,
+      "y": -154.0,
+      "data": {}
+    },
+    {
+      "node_id": "2ce43d70",
+      "node_type": "End",
+      "title": "End",
+      "x": -296.0,
+      "y": -216.0,
+      "data": {}
+    },
+    {
+      "node_id": "c6714160",
+      "node_type": "Start",
+      "title": "Start",
+      "x": -809.0,
+      "y": -222.0,
+      "data": {}
+    },
+    {
+      "node_id": "5a80fa0b",
+      "node_type": "Print",
+      "title": "Print",
+      "x": -531.0,
+      "y": -217.0,
+      "data": {}
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "e1",
+      "source_node_id": "9eb37d83",
+      "source_port_name": "value",
+      "target_node_id": "5a80fa0b",
+      "target_port_name": "value"
+    },
+    {
+      "edge_id": "e2",
+      "source_node_id": "5a80fa0b",
+      "source_port_name": "flow",
+      "target_node_id": "2ce43d70",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e3",
+      "source_node_id": "c6714160",
+      "source_port_name": "flow",
+      "target_node_id": "5a80fa0b",
+      "target_port_name": "flow"
+    }
+  ]
+}

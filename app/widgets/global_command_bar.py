@@ -2,6 +2,7 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QDialog, QVBoxLayout, QLabel
 )
 from PySide6.QtCore import Signal, Qt, QSize
+from app.i18n import I18nManager, tr
 
 
 class _ToggleSwitch(QPushButton):
@@ -26,6 +27,11 @@ class _ToggleSwitch(QPushButton):
         self.setChecked(checked)
         self.blockSignals(False)
         self._on_toggled(checked)
+
+    def set_texts(self, text_on: str, text_off: str):
+        self._text_on = text_on
+        self._text_off = text_off
+        self._on_toggled(self.isChecked())
 
     def _on_toggled(self, checked: bool):
         self.setText(self._text_on if checked else self._text_off)
@@ -55,7 +61,7 @@ class _ThreeWaySwitch(QWidget):
 
     mode_changed = Signal(int)  # 0=manual, 1=auto, 2=remote
 
-    MODES = ["手动", "自动", "远程"]
+    MODE_KEYS = ["cmd_manual", "cmd_auto", "cmd_remote"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,8 +96,8 @@ class _ThreeWaySwitch(QWidget):
         font.setPointSize(10)
         font.setBold(True)
         p.setFont(font)
-        for i, label in enumerate(self.MODES):
-            p.drawText(int(i * w), 0, int(w), r.height(), Qt.AlignCenter, label)
+        for i, key in enumerate(self.MODE_KEYS):
+            p.drawText(int(i * w), 0, int(w), r.height(), Qt.AlignCenter, tr(key))
         p.end()
 
     def mousePressEvent(self, event):
@@ -111,19 +117,19 @@ class ErrorDialog(QDialog):
 
     def __init__(self, errors: list, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("机器人错误")
+        self.setWindowTitle(tr("cmd_error_title"))
         self.setMinimumSize(420, 260)
         self.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("机器人发生错误:"))
+        layout.addWidget(QLabel(tr("cmd_error_title") + ":"))
         text = "\n".join(str(e) for e in errors[-20:])
         label = QLabel(text)
         label.setWordWrap(True)
         label.setStyleSheet("background:#111; padding:8px; border-radius:4px;")
         layout.addWidget(label)
 
-        btn = QPushButton("清除错误")
+        btn = QPushButton(tr("cmd_clear_error"))
         btn.setFixedHeight(38)
         btn.setStyleSheet("""
             QPushButton {
@@ -168,27 +174,27 @@ class GlobalCommandBar(QWidget):
         layout.setSpacing(8)
 
         # --- 使能开关 ---
-        self._btn_enable = _ToggleSwitch("已使能", "未使能")
+        self._btn_enable = _ToggleSwitch(tr("cmd_enable"), tr("cmd_disable"))
         self._btn_enable.toggled.connect(self.switch_on_toggled.emit)
         layout.addWidget(self._btn_enable)
         layout.addSpacing(16)
 
         # --- 运动控制 ---
-        self._btn_stop_move = self._add_oval_btn(layout, "停止运动")
-        self._btn_pause = self._add_oval_btn(layout, "暂停运动")
-        self._btn_resume = self._add_oval_btn(layout, "恢复运动")
+        self._btn_stop_move = self._add_oval_btn(layout, tr("cmd_stop_move"))
+        self._btn_pause = self._add_oval_btn(layout, tr("cmd_pause"))
+        self._btn_resume = self._add_oval_btn(layout, tr("cmd_resume"))
         self._btn_resume.hide()
         layout.addSpacing(16)
 
         # --- 工程 ---
-        self._btn_start = self._add_oval_btn(layout, "启动工程")
-        self._btn_pause_project = self._add_oval_btn(layout, "暂停工程")
-        self._btn_stop_project = self._add_oval_btn(layout, "停止工程")
+        self._btn_start = self._add_oval_btn(layout, tr("cmd_project_start"))
+        self._btn_pause_project = self._add_oval_btn(layout, tr("cmd_project_pause"))
+        self._btn_stop_project = self._add_oval_btn(layout, tr("cmd_project_stop"))
         layout.addSpacing(16)
 
         # --- 仿真/实机开关 (右侧) ---
         layout.addStretch()
-        self._btn_simulation = _ToggleSwitch("仿真", "实机")
+        self._btn_simulation = _ToggleSwitch(tr("cmd_simulation"), tr("cmd_actual"))
         self._btn_simulation.toggled.connect(self.simulation_toggled.emit)
         layout.addWidget(self._btn_simulation)
 
@@ -207,6 +213,19 @@ class GlobalCommandBar(QWidget):
 
         # Part 1D: 全部禁用
         self.set_all_enabled(False)
+
+        I18nManager.instance().language_changed.connect(self._on_language_changed)
+
+    def _on_language_changed(self, lang: str):
+        self._btn_enable.set_texts(tr("cmd_enable"), tr("cmd_disable"))
+        self._btn_stop_move.setText(tr("cmd_stop_move"))
+        self._btn_pause.setText(tr("cmd_pause"))
+        self._btn_resume.setText(tr("cmd_resume"))
+        self._btn_start.setText(tr("cmd_project_start"))
+        self._btn_pause_project.setText(tr("cmd_project_pause"))
+        self._btn_stop_project.setText(tr("cmd_project_stop"))
+        self._btn_simulation.set_texts(tr("cmd_simulation"), tr("cmd_actual"))
+        self._mode_switch.update()
 
     def _add_oval_btn(self, layout, text):
         btn = QPushButton(text)

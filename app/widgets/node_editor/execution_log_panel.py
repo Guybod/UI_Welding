@@ -1,9 +1,9 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPlainTextEdit
-from PySide6.QtCore import Qt
+from app.i18n import I18nManager, tr
 
 
 class ExecutionLogPanel(QWidget):
-    """执行日志面板 — 占位, 后续显示校验结果/执行顺序/TCP指令/CRI状态"""
+    """执行日志面板 — 显示校验结果/执行顺序/TCP指令/CRI状态, 支持双语"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -13,12 +13,17 @@ class ExecutionLogPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        title = QLabel("执行日志")
-        title.setStyleSheet("font-weight: bold; padding: 4px 8px;")
-        layout.addWidget(title)
+        self._title = QLabel(tr("node_log_title"))
+        self._title.setStyleSheet("font-weight: bold; padding: 4px 8px;")
+        layout.addWidget(self._title)
 
         self._log = QPlainTextEdit()
         self._log.setObjectName("executionLog")
         self._log.setReadOnly(True)
         self._log.setMaximumBlockCount(500)
         layout.addWidget(self._log)
+
+        I18nManager.instance().language_changed.connect(self._on_language_changed)
+
+    def _on_language_changed(self, lang: str):
+        self._title.setText(tr("node_log_title"))

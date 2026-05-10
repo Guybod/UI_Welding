@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 from PySide6.QtCore import QSettings, Signal, QPoint, QTimer
 
+from app.i18n import I18nManager, tr
 from app.widgets.status_bar import StatusBar
 from app.widgets.top_tab_bar import TopTabBar
 from app.widgets.global_command_bar import GlobalCommandBar
@@ -52,6 +53,10 @@ class MainWindow(QMainWindow):
         # 加载 QSS
         saved_style = self._settings.value(SETTINGS_KEY_STYLE, self.DEFAULT_STYLE)
         self._apply_style(saved_style)
+
+        # 加载语言
+        saved_lang = self._settings.value("ui/language", "zh")
+        I18nManager.instance().set_lang(saved_lang)
 
         # 菜单栏
         self._setup_menu_bar()
@@ -231,26 +236,56 @@ class MainWindow(QMainWindow):
     # ════════════════ 菜单 / 样式 ════════════════
 
     def _setup_menu_bar(self):
+        self._i18n = I18nManager.instance()
+        self._i18n.language_changed.connect(self._on_language_changed)
         menu_bar = self.menuBar()
 
         # 连接
-        conn_menu = menu_bar.addMenu("连接")
-        login_action = QAction("登录", self)
-        login_action.triggered.connect(self.return_to_login.emit)
-        conn_menu.addAction(login_action)
+        self._conn_menu = menu_bar.addMenu(tr("menu_connection"))
+        self._login_action = QAction(tr("menu_login"), self)
+        self._login_action.triggered.connect(self.return_to_login.emit)
+        self._conn_menu.addAction(self._login_action)
+
+        # 设置
+        self._settings_menu = menu_bar.addMenu(tr("menu_settings"))
+        lang_menu = self._settings_menu.addMenu(tr("menu_language"))
+        self._lang_zh_action = QAction(tr("menu_lang_zh"), self)
+        self._lang_zh_action.triggered.connect(lambda: self._on_lang("zh"))
+        lang_menu.addAction(self._lang_zh_action)
+        self._lang_en_action = QAction(tr("menu_lang_en"), self)
+        self._lang_en_action.triggered.connect(lambda: self._on_lang("en"))
+        lang_menu.addAction(self._lang_en_action)
 
         # 样式
-        style_menu = menu_bar.addMenu("样式")
+        self._style_menu = menu_bar.addMenu(tr("menu_style"))
+        self._style_actions = {}
         for name in self.STYLE_PRESETS:
             action = QAction(name, self)
             action.triggered.connect(self._make_style_handler(name))
-            style_menu.addAction(action)
+            self._style_menu.addAction(action)
+            self._style_actions[name] = action
 
         # 帮助
-        help_menu = menu_bar.addMenu("帮助")
-        about_action = QAction("关于", self)
-        about_action.triggered.connect(self._show_about)
-        help_menu.addAction(about_action)
+        self._help_menu = menu_bar.addMenu(tr("menu_help"))
+        self._about_action = QAction(tr("menu_about"), self)
+        self._about_action.triggered.connect(self._show_about)
+        self._help_menu.addAction(self._about_action)
+
+    def _on_lang(self, lang: str):
+        self._i18n.set_lang(lang)
+        self._settings.setValue("ui/language", lang)
+
+    def _on_language_changed(self, lang: str):
+        """刷新菜单栏文本"""
+        self._conn_menu.setTitle(tr("menu_connection"))
+        self._login_action.setText(tr("menu_login"))
+        self._settings_menu.setTitle(tr("menu_settings"))
+        self._style_menu.setTitle(tr("menu_style"))
+        self._help_menu.setTitle(tr("menu_help"))
+        self._about_action.setText(tr("menu_about"))
+        self._lang_zh_action.setText(tr("menu_lang_zh"))
+        self._lang_en_action.setText(tr("menu_lang_en"))
+        self._login_action.setText(tr("menu_return_login") if self._page_router else tr("menu_login"))
 
     def _make_style_handler(self, name: str):
         def handler():

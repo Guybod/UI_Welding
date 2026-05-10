@@ -2,10 +2,22 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QScrollArea
 from PySide6.QtCore import Qt, Signal
 
 from app.page_registry import PAGE_REGISTRY, PageSpec
+from app.i18n import I18nManager, tr
+
+TAB_I18N_KEYS = {
+    "home": "tab_home",
+    "welding": "tab_welding",
+    "writing": "tab_writing",
+    "motion": "tab_motion",
+    "io": "tab_io",
+    "program": "tab_program",
+    "upload": "tab_upload",
+    "settings": "tab_settings",
+}
 
 
 class TopTabBar(QWidget):
-    """顶部功能页标签栏 — 横向排列, 滚轮滚动, 选中高亮"""
+    """顶部功能页标签栏 — 横向排列, 滚轮滚动, 选中高亮, 支持双语"""
 
     tab_clicked = Signal(PageSpec)
 
@@ -30,7 +42,8 @@ class TopTabBar(QWidget):
         self._layout.addStretch()
 
         for spec in PAGE_REGISTRY:
-            btn = QPushButton(spec.title)
+            i18n_key = TAB_I18N_KEYS.get(spec.key, spec.title)
+            btn = QPushButton(tr(i18n_key))
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(self._make_handler(spec))
@@ -45,9 +58,10 @@ class TopTabBar(QWidget):
 
         self.setFocusPolicy(Qt.NoFocus)
 
-        # 选中第一个
         if PAGE_REGISTRY:
             self._buttons[PAGE_REGISTRY[0].key].setChecked(True)
+
+        I18nManager.instance().language_changed.connect(self._on_language_changed)
 
     def _make_handler(self, spec: PageSpec):
         def handler():
@@ -64,3 +78,9 @@ class TopTabBar(QWidget):
         delta = event.angleDelta().y()
         bar.setValue(bar.value() - delta)
         event.accept()
+
+    def _on_language_changed(self, lang: str):
+        for spec in PAGE_REGISTRY:
+            if spec.key in self._buttons:
+                i18n_key = TAB_I18N_KEYS.get(spec.key, spec.title)
+                self._buttons[spec.key].setText(tr(i18n_key))

@@ -6,7 +6,9 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton,
 )
 from PySide6.QtGui import QShortcut, QKeySequence
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
+
+from app.i18n import I18nManager, tr
 
 from app.widgets.node_editor.graph_scene import GraphScene
 from app.widgets.node_editor.graph_view import GraphView
@@ -37,41 +39,74 @@ class NodeEditorWidget(QWidget):
         # ── top bar ──
         top = QHBoxLayout()
         top.setContentsMargins(8, 6, 8, 6)
-        top.addWidget(QLabel("工程:"))
-        self._project_name = QLineEdit("未命名")
+        self._proj_label = QLabel(tr("node_project_label"))
+        top.addWidget(self._proj_label)
+        self._project_name = QLineEdit(tr("node_unnamed"))
         self._project_name.setFixedWidth(220)
         self._project_name.setStyleSheet("background: #3a3a3d; border: 1px solid #555; padding: 2px 6px;")
         top.addWidget(self._project_name)
         top.addStretch()
-        btn_validate = QPushButton("校验")
-        btn_validate.clicked.connect(self._on_validate)
-        top.addWidget(btn_validate)
-        btn_save = QPushButton("保存")
-        btn_save.clicked.connect(self._on_save)
-        top.addWidget(btn_save)
-        btn_load = QPushButton("加载")
-        btn_load.clicked.connect(self._on_load)
-        top.addWidget(btn_load)
+        self._btn_validate = QPushButton(tr("node_btn_validate"))
+        self._btn_validate.clicked.connect(self._on_validate)
+        top.addWidget(self._btn_validate)
+        self._btn_save = QPushButton(tr("node_btn_save"))
+        self._btn_save.clicked.connect(self._on_save)
+        top.addWidget(self._btn_save)
+        self._btn_load = QPushButton(tr("node_btn_load"))
+        self._btn_load.clicked.connect(self._on_load)
+        top.addWidget(self._btn_load)
 
         # ── three-column ──
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self._library)
-        splitter.addWidget(self._view)
-        splitter.addWidget(self._property)
-        splitter.setSizes([200, 600, 240])
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
+        self._h_splitter = QSplitter(Qt.Horizontal)
+        self._h_splitter.addWidget(self._library)
+        self._h_splitter.addWidget(self._view)
+        self._h_splitter.addWidget(self._property)
+        self._h_splitter.setStretchFactor(0, 0)
+        self._h_splitter.setStretchFactor(1, 1)
+        self._h_splitter.setStretchFactor(2, 0)
+
+        # ── vertical splitter: 画布区 + 日志 ──
+        self._v_splitter = QSplitter(Qt.Vertical)
+        self._v_splitter.addWidget(self._h_splitter)
+        self._v_splitter.addWidget(self._log)
+        self._v_splitter.setStretchFactor(0, 1)
+        self._v_splitter.setStretchFactor(1, 0)
+
+        self._settings = QSettings("Codroid", "RobotUI")
+        h_sizes = self._settings.value("nodeEditor/hSplitter")
+        v_sizes = self._settings.value("nodeEditor/vSplitter")
+        if h_sizes:
+            self._h_splitter.setSizes([int(x) for x in h_sizes])
+        else:
+            self._h_splitter.setSizes([200, 600, 240])
+        if v_sizes:
+            self._v_splitter.setSizes([int(x) for x in v_sizes])
+        else:
+            self._v_splitter.setSizes([500, 150])
+
+        self._h_splitter.splitterMoved.connect(self._save_splitter_state)
+        self._v_splitter.splitterMoved.connect(self._save_splitter_state)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(top)
-        layout.addWidget(splitter)
-        layout.addWidget(self._log)
+        layout.addWidget(self._v_splitter)
 
         QShortcut(QKeySequence.Save, self, self._on_save)
         QShortcut(QKeySequence.Open, self, self._on_load)
+
+        self._scene.selectionChanged.connect(self._on_selection_changed)
+        I18nManager.instance().language_changed.connect(self._on_language_changed)
+
+    def _on_selection_changed(self):
+        items = self._scene.selectedItems()
+        from app.widgets.node_editor.node_item import NodeItem
+        for item in items:
+            if isinstance(item, NodeItem):
+                self._property.set_node(item)
+                return
+        self._property.clear()
 
     def _projects_dir(self) -> str:
         d = str(DEFAULT_PROJECTS_DIR)
@@ -85,9 +120,9 @@ class NodeEditorWidget(QWidget):
         log = self._log._log
         log.clear()
         if r.ok:
-            log.appendPlainText("✅ 校验通过")
+            log.appendPlainText(tr("node_valid_pass"))
         else:
-            log.appendPlainText(f"❌ 校验失败 ({len(r.errors)} 个错误)")
+            log.appendPlainText(f"{tr('node_valid_fail')} ({len(r.errors)})")
             for err in r.errors:
                 log.appendPlainText(f"  - {err}")
         for w in r.warnings:
@@ -110,14 +145,14 @@ class NodeEditorWidget(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
             self._current_path = path
-            self._log._log.appendPlainText(f"已保存: {path}")
+            self._log._log.appendPlainText(f"{tr('node_saved')} {path}")
         except Exception as e:
-            QMessageBox.critical(self, "保存失败", str(e))
+            QMessageBox.critical(self, tr("node_save_failed"), str(e))
 
     def _on_load(self):
         proj_dir = self._projects_dir()
         path, _ = QFileDialog.getOpenFileName(
-            self, "加载节点图", proj_dir, "JSON Files (*.json)"
+            self, tr("node_load_graph"), proj_dir, "JSON Files (*.json)"
         )
         if not path:
             return
@@ -129,6 +164,18 @@ class NodeEditorWidget(QWidget):
             self._current_path = path
             name = os.path.splitext(os.path.basename(path))[0]
             self._project_name.setText(name)
-            self._log._log.appendPlainText(f"已加载: {path}")
+            self._log._log.appendPlainText(f"{tr('node_loaded')} {path}")
         except Exception as e:
-            QMessageBox.critical(self, "加载失败", str(e))
+            QMessageBox.critical(self, tr("node_load_failed"), str(e))
+
+    def _on_language_changed(self, lang: str):
+        self._proj_label.setText(tr("node_project_label"))
+        if not self._current_path:
+            self._project_name.setPlaceholderText(tr("node_unnamed"))
+        self._btn_validate.setText(tr("node_btn_validate"))
+        self._btn_save.setText(tr("node_btn_save"))
+        self._btn_load.setText(tr("node_btn_load"))
+
+    def _save_splitter_state(self):
+        self._settings.setValue("nodeEditor/hSplitter", self._h_splitter.sizes())
+        self._settings.setValue("nodeEditor/vSplitter", self._v_splitter.sizes())

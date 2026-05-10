@@ -67,6 +67,7 @@ class GraphScene(QGraphicsScene):
                     title=item._title,
                     x=item.pos().x(),
                     y=item.pos().y(),
+                    data=item.node_data(),
                 ))
 
         seen = set()
@@ -102,6 +103,9 @@ class GraphScene(QGraphicsScene):
         for nd in data.nodes:
             node = self.add_node(nd.node_type, nd.x, nd.y)
             node.setData(0, nd.node_id)
+            node.set_node_data(nd.data)
+            if nd.title != nd.node_type:
+                node._title = nd.title
             node_map[nd.node_id] = node
 
         for ed in data.edges:

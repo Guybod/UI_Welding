@@ -26,6 +26,7 @@ class NodeItem(QGraphicsItem):
         self._title = spec.title if spec else node_type
         self._color = QColor(spec.color if spec else "#616161")
         self._ports: list[PortItem] = []
+        self._data: dict = {}
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
@@ -77,6 +78,12 @@ class NodeItem(QGraphicsItem):
 
     def node_type(self) -> str:
         return self._node_type
+
+    def node_data(self) -> dict:
+        return self._data
+
+    def set_node_data(self, data: dict):
+        self._data = data
 
     def ports(self) -> list[PortItem]:
         return self._ports
