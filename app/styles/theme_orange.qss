@@ -1,0 +1,21 @@
+/* Codroid — 活力橙主题 */
+QMainWindow { background-color: #1e1a1a; }
+QWidget { background-color: #1e1a1a; color: #e8d8c8; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 13px; }
+#topTabBarPlaceholder { background-color: #2e2220; border-bottom: 1px solid #4a3028; min-height: 48px; }
+#pageStackPlaceholder { background-color: #1e1a1a; }
+#drawerPlaceholder { background-color: #2e2220; border-left: 1px solid #4a3028; min-width: 280px; }
+#commandBarPlaceholder { background-color: #2e2220; border-top: 1px solid #4a3028; min-height: 48px; }
+QStatusBar { background-color: #3e2820; color: #b8a898; font-size: 12px; border-top: 1px solid #4a3028; padding: 2px 8px; }
+QStatusBar QLabel { color: #b8a898; background: transparent; padding: 0 6px; }
+QPushButton { background-color: #2e2220; color: #e8d8c8; border: 1px solid #4a3028; border-radius: 4px; padding: 6px 14px; }
+QPushButton:hover { background-color: #4a3028; border-color: #ff8800; }
+QPushButton:pressed { background-color: #3e2820; }
+QPushButton:disabled { background-color: #1e1a1a; color: #554433; border-color: #2e2220; }
+QLineEdit { background-color: #1a1414; color: #e8d8c8; border: 1px solid #4a3028; border-radius: 4px; padding: 4px 8px; }
+QLineEdit:focus { border-color: #ff8800; }
+QTabBar::tab { background-color: #2e2220; color: #b8a898; border: none; border-bottom: 2px solid transparent; padding: 10px 18px; margin: 0 2px; }
+QTabBar::tab:hover { color: #ff8800; }
+QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #ff8800; }
+QTableWidget { background-color: #1e1a1a; color: #e8d8c8; gridline-color: #2e2220; border: 1px solid #4a3028; }
+QTableWidget::item:selected { background-color: #ff8800; }
+QHeaderView::section { background-color: #2e2220; color: #e8d8c8; border: none; border-bottom: 1px solid #4a3028; padding: 4px 8px; }

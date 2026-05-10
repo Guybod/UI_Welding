@@ -1,0 +1,29 @@
+robots:
+  S20-180-ECO-V2:
+    display_name: "S20-180-ECO-V2"
+    joint_count: 6
+    model_type: "simple_chain"
+    mesh_dir: "assets/models/S20-180-ECO-V2"
+    joint_order: [J1, J2, J3, J4, J5, J6]
+    raw_joint_unit: "rad"
+    raw_tcp_position_unit: "m"
+    raw_tcp_orientation_unit: "rad"
+    ui_joint_unit: "deg"
+    ui_tcp_position_unit: "mm"
+    ui_tcp_orientation_unit: "deg"
+    link_visual:
+      base_height_mm: 180
+      link_lengths_mm: [182, 425, 330, 164, 164, 180.5]
+      joint_radius_mm: 35
+
+  default_6axis:
+    display_name: "Generic 6-Axis Robot"
+    joint_count: 6
+    model_type: "simple_chain"
+    joint_order: [J1, J2, J3, J4, J5, J6]
+    raw_joint_unit: "rad"
+    raw_tcp_position_unit: "m"
+    raw_tcp_orientation_unit: "rad"
+    ui_joint_unit: "deg"
+    ui_tcp_position_unit: "mm"
+    ui_tcp_orientation_unit: "deg"

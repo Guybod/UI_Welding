@@ -1,0 +1,86 @@
+import json
+import time
+import threading
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+
+@dataclass
+class PendingRequest:
+    ty: str
+    on_response: Callable[[dict], None]
+    on_error: Callable[[Exception], None]
+    created_at: float = field(default_factory=time.monotonic)
+    timeout: float = 5.0
+
+
+class RequestBuilder:
+    """构建 JSON 请求, 管理 id 生成和 PendingRequest 映射。线程安全。"""
+
+    def __init__(self, default_timeout: float = 5.0):
+        self._seq = 0
+        self._pending: dict[int | str, PendingRequest] = {}
+        self._lock = threading.Lock()
+        self._default_timeout = default_timeout
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+    def build(
+        self,
+        ty: str,
+        db: dict,
+        on_response: Callable[[dict], None],
+        on_error: Callable[[Exception], None],
+        timeout: Optional[float] = None,
+    ) -> str:
+        t = timeout if timeout is not None else self._default_timeout
+        with self._lock:
+            self._seq += 1
+            req_id = self._seq
+            self._pending[req_id] = PendingRequest(
+                ty=ty,
+                on_response=on_response,
+                on_error=on_error,
+                created_at=time.monotonic(),
+                timeout=t,
+            )
+        return json.dumps({"id": req_id, "ty": ty, "db": db}, ensure_ascii=False)
+
+    def handle_response(self, msg: dict) -> bool:
+        req_id = msg.get("id")
+        if req_id is None:
+            return False
+        with self._lock:
+            req = self._pending.pop(req_id, None)
+        if req is None:
+            return False
+        err = msg.get("err")
+        if err:
+            req.on_error(Exception(f"RobotError: {err}"))
+        else:
+            req.on_response(msg.get("db", {}))
+        return True
+
+    def drain_pending(self, error: Exception):
+        with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for req in pending:
+            req.on_error(error)
+
+    def check_timeouts(self):
+        """由 TcpAdapter 周期性调用（在 TcpThread 内）"""
+        now = time.monotonic()
+        with self._lock:
+            timed_out = [
+                rid for rid, req in self._pending.items()
+                if now - req.created_at > req.timeout
+            ]
+        for rid in timed_out:
+            with self._lock:
+                req = self._pending.pop(rid, None)
+            if req:
+                req.on_error(TimeoutError(f"Request timeout: id={rid}, ty={req.ty}"))

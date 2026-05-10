@@ -1,0 +1,31 @@
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QPainter, QColor, QBrush, QPen
+
+
+class LedIndicator(QWidget):
+    """圆形 LED 状态指示灯"""
+
+    def __init__(self, label: str = "", parent=None):
+        super().__init__(parent)
+        self._color = QColor("#555555")
+        self._label_text = label
+        self.setFixedSize(QSize(80, 24))
+
+    def set_state(self, on: bool):
+        self._color = QColor("#00cc66") if on else QColor("#555555")
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = 7
+        cx = 14
+        cy = self.height() // 2
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(self._color))
+        p.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+        p.setPen(QColor("#a0a0a0"))
+        p.drawText(28, 0, self.width() - 28, self.height(),
+                   Qt.AlignVCenter | Qt.AlignLeft, self._label_text)
+        p.end()

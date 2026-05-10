@@ -1,0 +1,48 @@
+from typing import Callable
+
+from network.protocol.request import RequestBuilder
+
+
+class ResponseDispatcher:
+    """消息路由: 有 id → RequestBuilder.handle_response, 无 id + publish/* → 订阅回调"""
+
+    def __init__(self, request_builder: RequestBuilder):
+        self._builder = request_builder
+        self._subscriptions: dict[str, list[Callable[[dict], None]]] = {}
+
+    def subscribe(self, topic: str, callback: Callable[[dict], None]):
+        if topic not in self._subscriptions:
+            self._subscriptions[topic] = []
+        self._subscriptions[topic].append(callback)
+
+    def unsubscribe(self, topic: str, callback: Callable[[dict], None] = None):
+        if topic not in self._subscriptions:
+            return
+        if callback is None:
+            self._subscriptions.pop(topic, None)
+        else:
+            self._subscriptions[topic] = [
+                cb for cb in self._subscriptions[topic] if cb is not callback
+            ]
+
+    @property
+    def active_subscriptions(self) -> dict[str, list[Callable]]:
+        return dict(self._subscriptions)
+
+    def dispatch(self, msg: dict):
+        """路由一个 JSON 消息"""
+        ty = msg.get("ty", "")
+        has_id = "id" in msg
+
+        # 推送消息: 无 id 且 ty 以 publish/ 开头
+        if not has_id and ty.startswith("publish/"):
+            if ty in self._subscriptions:
+                for cb in self._subscriptions[ty]:
+                    cb(msg.get("db", {}))
+            return True
+
+        # 命令响应: 有 id 字段
+        if has_id:
+            return self._builder.handle_response(msg)
+
+        return False

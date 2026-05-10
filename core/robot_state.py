@@ -1,0 +1,151 @@
+from dataclasses import dataclass, field
+
+from PySide6.QtCore import QObject, Signal
+
+from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
+
+
+@dataclass
+class RobotStateRaw:
+    """CRI 原始值 — 仅 UdpThread/TcpThread 写入, 单位 rad / m"""
+    joint_position: list[float] = field(default_factory=lambda: [0.0] * 6)
+    joint_velocity: list[float] = field(default_factory=lambda: [0.0] * 6)
+    joint_torque: list[float] = field(default_factory=lambda: [0.0] * 6)
+    joint_external_force: list[float] = field(default_factory=lambda: [0.0] * 6)
+
+    tcp_x: float = 0.0
+    tcp_y: float = 0.0
+    tcp_z: float = 0.0
+    tcp_rx: float = 0.0
+    tcp_ry: float = 0.0
+    tcp_rz: float = 0.0
+
+    tcp_velocity: list[float] = field(default_factory=lambda: [0.0] * 6)
+    tcp_linear_speed: float = 0.0
+
+    timestamp: int = 0
+    is_moving: bool = False
+    is_enabled: bool = False
+    is_emergency_stop: bool = False
+
+    # from RobotStatus
+    robot_type: str = ""
+    mode: int = 0
+    state: int = 0
+    is_simulation: bool = False
+    tool_id: int = 0
+    coordinate_id: int = 0
+    move_rate: float = 1.0
+    manual_move_rate: float = 0.3
+
+
+@dataclass
+class RobotStateUi:
+    """UI 显示值 — 仅 UI 线程读取, 单位 deg / mm"""
+    joint_deg: list[float] = field(default_factory=lambda: [0.0] * 6)
+    tcp_x_mm: float = 0.0
+    tcp_y_mm: float = 0.0
+    tcp_z_mm: float = 0.0
+    tcp_rx_deg: float = 0.0
+    tcp_ry_deg: float = 0.0
+    tcp_rz_deg: float = 0.0
+
+    is_moving: bool = False
+    is_enabled: bool = False
+    is_emergency_stop: bool = False
+
+    robot_type: str = ""
+    mode: int = 0
+    state: int = 0
+    is_simulation: bool = False
+    move_rate: float = 1.0
+    manual_move_rate: float = 0.3
+
+
+class StateConverter:
+    """RobotStateRaw → RobotStateUi 单位转换, 在 UI 线程执行"""
+
+    @staticmethod
+    def convert(raw: RobotStateRaw) -> RobotStateUi:
+        return RobotStateUi(
+            joint_deg=rad_list_to_deg(raw.joint_position),
+            tcp_x_mm=m_to_mm(raw.tcp_x),
+            tcp_y_mm=m_to_mm(raw.tcp_y),
+            tcp_z_mm=m_to_mm(raw.tcp_z),
+            tcp_rx_deg=rad_to_deg(raw.tcp_rx),
+            tcp_ry_deg=rad_to_deg(raw.tcp_ry),
+            tcp_rz_deg=rad_to_deg(raw.tcp_rz),
+            is_moving=raw.is_moving,
+            is_enabled=raw.is_enabled,
+            is_emergency_stop=raw.is_emergency_stop,
+            robot_type=raw.robot_type,
+            mode=raw.mode,
+            state=raw.state,
+            is_simulation=raw.is_simulation,
+            move_rate=raw.move_rate,
+            manual_move_rate=raw.manual_move_rate,
+        )
+
+
+class RobotStateStore(QObject):
+    """UI 线程单例 — Signal 接收 snapshot, UI 只读 RobotStateUi"""
+
+    changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._raw = RobotStateRaw()
+        self._ui = RobotStateUi()
+
+    @property
+    def ui(self) -> RobotStateUi:
+        return self._ui
+
+    def apply_cri_snapshot(self, data: dict):
+        """UdpThread → Signal → UI Thread. 更新 raw 并转换到 ui"""
+        raw = self._raw
+        if "joint_position" in data:
+            raw.joint_position = data["joint_position"]
+        if "joint_velocity" in data:
+            raw.joint_velocity = data["joint_velocity"]
+        if "joint_torque" in data:
+            raw.joint_torque = data["joint_torque"]
+        if "joint_external_force" in data:
+            raw.joint_external_force = data["joint_external_force"]
+        if "tcp_x" in data:
+            raw.tcp_x = data["tcp_x"]
+        if "tcp_y" in data:
+            raw.tcp_y = data["tcp_y"]
+        if "tcp_z" in data:
+            raw.tcp_z = data["tcp_z"]
+        if "tcp_rx" in data:
+            raw.tcp_rx = data["tcp_rx"]
+        if "tcp_ry" in data:
+            raw.tcp_ry = data["tcp_ry"]
+        if "tcp_rz" in data:
+            raw.tcp_rz = data["tcp_rz"]
+        if "tcp_velocity" in data:
+            raw.tcp_velocity = data["tcp_velocity"]
+        if "tcp_linear_speed" in data:
+            raw.tcp_linear_speed = data["tcp_linear_speed"]
+        if "is_moving" in data:
+            raw.is_moving = data["is_moving"]
+        if "is_enabled" in data:
+            raw.is_enabled = data["is_enabled"]
+        if "is_emergency_stop" in data:
+            raw.is_emergency_stop = data["is_emergency_stop"]
+        if "robot_type" in data:
+            raw.robot_type = data["robot_type"]
+        if "mode" in data:
+            raw.mode = data["mode"]
+        if "state" in data:
+            raw.state = data["state"]
+        if "is_simulation" in data:
+            raw.is_simulation = data["is_simulation"]
+        if "move_rate" in data:
+            raw.move_rate = data["move_rate"]
+        if "manual_move_rate" in data:
+            raw.manual_move_rate = data["manual_move_rate"]
+
+        self._ui = StateConverter.convert(raw)
+        self.changed.emit()

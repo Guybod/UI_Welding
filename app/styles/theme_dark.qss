@@ -1,0 +1,129 @@
+/*
+ * Codroid 机器人控制终端 — 暗夜黑主题
+ */
+
+/* ===== 全局 ===== */
+QMainWindow {
+    background-color: #0d0d0d;
+}
+
+QWidget {
+    background-color: #0d0d0d;
+    color: #cccccc;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+
+/* ===== 占位区域 ===== */
+#topTabBarPlaceholder {
+    background-color: #1a1a1a;
+    border-bottom: 1px solid #333333;
+    min-height: 48px;
+}
+
+#pageStackPlaceholder {
+    background-color: #0d0d0d;
+}
+
+#drawerPlaceholder {
+    background-color: #1a1a1a;
+    border-left: 1px solid #333333;
+    min-width: 280px;
+}
+
+#commandBarPlaceholder {
+    background-color: #1a1a1a;
+    border-top: 1px solid #333333;
+    min-height: 48px;
+}
+
+/* ===== 状态栏 ===== */
+QStatusBar {
+    background-color: #1a1a1a;
+    color: #888888;
+    font-size: 12px;
+    border-top: 1px solid #333333;
+    padding: 2px 8px;
+}
+
+QStatusBar QLabel {
+    color: #888888;
+    background: transparent;
+    padding: 0 6px;
+}
+
+/* ===== 通用按钮 ===== */
+QPushButton {
+    background-color: #1a1a1a;
+    color: #cccccc;
+    border: 1px solid #333333;
+    border-radius: 4px;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    background-color: #2a2a2a;
+    border-color: #ff6600;
+}
+
+QPushButton:pressed {
+    background-color: #333333;
+}
+
+QPushButton:disabled {
+    background-color: #0d0d0d;
+    color: #444444;
+    border-color: #1a1a1a;
+}
+
+/* ===== 输入框 ===== */
+QLineEdit {
+    background-color: #111111;
+    color: #cccccc;
+    border: 1px solid #333333;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+QLineEdit:focus {
+    border-color: #ff6600;
+}
+
+/* ===== 标签页(预留给 TopTabBar) ===== */
+QTabBar::tab {
+    background-color: #1a1a1a;
+    color: #888888;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 18px;
+    margin: 0 2px;
+}
+
+QTabBar::tab:hover {
+    color: #ff6600;
+}
+
+QTabBar::tab:selected {
+    color: #ffffff;
+    border-bottom: 2px solid #ff6600;
+}
+
+/* ===== 表格 ===== */
+QTableWidget {
+    background-color: #0d0d0d;
+    color: #cccccc;
+    gridline-color: #1a1a1a;
+    border: 1px solid #333333;
+}
+
+QTableWidget::item:selected {
+    background-color: #ff6600;
+}
+
+QHeaderView::section {
+    background-color: #1a1a1a;
+    color: #cccccc;
+    border: none;
+    border-bottom: 1px solid #333333;
+    padding: 4px 8px;
+}
