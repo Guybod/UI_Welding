@@ -5,6 +5,7 @@ import math as _math
 
 from PySide6.QtCore import QObject, Signal, QTimer
 
+from app.i18n import tr
 from app.widgets.node_editor.models import GraphData, NodeData, NODE_SPECS
 
 
@@ -100,7 +101,7 @@ class ExecutionEngine(QObject):
                 on_error=lambda e: self._log(f"[停止] Robot/stopMove 失败: {e}"),
             )
 
-        self._log("[执行] 已停止")
+        self._log(tr("log_stopped"))
         self.graph_stopped.emit()
 
     # ───────────────────────── start / step ─────────────────────────
@@ -125,10 +126,10 @@ class ExecutionEngine(QObject):
 
         mode = "[在线]" if online else "[DryRun]"
         self.graph_started.emit()
-        self._log(f"{mode} 开始执行")
+        self._log(f"{mode} Start")
 
         if not self._current_node_id:
-            self._fail_graph("未找到 Start 节点")
+            self._fail_graph("Start node not found")
             return
 
         QTimer.singleShot(0, self._step)
@@ -151,7 +152,7 @@ class ExecutionEngine(QObject):
         node_id = self._current_node_id
         node = self._node_idx.get(node_id)
         if not node:
-            self._fail_graph(f"执行路径中的节点不存在: {node_id}")
+            self._fail_graph(f"Node in execution path not found: {node_id}")
             return
 
         self._clear_highlight()
@@ -163,7 +164,7 @@ class ExecutionEngine(QObject):
         self._log(f"  ▶ {node.title} ({nt})")
 
         if nt == "End":
-            self._log("  ⏹ 到达 End")
+            self._log(tr("log_end_reached"))
             self._finish_graph()
             return
 
@@ -214,7 +215,7 @@ class ExecutionEngine(QObject):
 
     def _execute_passive(self, node: NodeData):
         if node.node_type == "Position":
-            self._log(f"    点位: {node.data.get('name', node.title)}")
+            self._log(f"    {tr('log_position')} {node.data.get('name', node.title)}")
         self._advance_to(self._flow_target(node, "flow"), 80)
 
     def _advance_to(self, next_id: str | None, delay_ms: int = 50):
@@ -257,7 +258,7 @@ class ExecutionEngine(QObject):
             self._fail_node(node, f"{node.node_type}: 无法构建合法运动指令")
             return
 
-        self._log(f"    📤 发送运动指令")
+        self._log(tr("log_motion_send"))
         token = self._run_token
 
         def _on_response(_db):
@@ -268,7 +269,7 @@ class ExecutionEngine(QObject):
         def _on_error(e):
             if token != self._run_token:
                 return
-            self._fail_node(node, f"Robot/move 发送失败: {e}")
+            self._fail_node(node, f"Robot/move send failed: {e}")
 
         self._send_command("Robot/move", db, on_response=_on_response, on_error=_on_error)
 
@@ -282,7 +283,7 @@ class ExecutionEngine(QObject):
         self._path_queue = list(waypoints)  # [(move_db, label), ...]
         self._path_node = node
         self._path_index = 0
-        self._log(f"    🛤 MovePath 共 {len(waypoints)} 个途径点")
+        self._log(f"    🛤 MovePath: {len(waypoints)} waypoints")
         self._send_path_next()
 
     def _send_path_next(self):
@@ -290,7 +291,7 @@ class ExecutionEngine(QObject):
         if not self._running:
             return
         if self._path_index >= len(self._path_queue):
-            self._log(f"    ✅ MovePath 全部完成")
+            self._log(f"    ✅ MovePath complete")
             self._advance_to(self._flow_target(self._path_node, "flow"), 50)
             return
 
@@ -358,7 +359,7 @@ class ExecutionEngine(QObject):
         self._poll_timer.setInterval(self.POLL_INTERVAL)
         self._poll_timer.timeout.connect(self._poll_motion)
         self._poll_timer.start()
-        self._log("    ⏳ 等待 CRI moving: false → true")
+        self._log(tr("log_motion_wait_start"))
 
     def _poll_motion(self):
         if not self._running or not self._active_node:
@@ -376,25 +377,25 @@ class ExecutionEngine(QObject):
                 self._motion_started = True
                 self._motion_phase = "wait_finish"
                 self._wait_start_ms = self._now_ms()
-                self._log("    🏃 CRI moving=true，运动已开始")
+                self._log(tr("log_motion_running"))
                 return
 
             if elapsed >= self.MOTION_TIMEOUT_START:
                 if self._is_target_reached(state, self._active_target):
-                    self._log("    ✅ 未检测到 moving=true，但当前位置已接近目标，按短运动完成处理")
+                    self._log("    ✅ No moving=true detected, but position close to target, treating as short motion done")
                     self._finish_motion_success()
                 else:
-                    self._fail_node(self._active_node, "运动启动超时，且当前位置未接近目标")
+                    self._fail_node(self._active_node, "Motion start timeout, position not close to target")
                 return
 
         else:
             if not moving:
-                self._log(f"    ✅ CRI moving=false，运动完成 ({elapsed:.0f}ms)")
+                self._log(f"    {tr('log_motion_done')} ({elapsed:.0f}ms)")
                 self._finish_motion_success()
                 return
 
             if elapsed >= self.MOTION_TIMEOUT_FINISH:
-                self._fail_node(self._active_node, "运动完成超时")
+                self._fail_node(self._active_node, "Motion finish timeout")
                 return
 
     def _finish_motion_success(self):
@@ -466,13 +467,13 @@ class ExecutionEngine(QObject):
         if node.node_type == "MovePath":
             waypoints = self._collect_path_waypoints(node)
             if waypoints:
-                self._log(f"    🛤 MovePath DryRun：{len(waypoints)} 个途径点")
+                self._log(f"    🛤 MovePath DryRun: {len(waypoints)} waypoints")
                 for i, (db, name) in enumerate(waypoints):
                     motion_type = db[0].get("type", "?")
                     tp = db[0].get("targetPoint", {})
                     self._log(f"       [{i+1}] {name} → {motion_type} target={tp}")
             else:
-                self._log("    ⚠ MovePath 无合法途径点（需连接 Position）")
+                self._log("    ⚠ MovePath: no valid waypoints (connect Position nodes)")
             self._advance_to(self._flow_target(node, "flow"), 150)
             return
 
@@ -489,13 +490,13 @@ class ExecutionEngine(QObject):
         nt = node.node_type
         if nt == "If":
             cond = bool(self._resolve_input_raw(node, "condition"))
-            self._log(f"    ? 条件: {'True' if cond else 'False'}")
+            self._log(f"    ? Condition: {'True' if cond else 'False'}")
             branch = "true" if cond else "false"
             target = self._flow_target(node, branch)
             if target:
                 self._advance_to(target, 50)
             else:
-                self._fail_node(node, f"If 分支 '{branch}' 未连接")
+                self._fail_node(node, f"If branch '{branch}' not connected")
         elif nt == "For":
             start = self._num(self._resolve_input_raw(node, "start"), 0)
             end = self._num(self._resolve_input_raw(node, "end"), 10)
@@ -521,7 +522,7 @@ class ExecutionEngine(QObject):
                     self._advance_to(target, 50)
                     return
             else:
-                self._log(f"    ✅ For 完成")
+                self._log(tr("log_for_done"))
                 if loop_key in getattr(self, '_loop_counters', {}):
                     del self._loop_counters[loop_key]
                 target = self._flow_target(node, "done")
@@ -532,13 +533,13 @@ class ExecutionEngine(QObject):
         elif nt == "While":
             cond = bool(self._resolve_input_raw(node, "condition"))
             if cond:
-                self._log(f"    🔁 While 条件为 True, 执行循环体")
+                self._log(tr("log_while_true"))
                 target = self._flow_target(node, "body")
                 if target:
                     self._advance_to(target, 50)
                     return
             else:
-                self._log(f"    ✅ While 条件为 False, 退出")
+                self._log(tr("log_while_false"))
                 target = self._flow_target(node, "done")
                 if target:
                     self._advance_to(target, 50)
@@ -553,7 +554,7 @@ class ExecutionEngine(QObject):
             self._fail_node(node, f"Wait duration_ms 不能为负数: {ms}")
             return
         ms = int(ms)
-        self._log(f"    ⏱ 等待 {ms} ms")
+        self._log(f"    {tr('log_wait')} {ms} {tr('log_wait_ms')}")
         token = self._run_token
         QTimer.singleShot(ms, lambda t=token: self._wait_done(t, node))
 
@@ -654,14 +655,14 @@ class ExecutionEngine(QObject):
         nt = node.node_type
         if nt == "Print":
             val = self._resolve_input_raw(node, "value")
-            self._log(f"    🖨 打印: {val}")
+            self._log(f"    {tr('log_print')} {val}")
         elif nt in ("SetDO", "SetAO"):
             port = self._resolve_input_raw(node, "port")
             value = self._resolve_input_raw(node, "value")
-            self._log(f"    设置 {nt} port={port} val={value}")
+            self._log(f"    {tr('log_set_io')} {nt} port={port} val={value}")
         elif nt in ("ReadDI", "ReadAI"):
             port = self._resolve_input_raw(node, "port")
-            self._log(f"    读取 {nt} port={port}")
+            self._log(f"    {tr('log_read_io')} {nt} port={port}")
         elif nt in ("SetRegister", "ReadRegister"):
             addr = self._resolve_input_raw(node, "address")
             val = self._resolve_input_raw(node, "value")
@@ -676,7 +677,7 @@ class ExecutionEngine(QObject):
         elif nt in ("Int", "Float", "Bool", "String", "Array", "GetVar", "SetVar"):
             pass  # 被动数据节点，不打印
         else:
-            self._log(f"    {nt}: 当前阶段仅记录日志")
+            self._log(f"    {nt}: log only in current phase")
 
     # ───────────────────────── graph maps ─────────────────────────
 
@@ -937,14 +938,14 @@ class ExecutionEngine(QObject):
 
     def _fail_node(self, node: NodeData | None, message: str):
         node_desc = f"{node.title}({node.node_id})" if node else "<unknown>"
-        self._fail_graph(f"节点失败: {node_desc}: {message}")
+        self._fail_graph(f"Node failed: {node_desc}: {message}")
 
     def _fail_graph(self, message: str):
         self._running = False
         self._stopping = False
         self._run_token += 1
         self._stop_poll_timer()
-        self._log(f"[错误] {message}")
+        self._log(f"{tr('log_error')} {message}")
         self._clear_highlight()
         self.graph_stopped.emit()
 
@@ -953,7 +954,7 @@ class ExecutionEngine(QObject):
         self._stopping = False
         self._stop_poll_timer()
         self._clear_highlight()
-        self._log("[执行] 完成")
+        self._log(tr("log_finished"))
         self.graph_finished.emit()
 
     def _stop_poll_timer(self):
