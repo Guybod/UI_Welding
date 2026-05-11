@@ -119,6 +119,9 @@ class ExecutionEngine(QObject):
         self._active_node = None
         self._active_target = None
         self._return_stack.clear()
+        self._path_queue = []
+        self._path_node = None
+        self._path_index = 0
 
         mode = "[在线]" if online else "[DryRun]"
         self.graph_started.emit()
@@ -246,7 +249,7 @@ class ExecutionEngine(QObject):
 
     def _exec_motion_online(self, node: NodeData):
         if node.node_type == "MovePath":
-            self._fail_node(node, "MovePath 在线执行暂未开放，请先使用 MoveJ/MoveL 或 DryRun")
+            self._exec_move_path_online(node)
             return
 
         db = self._build_move_db(node)
@@ -268,6 +271,81 @@ class ExecutionEngine(QObject):
             self._fail_node(node, f"Robot/move 发送失败: {e}")
 
         self._send_command("Robot/move", db, on_response=_on_response, on_error=_on_error)
+
+    def _exec_move_path_online(self, node: NodeData):
+        """MovePath: 顺序发送多个 Robot/move，每个等 CRI moving 完成再下一个"""
+        waypoints = self._collect_path_waypoints(node)
+        if not waypoints:
+            self._fail_node(node, "MovePath 没有合法途径点（需连接至少一个 Position）")
+            return
+
+        self._path_queue = list(waypoints)  # [(move_db, label), ...]
+        self._path_node = node
+        self._path_index = 0
+        self._log(f"    🛤 MovePath 共 {len(waypoints)} 个途径点")
+        self._send_path_next()
+
+    def _send_path_next(self):
+        """发送路径队列中的下一个 move"""
+        if not self._running:
+            return
+        if self._path_index >= len(self._path_queue):
+            self._log(f"    ✅ MovePath 全部完成")
+            self._advance_to(self._flow_target(self._path_node, "flow"), 50)
+            return
+
+        db, label = self._path_queue[self._path_index]
+        self._path_index += 1
+        self._log(f"    📤 MovePath [{self._path_index}/{len(self._path_queue)}] {label}")
+
+        token = self._run_token
+
+        def _on_response(_db):
+            if token != self._run_token or not self._running:
+                return
+            self._begin_motion_wait(self._path_node, db)
+
+        def _on_error(e):
+            if token != self._run_token:
+                return
+            self._fail_node(self._path_node, f"MovePath 第{self._path_index}段发送失败: {e}")
+
+        self._send_command("Robot/move", db, on_response=_on_response, on_error=_on_error)
+
+    def _collect_path_waypoints(self, node: NodeData) -> list[tuple[list[dict], str]]:
+        """收集 MovePath 所有连接的 Position 节点，构建 move 指令列表"""
+        waypoints = []
+        for port_name in ["pose_1", "pose_2", "pose_3"]:
+            pos = self._position_for_input(node, port_name)
+            if not pos:
+                continue
+            name = pos.get("name", "?")
+            jp = self._valid_jp(pos)
+            cp = self._valid_cp(pos)
+            opt = pos.get("optional", {})
+
+            if not jp and not cp:
+                continue
+
+            motion: dict = {
+                "type": "movJ" if jp else "movL",
+                "speed": self._num(opt.get("speed", 200), 200),
+                "acc": self._num(opt.get("acc", 500), 500),
+                "blend": self._num(opt.get("blend", 0), 0),
+            }
+            if opt.get("relativeBlend") not in (None, "", "?"):
+                motion["relativeBlend"] = self._num(opt.get("relativeBlend"), 0)
+
+            target = {}
+            if jp:
+                target["jp"] = jp
+            else:
+                target["cp"] = cp
+            target["ep"] = self._valid_ep(pos)
+            motion["targetPoint"] = target
+            waypoints.append(([motion], name))
+
+        return waypoints
 
     def _begin_motion_wait(self, node: NodeData, db: list[dict]):
         self._active_node = node
@@ -325,8 +403,12 @@ class ExecutionEngine(QObject):
         self._active_target = None
         self._motion_started = False
         self._motion_phase = "idle"
-        next_id = self._flow_target(node, "flow") if node else None
-        self._advance_to(next_id, 50)
+        # MovePath: 还有后续途径点则继续，否则结束
+        if node and node.node_type == "MovePath" and hasattr(self, '_path_queue') and self._path_index < len(self._path_queue):
+            self._send_path_next()
+        else:
+            next_id = self._flow_target(node, "flow") if node else None
+            self._advance_to(next_id, 50)
 
     def _build_move_db(self, node: NodeData) -> list[dict] | None:
         """构建 Robot/move 的 db 数组。"""
@@ -382,7 +464,15 @@ class ExecutionEngine(QObject):
 
     def _exec_motion_dry(self, node: NodeData):
         if node.node_type == "MovePath":
-            self._log("    🧪 MovePath DryRun：当前版本仅占位，在线执行未开放")
+            waypoints = self._collect_path_waypoints(node)
+            if waypoints:
+                self._log(f"    🛤 MovePath DryRun：{len(waypoints)} 个途径点")
+                for i, (db, name) in enumerate(waypoints):
+                    motion_type = db[0].get("type", "?")
+                    tp = db[0].get("targetPoint", {})
+                    self._log(f"       [{i+1}] {name} → {motion_type} target={tp}")
+            else:
+                self._log("    ⚠ MovePath 无合法途径点（需连接 Position）")
             self._advance_to(self._flow_target(node, "flow"), 150)
             return
 

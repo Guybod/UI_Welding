@@ -192,8 +192,12 @@ class GraphValidator:
                 continue
 
             if n.node_type == "MovePath":
-                r.warnings.append(f"{n.title}({n.node_id}) MovePath 在线执行当前未开放，建议先使用 DryRun 或拆成 MoveJ/MoveL")
-                # MovePath 暂不做强校验，避免旧图因为端口重构全部报错。
+                for pn in ["pose_1", "pose_2", "pose_3"]:
+                    pos = self._position_input(n, pn)
+                    if pos and (self._valid_jp(pos) or self._valid_cp(pos)):
+                        break
+                else:
+                    r.errors.append(f"{n.title}({n.node_id}) MovePath 至少需要一个合法的 Position（含 jp 或 cp）")
                 continue
 
             if n.node_type == "MoveJ":
