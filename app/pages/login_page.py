@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
 )
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QSettings
 
 from core.connection_config import ConnectionConfig
 from core.connection_config import pick_available_udp_port
@@ -15,6 +15,8 @@ class LoginPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        self._settings = QSettings("Codroid", "RobotUI")
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
@@ -37,10 +39,11 @@ class LoginPage(QWidget):
         form_layout = QVBoxLayout()
         form_layout.setAlignment(Qt.AlignCenter)
 
-        # 机器人 IP
+        # 机器人 IP (恢复上次输入)
+        saved_ip = self._settings.value("login/robot_ip", "192.168.1.136")
         ip_row = QHBoxLayout()
         ip_row.addWidget(QLabel("机器人 IP:"))
-        self._robot_ip = QLineEdit("192.168.1.136")
+        self._robot_ip = QLineEdit(saved_ip)
         self._robot_ip.setFixedWidth(250)
         ip_row.addWidget(self._robot_ip)
         ip_row.addStretch()
@@ -53,16 +56,20 @@ class LoginPage(QWidget):
         nic_row.addWidget(self._nic_selector)
         form_layout.addLayout(nic_row)
 
-        # UDP 端口
+        # UDP 端口 (恢复上次值，否则自动分配)
+        saved_port = self._settings.value("login/udp_port", 0)
         port_row = QHBoxLayout()
         port_row.addWidget(QLabel("UDP 端口:"))
         self._udp_port = QLineEdit()
         self._udp_port.setFixedWidth(100)
-        try:
-            auto_port = pick_available_udp_port()
-            self._udp_port.setText(str(auto_port))
-        except RuntimeError:
-            self._udp_port.setPlaceholderText("请手动输入")
+        if saved_port and saved_port != 0:
+            self._udp_port.setText(str(saved_port))
+        else:
+            try:
+                auto_port = pick_available_udp_port()
+                self._udp_port.setText(str(auto_port))
+            except RuntimeError:
+                self._udp_port.setPlaceholderText("请手动输入")
         port_row.addWidget(self._udp_port)
         port_row.addStretch()
         form_layout.addLayout(port_row)
@@ -123,6 +130,10 @@ class LoginPage(QWidget):
         except ValueError:
             QMessageBox.warning(self, "输入错误", "UDP 端口需在 10000~65535 范围")
             return
+
+        # 持久化用户输入
+        self._settings.setValue("login/robot_ip", robot_ip)
+        self._settings.setValue("login/udp_port", port)
 
         config = ConnectionConfig(
             robot_ip=robot_ip,

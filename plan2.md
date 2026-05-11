@@ -1862,7 +1862,7 @@ Compare
 
 ---
 
-## 阶段 11：增加 If 节点
+## 阶段 11：增加 If 节点 ✅
 
 ### 原则
 
@@ -1875,12 +1875,35 @@ Compare
 分支选择
 ```
 
+### 实现 (2026-05-11)
+
+重构了 ExecutionEngine 的执行模型，从**预计算线性路径**改为**运行时图遍历**：
+
+| 旧模型 | 新模型 |
+|--------|--------|
+| `_path: list[str]` + `_cursor: int` | `_current_node_id: str \| None` |
+| `_build_path()` 预计算单一路径 | 每步通过 `_flow_target()` 查询 flow 边 |
+| `_flow_map` 偏好 false/done 分支 | 移除 `_flow_map`，If/For/While 在运行时动态选择分支 |
+| `_advance_later()` 递增 cursor | `_advance_to(next_id)` 设置下一节点 |
+| `_index_of()` 在 path 中查找 | 直接赋值 `_current_node_id` |
+
+核心修改：
+- **`execution_engine.py`**: 全面重构执行模型，`_build_maps()` 简化为只构建数据源映射
+- **`models.py`**: 补充了缺失的 `While` 节点 spec
+- If/For/While 的分支跳转不再依赖 pre-computed path
+- 循环体返回通过 `_return_stack` + `_current_node_id` 回跳
+- 分支合流通过每条分支终端节点的 flow_out 自然汇聚到共同后继
+
 ### 验收标准
 
 ```text
-1. If 根据 bool 走 true 或 false。
-2. 未走分支不会执行。
-3. 执行日志能显示分支选择。
+1. If 根据 bool 走 true 或 false。                                    ✅
+2. 未走分支不会执行。                                                  ✅
+3. 执行日志能显示分支选择。                                            ✅
+4. For/While 循环在新模型下继续正常工作。                               ✅
+5. 嵌套 If-in-For 正确执行。                                           ✅
+6. 分支合流 (true→MoveJ→End, false→MoveL→End) 正确。                   ✅
+7. 分支未连接时报错（如 If 条件为 False 但 false 端口未连线）。          ✅
 ```
 
 ---

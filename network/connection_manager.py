@@ -82,7 +82,10 @@ class ConnectionManager(QObject):
         self._adapter.connected.connect(self._on_connected)
         self._adapter.disconnected.connect(self._on_disconnected)
         self._adapter.connection_error.connect(self._on_socket_error)
-        self._adapter.shutdown_finished.connect(self._thread.quit)
+        # 不在此连接 shutdown_finished → thread.quit，quit 由 disconnect() 直接调用。
+        # 如果走 Signal/Slot 跨线程连接，shutdown_finished 在 TcpThread emit 后
+        # 会以 queued 方式投递到 UI 线程，但此时 UI 线程正阻塞在 wait() 中，
+        # 永远无法处理 quit 事件，形成死锁。
 
         self._thread.started.connect(
             lambda: self._sig_connect.emit(self._config.robot_ip, 9001)
@@ -106,6 +109,7 @@ class ConnectionManager(QObject):
         if self._thread:
             if self._thread.isRunning():
                 self._sig_shutdown.emit()
+                self._thread.quit()              # 直接调用，不走信号（避免跨线程死锁）
                 self._thread.wait(3000)
         self._adapter = None
         self._thread = None
@@ -124,9 +128,22 @@ class ConnectionManager(QObject):
         self._reconnect_timer.stop()
         self._drain_pending(NetworkDisconnectedError("连接断开"))
         if self._adapter:
+            # 断开业务信号（不参与 shutdown 流程）
+            for sig_name in ["data_received", "connected", "disconnected",
+                             "connection_error"]:
+                try:
+                    sig = getattr(self._adapter, sig_name)
+                    sig.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
             self._sig_shutdown.emit()
         if self._thread:
-            self._thread.wait(3000)
+            self._thread.quit()                  # 直接调用，线程安全（避免跨线程信号死锁）
+            finished = self._thread.wait(3000)
+            if not finished:
+                print("[ConnectionManager] TcpThread 未在 3s 内退出，强制终止")
+                self._thread.terminate()
+                self._thread.wait(1000)
         self._adapter = None
         self._thread = None
 

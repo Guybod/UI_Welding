@@ -1,7 +1,7 @@
 import os
 
 from PySide6.QtWidgets import (
-    QMainWindow,
+    QMainWindow, QApplication,
     QWidget,
     QVBoxLayout,
     QStackedWidget,
@@ -297,7 +297,7 @@ class MainWindow(QMainWindow):
     def _apply_style(self, name: str):
         path = self.STYLE_PRESETS.get(name)
         if path is None:
-            self.setStyleSheet("")
+            QApplication.instance().setStyleSheet("")
         else:
             self._load_qss(path)
 
@@ -314,4 +314,4 @@ class MainWindow(QMainWindow):
         qss_path = os.path.join(os.path.dirname(__file__), relative_path)
         if os.path.exists(qss_path):
             with open(qss_path, "r", encoding="utf-8") as f:
-                self.setStyleSheet(f.read())
+                QApplication.instance().setStyleSheet(f.read())

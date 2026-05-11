@@ -35,7 +35,7 @@ NODE_CATEGORY = {
     "If": "逻辑", "For": "逻辑", "While": "逻辑",
     "Compare": "逻辑", "And": "逻辑", "Or": "逻辑", "Not": "逻辑",
     "Int": "常量", "Float": "常量", "Bool": "常量", "String": "常量", "Array": "常量",
-    "ArrayGet": "运算", "ArrayLen": "运算",
+    "ArrayGet": "运算", "ArraySet": "运算", "ArrayLen": "运算",
     "BreakPosition": "运算", "MakePosition": "运算",
     "Add": "运算", "Sub": "运算", "Mul": "运算", "Div": "运算",
     "Square": "运算", "Sqrt": "运算", "MatMulL": "运算", "MatMulR": "运算",
@@ -156,6 +156,12 @@ _register(NodeSpec("For", "For", "逻辑", [
     PortSpec("body", "flow", "output"),
     PortSpec("done", "flow", "output"),
     PortSpec("index", "number", "output"),
+]))
+_register(NodeSpec("While", "While", "逻辑", [
+    PortSpec("flow", "flow", "input"),
+    PortSpec("condition", "bool", "input"),
+    PortSpec("body", "flow", "output"),
+    PortSpec("done", "flow", "output"),
 ]))
 _register(NodeSpec("Compare", "Compare", "逻辑", [
     PortSpec("a", "any", "input"),
@@ -335,6 +341,13 @@ _register(NodeSpec("ArrayGet", "Array[i]", "运算", [
     PortSpec("array", "any", "input"),
     PortSpec("index", "number", "input"),
     PortSpec("value", "any", "output"),
+]))
+_register(NodeSpec("ArraySet", "Array[i]=", "运算", [
+    PortSpec("flow", "flow", "input"),
+    PortSpec("flow", "flow", "output"),
+    PortSpec("array", "any", "input"),
+    PortSpec("index", "number", "input"),
+    PortSpec("value", "any", "input"),
 ]))
 _register(NodeSpec("ArrayLen", "Length", "运算", [
     PortSpec("array", "any", "input"),

@@ -1,4 +1,3 @@
-import inspect
 import time
 from typing import Any, Callable
 
@@ -17,6 +16,8 @@ class ExecutionEngine(QObject):
     - Online 只允许已明确实现的节点真实发送 TCP。
     - 运动节点发送 Robot/move 后，不能用 TCP response 判断完成，必须等待 CRI moving。
     - 禁止 time.sleep / 阻塞 while，全部用 QTimer 状态机推进。
+    - 执行模型：图遍历（非预计算线性路径）。每个节点执行后根据 flow 输出边决定下一节点。
+      控制流节点 (If/For/While) 在运行时动态选择分支。
     """
 
     node_highlight = Signal(str, bool)
@@ -40,11 +41,10 @@ class ExecutionEngine(QObject):
         super().__init__(parent)
         self._send_cb: Callable | None = None
         self._graph: GraphData | None = None
-        self._flow_map: dict[str, str] = {}
         self._data_sources: dict[tuple[str, str], tuple[str, str]] = {}
         self._node_idx: dict[str, NodeData] = {}
-        self._path: list[str] = []
-        self._cursor: int = 0
+        self._current_node_id: str | None = None
+        self._active_node_id: str | None = None   # for highlight clearing
         self._running: bool = False
         self._online: bool = False
         self._stopping: bool = False
@@ -112,20 +112,20 @@ class ExecutionEngine(QObject):
         self._stopping = False
         self._run_token += 1
         self._build_maps()
-        self._build_path()
-        self._cursor = 0
+        self._current_node_id = self._find_start_node()
         self._running = True
         self._motion_started = False
         self._motion_phase = "idle"
         self._active_node = None
         self._active_target = None
+        self._return_stack.clear()
 
         mode = "[在线]" if online else "[DryRun]"
         self.graph_started.emit()
         self._log(f"{mode} 开始执行")
 
-        if not self._path:
-            self._fail_graph("未找到从 Start 开始的 flow 执行路径")
+        if not self._current_node_id:
+            self._fail_graph("未找到 Start 节点")
             return
 
         QTimer.singleShot(0, self._step)
@@ -134,33 +134,37 @@ class ExecutionEngine(QObject):
         if not self._running:
             return
 
-        if self._cursor >= len(self._path):
-            # check return stack: loop body finished, return to For/While
+        # If no current node, check return stack (loop body completed)
+        if not self._current_node_id:
             if self._return_stack:
                 ret = self._return_stack.pop()
                 for_node_id, i, end, step = ret
-                cursor = self._index_of(for_node_id)
-                if cursor < len(self._path):
-                    self._cursor = cursor
-                    QTimer.singleShot(50, lambda: self._step())
-                    return
+                self._current_node_id = for_node_id
+                QTimer.singleShot(50, lambda: self._step())
+                return
             self._finish_graph()
             return
 
-        node_id = self._path[self._cursor]
+        node_id = self._current_node_id
         node = self._node_idx.get(node_id)
         if not node:
             self._fail_graph(f"执行路径中的节点不存在: {node_id}")
             return
 
         self._clear_highlight()
+        self._active_node_id = node_id
         self.node_highlight.emit(node_id, True)
         self._active_node = node
 
         nt = node.node_type
         self._log(f"  ▶ {node.title} ({nt})")
 
-        if nt in ("Start", "End", "Position"):
+        if nt == "End":
+            self._log("  ⏹ 到达 End")
+            self._finish_graph()
+            return
+
+        if nt in ("Start", "Position"):
             self._execute_passive(node)
             return
 
@@ -175,37 +179,68 @@ class ExecutionEngine(QObject):
                 self._exec_motion_dry(node)
             return
 
-        if nt in ("SetDO", "SetAO", "ReadDI", "ReadAI", "SetRegister", "ReadRegister"):
-            if self._online:
+        if nt in ("SetDO", "SetAO", "ReadDI", "ReadAI", "SetRegister", "ReadRegister", "ArraySet"):
+            if self._online and nt != "ArraySet":
                 self._exec_io_register_online(node)
+            elif nt == "ArraySet":
+                self._exec_array_set(node)
             else:
                 self._execute_dry(node)
-                self._advance_later(150)
+                self._advance_to(self._flow_target(node, "flow"), 150)
             return
 
         if nt in ("If", "For", "While"):
             self._exec_control_flow(node)
             return
 
+        # Data nodes and other passive nodes on flow path
+        if nt in ("Int", "Float", "Bool", "String", "Array", "GetVar", "SetVar",
+                  "Add", "Sub", "Mul", "Div", "Pow", "Mod", "Square", "Sqrt", "Abs", "Neg",
+                  "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "Int2Float", "Float2Int",
+                  "And", "Or", "Not", "Xor", "Gt", "Lt", "Eq", "Ge", "Le",
+                  "StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen", "Num2Str", "Bool2Str",
+                  "MatMulL", "MatMulR", "BreakPosition", "MakePosition",
+                  "ArrayGet", "ArrayLen", "Print"):
+            self._execute_dry(node)
+            self._advance_to(self._flow_target(node, "flow"), 100 if self._online else 150)
+            return
+
+        # Unknown node types: log and advance
         self._execute_dry(node)
-        self._advance_later(100 if self._online else 150)
+        self._advance_to(self._flow_target(node, "flow"), 100 if self._online else 150)
 
     def _execute_passive(self, node: NodeData):
-        if node.node_type == "End":
-            self._log("  ⏹ 到达 End")
-        elif node.node_type == "Position":
+        if node.node_type == "Position":
             self._log(f"    点位: {node.data.get('name', node.title)}")
-        self._advance_later(80)
+        self._advance_to(self._flow_target(node, "flow"), 80)
 
-    def _advance_later(self, delay_ms: int = 50):
+    def _advance_to(self, next_id: str | None, delay_ms: int = 50):
+        """设置下一执行节点并调度 _step。next_id 为 None 时表示分支/路径结束。"""
         token = self._run_token
-        self._cursor += 1
+        self._current_node_id = next_id
         QTimer.singleShot(delay_ms, lambda t=token: self._step_if_token(t))
 
     def _step_if_token(self, token: int):
         if token != self._run_token or not self._running:
             return
         self._step()
+
+    # ───────────────────────── graph traversal helpers ─────────────────────────
+
+    def _find_start_node(self) -> str | None:
+        if not self._graph:
+            return None
+        for n in self._graph.nodes:
+            if n.node_type == "Start":
+                return n.node_id
+        return None
+
+    def _flow_target(self, node: NodeData, port_name: str) -> str | None:
+        """找到某 flow 输出端口连接的目标节点"""
+        for e in self._graph.edges:
+            if e.source_node_id == node.node_id and e.source_port_name == port_name:
+                return e.target_node_id
+        return None
 
     # ───────────────────────── online motion ─────────────────────────
 
@@ -285,11 +320,13 @@ class ExecutionEngine(QObject):
                 return
 
     def _finish_motion_success(self):
+        node = self._active_node
         self._stop_poll_timer()
         self._active_target = None
         self._motion_started = False
         self._motion_phase = "idle"
-        self._advance_later(50)
+        next_id = self._flow_target(node, "flow") if node else None
+        self._advance_to(next_id, 50)
 
     def _build_move_db(self, node: NodeData) -> list[dict] | None:
         """构建 Robot/move 的 db 数组。"""
@@ -346,7 +383,7 @@ class ExecutionEngine(QObject):
     def _exec_motion_dry(self, node: NodeData):
         if node.node_type == "MovePath":
             self._log("    🧪 MovePath DryRun：当前版本仅占位，在线执行未开放")
-            self._advance_later(150)
+            self._advance_to(self._flow_target(node, "flow"), 150)
             return
 
         db = self._build_move_db(node)
@@ -354,7 +391,7 @@ class ExecutionEngine(QObject):
             self._log(f"    ⚠ {node.node_type}: 无法构建合法运动指令")
         else:
             self._log(f"    🧪 {node.node_type} 将发送 Robot/move db={db}")
-        self._advance_later(150)
+        self._advance_to(self._flow_target(node, "flow"), 150)
 
     # ───────────────────────── control flow: If / For / While ─────────────────────────
 
@@ -366,10 +403,9 @@ class ExecutionEngine(QObject):
             branch = "true" if cond else "false"
             target = self._flow_target(node, branch)
             if target:
-                self._cursor = self._index_of(target)
-                self._advance_later(50)
+                self._advance_to(target, 50)
             else:
-                self._advance_later(50)
+                self._fail_node(node, f"If 分支 '{branch}' 未连接")
         elif nt == "For":
             start = self._num(self._resolve_input_raw(node, "start"), 0)
             end = self._num(self._resolve_input_raw(node, "end"), 10)
@@ -384,51 +420,40 @@ class ExecutionEngine(QObject):
             i = self._loop_counters[loop_key]
             if (step > 0 and i < end) or (step < 0 and i > end):
                 self._log(f"    🔁 For i={i}")
-                # store current index so data edges (ArrayGet) can read it
                 node.data["_for_index"] = i
+                # 清除 For 节点的缓存值，使每次迭代重新读取 _for_index
+                if hasattr(self, '_value_cache'):
+                    self._value_cache.pop(node.node_id, None)
                 self._loop_counters[loop_key] = i + step
                 self._return_stack.append((node.node_id, i + step, end, step))
                 target = self._flow_target(node, "body")
                 if target:
-                    self._cursor = self._index_of(target)
-                    self._advance_later(50)
+                    self._advance_to(target, 50)
                     return
             else:
                 self._log(f"    ✅ For 完成")
-                del self._loop_counters[loop_key]
+                if loop_key in getattr(self, '_loop_counters', {}):
+                    del self._loop_counters[loop_key]
                 target = self._flow_target(node, "done")
                 if target:
-                    self._cursor = self._index_of(target)
-            self._advance_later(50)
+                    self._advance_to(target, 50)
+                    return
+            self._advance_to(None, 50)
         elif nt == "While":
             cond = bool(self._resolve_input_raw(node, "condition"))
             if cond:
                 self._log(f"    🔁 While 条件为 True, 执行循环体")
                 target = self._flow_target(node, "body")
                 if target:
-                    self._cursor = self._index_of(target)
-                    self._advance_later(50)
+                    self._advance_to(target, 50)
                     return
             else:
                 self._log(f"    ✅ While 条件为 False, 退出")
                 target = self._flow_target(node, "done")
                 if target:
-                    self._cursor = self._index_of(target)
-            self._advance_later(50)
-
-    def _flow_target(self, node: NodeData, port_name: str) -> str | None:
-        """找到某 flow 输出端口连接的目标节点"""
-        for e in self._graph.edges:
-            if e.source_node_id == node.node_id and e.source_port_name == port_name:
-                return e.target_node_id
-        return None
-
-    def _index_of(self, node_id: str) -> int:
-        """找到 node_id 在 _path 中的索引"""
-        for i, nid in enumerate(self._path):
-            if nid == node_id:
-                return i
-        return len(self._path)
+                    self._advance_to(target, 50)
+                    return
+            self._advance_to(None, 50)
 
     # ───────────────────────── wait / IO / register ─────────────────────────
 
@@ -440,12 +465,13 @@ class ExecutionEngine(QObject):
         ms = int(ms)
         self._log(f"    ⏱ 等待 {ms} ms")
         token = self._run_token
-        QTimer.singleShot(ms, lambda t=token: self._wait_done(t))
+        QTimer.singleShot(ms, lambda t=token: self._wait_done(t, node))
 
-    def _wait_done(self, token: int):
+    def _wait_done(self, token: int, node: NodeData):
         if token != self._run_token or not self._running:
             return
-        self._advance_later(0)
+        next_id = self._flow_target(node, "flow")
+        self._advance_to(next_id, 0)
 
     def _exec_io_register_online(self, node: NodeData):
         nt = node.node_type
@@ -462,7 +488,8 @@ class ExecutionEngine(QObject):
             if token != self._run_token or not self._running:
                 return
             self._log(f"    ✅ {nt} 完成 response={resp_db}")
-            self._advance_later(50)
+            next_id = self._flow_target(node, "flow")
+            self._advance_to(next_id, 50)
 
         def _on_error(e):
             if token != self._run_token:
@@ -501,6 +528,36 @@ class ExecutionEngine(QObject):
 
         return None
 
+    def _exec_array_set(self, node: NodeData):
+        """ArraySet: 修改连接的 Array 节点中 index 位置的元素"""
+        arr_src = self._data_sources.get((node.node_id, "array"))
+        idx_val = self._resolve_input_raw(node, "index")
+        val = self._resolve_input_raw(node, "value")
+
+        if arr_src:
+            arr_node = self._node_idx.get(arr_src[0])
+            if arr_node and arr_node.node_type == "Array":
+                data = arr_node.data or {}
+                arr = list(data.get("value", []))
+                if not isinstance(arr, list):
+                    arr = []
+                idx = int(self._num(idx_val, 0))
+                if 0 <= idx < len(arr):
+                    arr[idx] = val
+                    arr_node.data["value"] = arr
+                    # 清除缓存使得后续 ArrayGet 读到新值
+                    if hasattr(self, '_value_cache'):
+                        self._value_cache.pop(arr_src[0], None)
+                    self._log(f"    📝 Array[{idx}] = {val}")
+                else:
+                    self._log(f"    ⚠ ArraySet 索引 {idx} 越界 (长度 {len(arr)})")
+            else:
+                self._log(f"    ⚠ ArraySet 只能连接到 Array 常量节点")
+        else:
+            self._log(f"    ⚠ ArraySet 未连接 array 输入")
+
+        self._advance_to(self._flow_target(node, "flow"), 50)
+
     # ───────────────────────── dry common ─────────────────────────
 
     def _execute_dry(self, node: NodeData):
@@ -534,44 +591,20 @@ class ExecutionEngine(QObject):
     # ───────────────────────── graph maps ─────────────────────────
 
     def _build_maps(self):
+        """构建节点索引和数据源映射。"""
         if not self._graph:
             return
         self._node_idx = {n.node_id: n for n in self._graph.nodes}
-        self._flow_map.clear()
         self._data_sources.clear()
 
         for e in self._graph.edges:
+            # 将非 flow 边登记为数据源
             src_node = self._node_idx.get(e.source_node_id)
-            if self._is_flow_output(src_node, e.source_port_name):
-                # 控制流节点优先用 done/false 端作为主线，body/true 由引擎分支跳转
-                existing = self._flow_map.get(e.source_node_id)
-                if existing and e.source_port_name in ("done", "false"):
-                    self._flow_map[e.source_node_id] = e.target_node_id
-                elif not existing:
-                    self._flow_map[e.source_node_id] = e.target_node_id
-            else:
+            if not self._is_flow_output(src_node, e.source_port_name):
                 self._data_sources[(e.target_node_id, e.target_port_name)] = (
                     e.source_node_id,
                     e.source_port_name,
                 )
-
-    def _build_path(self):
-        self._path = []
-        if not self._graph:
-            return
-        start_id = next((n.node_id for n in self._graph.nodes if n.node_type == "Start"), None)
-        if not start_id:
-            return
-
-        cur = start_id
-        visited: set[str] = set()
-        while cur and cur not in visited:
-            visited.add(cur)
-            self._path.append(cur)
-            node = self._node_idx.get(cur)
-            if not node or node.node_type == "End":
-                break
-            cur = self._flow_map.get(cur)
 
     def _is_flow_output(self, node: NodeData | None, port_name: str) -> bool:
         if not node:
@@ -696,7 +729,9 @@ class ExecutionEngine(QObject):
             return data.get(port_name, default)
 
         result = self._compute_node(nt, resolve, data)
-        self._value_cache[node_id] = result
+        # 不要缓存依赖可变数据源的节点（ArrayGet/ArrayLen 依赖 Array，可能被 ArraySet 修改）
+        if nt not in ("ArrayGet", "ArrayLen"):
+            self._value_cache[node_id] = result
         return result
 
     def _compute_node(self, nt: str, resolve, data: dict):
@@ -715,6 +750,8 @@ class ExecutionEngine(QObject):
             return data.get("_for_index", 0)
         if nt == "Position":
             return data
+        if nt == "Array":
+            return data.get("value", [])
 
         # math binary
         if nt in ("Add", "Sub", "Mul", "Div", "Pow", "Mod"):
@@ -836,8 +873,9 @@ class ExecutionEngine(QObject):
             self._poll_timer = None
 
     def _clear_highlight(self):
-        for nid in self._path:
-            self.node_highlight.emit(nid, False)
+        if self._active_node_id:
+            self.node_highlight.emit(self._active_node_id, False)
+            self._active_node_id = None
 
     def _log(self, msg: str):
         self.log_emitted.emit(msg)

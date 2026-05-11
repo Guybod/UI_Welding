@@ -195,10 +195,85 @@ class NodeItem(QGraphicsItem):
 
     def mouseDoubleClickEvent(self, event):
         if event.pos().y() <= TITLE_HEIGHT:
-            name, ok = QInputDialog.getText(
-                None, "重命名节点", "名称:", text=self._title
-            )
-            if ok and name.strip():
-                self._title = name.strip()
-                self.update()
+            self._rename_node()
         event.accept()
+
+    def _rename_node(self):
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit,
+                                       QPushButton, QHBoxLayout, QGraphicsView)
+        from PySide6.QtCore import Qt
+
+        view = None
+        s = self.scene()
+        if s:
+            for v in s.views():
+                if isinstance(v, QGraphicsView):
+                    view = v
+                    break
+
+        class _RenameDialog(QDialog):
+            def showEvent(self, event):
+                super().showEvent(event)
+                if view:
+                    top = view.window()  # 软件主窗口
+                    if top:
+                        gc = top.mapToGlobal(top.rect().center())
+                        fg = self.frameGeometry()
+                        fg.moveCenter(gc)
+                        self.move(fg.topLeft())
+
+        dlg = _RenameDialog(view)
+        dlg.setWindowTitle("重命名节点")
+        dlg.setFixedSize(280, 120)
+        dlg.setStyleSheet("""
+            QDialog {
+                background-color: #2b2b2e;
+                color: #e0e0e0;
+            }
+            QLabel {
+                color: #cccccc;
+                font-size: 13px;
+            }
+            QLineEdit {
+                background-color: #3a3a3d;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }
+            QPushButton {
+                background-color: #3a3a3d;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 6px 18px;
+                min-width: 70px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4d;
+            }
+        """)
+
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel("名称:"))
+        edit = QLineEdit(self._title)
+        edit.selectAll()
+        layout.addWidget(edit)
+
+        btns = QHBoxLayout()
+        ok = QPushButton("确定")
+        cancel = QPushButton("取消")
+        btns.addStretch()
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        layout.addLayout(btns)
+
+        ok.clicked.connect(dlg.accept)
+        cancel.clicked.connect(dlg.reject)
+
+        if dlg.exec():
+            name = edit.text().strip()
+            if name:
+                self._title = name
+                self.update()

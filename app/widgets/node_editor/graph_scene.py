@@ -36,6 +36,13 @@ class GraphScene(QGraphicsScene):
         if node_type == "Position":
             self._init_position_data(node)
 
+        # 常量节点默认值
+        _CONSTANT_DEFAULTS = {"Int": 0, "Float": 0.0, "Bool": False, "String": "", "Array": []}
+        if node_type in _CONSTANT_DEFAULTS:
+            node.set_node_data({"value": _CONSTANT_DEFAULTS[node_type]})
+            node._title = str(_CONSTANT_DEFAULTS[node_type])
+            node.update()
+
         return node
 
     def add_var_node(self, var_id: str, var_name: str, var_type: str, port_type: str, mode: str, x: float = 0, y: float = 0) -> NodeItem:

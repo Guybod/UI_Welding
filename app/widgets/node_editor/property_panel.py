@@ -52,6 +52,10 @@ class PropertyPanel(QWidget):
             self._show_bool(node)
         elif nt == "String":
             self._show_generic(node, [("value", "string", "")])
+        elif nt == "Array":
+            self._show_array(node)
+        elif nt == "ArraySet":
+            self._show_placeholder()
         elif nt in ("SetDO", "SetAO"):
             self._show_generic(node, [("port", "int", ""), ("value", "int", "")])
         elif nt in ("ReadDI", "ReadAI"):
@@ -110,6 +114,46 @@ class PropertyPanel(QWidget):
         cb.setChecked(data.get("value", False))
         cb.toggled.connect(lambda v: node.set_node_data({"value": v}))
         root.addWidget(cb)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_array(self, node):
+        from PySide6.QtWidgets import QPlainTextEdit
+        data = node.node_data()
+        arr = data.get("value", [])
+        if isinstance(arr, str):
+            arr = [x.strip() for x in arr.replace("[","").replace("]","").split(",") if x.strip()]
+        text = "[" + ", ".join(str(v) for v in arr) + "]" if arr else "[]"
+
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        lbl = QLabel("数组内容 (JSON 格式):")
+        lbl.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        root.addWidget(lbl)
+        editor = QPlainTextEdit()
+        editor.setMaximumHeight(200)
+        editor.setStyleSheet("background: #3a3a3d; color: #e0e0e0; border: 1px solid #555; border-radius: 4px; padding: 4px;")
+        editor.setPlainText(text)
+
+        def apply():
+            try:
+                import json
+                val = json.loads(editor.toPlainText().strip())
+                if not isinstance(val, list):
+                    val = []
+            except Exception:
+                val = [x.strip() for x in editor.toPlainText().strip().lstrip("[").rstrip("]").split(",") if x.strip()]
+                try: val = [float(v) if v.replace('.','',1).replace('-','',1).isdigit() else v for v in val]
+                except: pass
+            node.set_node_data({"value": val})
+            title = "[" + ", ".join(str(v)[:10] for v in val[:3]) + ("..." if len(val) > 3 else "") + "]"
+            if title != node._title:
+                node._title = title if title != "[]" else "Array"
+                node.update()
+
+        editor.textChanged.connect(apply)
+        root.addWidget(editor)
         root.addStretch()
         self._scroll.setWidget(w)
 
@@ -219,6 +263,13 @@ class PropertyPanel(QWidget):
                 elif ftype == "string":
                     d[key] = wdg.text()
             node.set_node_data(d)
+
+        for key, (ftype, wdg) in widgets.items():
+            if ftype in ("int", "float"):
+                wdg.valueChanged.connect(apply)
+            elif ftype == "string":
+                wdg.textChanged.connect(apply)
+
         root.addStretch()
         self._scroll.setWidget(w)
 

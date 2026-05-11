@@ -6,6 +6,7 @@ class TcpThread(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("TcpThread")
 
     def run(self):
         self.exec()
@@ -16,6 +17,7 @@ class UdpThread(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("UdpThread")
 
     def run(self):
         self.exec()

@@ -12,7 +12,7 @@ CAT_I18N = {
     "基础": "cat_base", "运动": "cat_motion", "点位": "cat_position",
     "运算": "cat_math", "逻辑": "cat_logic", "字符串": "cat_string",
     "IO": "cat_io", "寄存器": "cat_register", "变量": "cat_variable",
-    "常量": "cat_variable", "自定义": "cat_custom",
+    "常量": "cat_constant", "自定义": "cat_custom",
 }
 
 CATEGORIES = [
@@ -20,7 +20,7 @@ CATEGORIES = [
     ("变量", []),
     ("点位", []),
     ("运动", ["MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"]),
-    ("运算", ["BreakPosition", "MakePosition", "ArrayGet", "ArrayLen", "Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod", "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
+    ("运算", ["BreakPosition", "MakePosition", "ArrayGet", "ArraySet", "ArrayLen", "Add", "Sub", "Mul", "Div", "Square", "Sqrt", "Pow", "Mod", "Abs", "Neg", "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "MatMulL", "MatMulR", "Int2Float", "Float2Int"]),
     ("逻辑", ["If", "For", "While", "And", "Or", "Not", "Xor", "Gt", "Lt", "Eq", "Ge", "Le"]),
     ("字符串", ["StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen", "Num2Str", "Bool2Str"]),
     ("IO", ["SetDO", "ReadDI", "SetAO", "ReadAI"]),

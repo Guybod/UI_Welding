@@ -89,6 +89,7 @@ _STRINGS = {
     "cat_io":       {"zh": "IO",       "en": "IO"},
     "cat_register": {"zh": "寄存器",   "en": "Register"},
     "cat_variable": {"zh": "变量",     "en": "Variable"},
+    "cat_constant": {"zh": "常量",     "en": "Constant"},
     "cat_custom":   {"zh": "自定义",   "en": "Custom"},
 
     # 节点名
@@ -154,6 +155,8 @@ _STRINGS = {
     "node_Bool":        {"zh": "布尔",       "en": "Bool"},
     "node_String":      {"zh": "字符串",     "en": "String"},
     "node_Array":       {"zh": "数组",       "en": "Array"},
+    "node_ArrayGet":    {"zh": "取数组元素", "en": "ArrayGet"},
+    "node_ArraySet":    {"zh": "设置数组元素","en": "ArraySet"},
 
     # 底部命令栏
     "cmd_enable":       {"zh": "使能",       "en": "Enable"},

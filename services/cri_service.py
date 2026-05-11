@@ -15,6 +15,7 @@ class CriService(QObject):
 
     # → UdpCriAdapter @Slot
     _sig_bind = Signal(str, int)
+    _sig_shutdown_udp = Signal()
 
     def __init__(self, connection_manager: ConnectionManager, parent=None):
         super().__init__(parent)
@@ -41,6 +42,7 @@ class CriService(QObject):
         self._udp_adapter.moveToThread(self._udp_thread)
 
         self._sig_bind.connect(self._udp_adapter.bind_and_listen)
+        self._sig_shutdown_udp.connect(self._udp_adapter.shutdown)
         self._udp_adapter.bind_error.connect(self.bind_error.emit)
         self._udp_adapter.datagram_received.connect(self.cri_frame_received.emit)
 
@@ -69,9 +71,26 @@ class CriService(QObject):
         self._cm.send_raw({"id": 0, "ty": "CRI/StopDataPush"})
         self._enabled = False
         self._cm.set_cri_push_enabled(False)
-        if self._udp_thread:
-            self._udp_thread.quit()
-            self._udp_thread.wait(3000)
-            self._udp_thread = None
+
+        if self._udp_thread and self._udp_thread.isRunning():
+            self._sig_shutdown_udp.emit()       # ① 在 UdpThread 内清理 socket
+            self._udp_thread.quit()             # ② 退出事件循环
+            self._udp_thread.wait(3000)         # ③ 等待线程结束
+
+        # 断开所有跨线程信号连接，防止 Qt 内部引用延迟析构
+        if self._udp_adapter:
+            for sig in [self._sig_bind, self._sig_shutdown_udp]:
+                try:
+                    sig.disconnect(self._udp_adapter)
+                except (TypeError, RuntimeError):
+                    pass
+            for sig_name in ["bind_error", "datagram_received"]:
+                try:
+                    sig = getattr(self._udp_adapter, sig_name)
+                    sig.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+
+        self._udp_thread = None
         self._udp_adapter = None
         self.cri_stopped.emit()
