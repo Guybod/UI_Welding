@@ -9,5 +9,6 @@ log/
 *.egg-info/
 dist/
 build/
-.claude/
+.claude/settings.local.json
+.claude/worktrees/
 a.md
