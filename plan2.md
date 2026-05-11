@@ -1908,7 +1908,7 @@ Compare
 
 ---
 
-## 阶段 12：增加 Path / MoveC / MoveCircle
+## 阶段 12：增加 Path / MoveC / MoveCircle ✅ (2026-05-11)
 
 ### Path 初版
 
@@ -1920,13 +1920,21 @@ sequential
 
 即逐点执行，每个点完成后再下一个点。
 
+### 实现
+
+- **MovePath 在线执行**: `_collect_path_waypoints()` 收集 pose_1/2/3 连接的 Position，`_send_path_next()` 逐段发送 Robot/move，每段等 CRI moving 完成后再发下一段
+- **MovePath DryRun**: 列出所有途径点名称、运动类型、target payload
+- **MovePath 校验**: 至少需要一个合法 Position（含 jp 或 cp）
+- **MoveC/MoveCircle**: `_build_move_db` 已正确构建 targetPoint + middlePoint 的 movC/movCircle payload
+- 途径点自动选择运动类型：有 jp → movJ，只有 cp → movL
+
 ### 验收标准
 
 ```text
-1. MoveC 可引用两个 Position。
-2. MoveCircle 可引用三个 Position。
-3. Path 可按顺序执行多个 Position。
-4. 每个运动仍然用 CRI moving 判断完成。
+1. MoveC 可引用两个 Position。                                          ✅
+2. MoveCircle 可引用三个 Position。                                      ✅
+3. Path 可按顺序执行多个 Position。                                       ✅
+4. 每个运动仍然用 CRI moving 判断完成。                                    ✅
 ```
 
 ---
