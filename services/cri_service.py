@@ -67,6 +67,29 @@ class CriService(QObject):
         self._cm.send_raw({"id": 0, "ty": "CRI/StopDataPush"})
         QTimer.singleShot(200, _do_start)
 
+    # ════════════════ CRI 控制 (dry-run only) ════════════════
+
+    def start_control_dry_run(
+        self, filter_type: int = 0, duration: int = 1, start_buffer: int = 3
+    ) -> dict:
+        """构建 StartControl JSON 并打印日志。不实际发送。"""
+        msg = {
+            "id": 0, "ty": "CRI/StartControl",
+            "db": {
+                "filterType": filter_type,
+                "duration": duration,
+                "startBuffer": start_buffer,
+            },
+        }
+        print(f"[CRI DryRun] StartControl: {msg}")
+        return msg
+
+    def stop_control_dry_run(self) -> dict:
+        """构建 StopControl JSON 并打印日志。不实际发送。"""
+        msg = {"id": 0, "ty": "CRI/StopControl"}
+        print(f"[CRI DryRun] StopControl: {msg}")
+        return msg
+
     def stop(self):
         self._cm.send_raw({"id": 0, "ty": "CRI/StopDataPush"})
         self._enabled = False

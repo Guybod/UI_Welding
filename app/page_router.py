@@ -15,6 +15,18 @@ class PageRouter(QObject):
         self._stack = page_stack
         self._cache: dict[str, BasePage] = {}
         self._current_key: str | None = None
+        self._service_provider = None
+
+    def set_service_provider(self, sp):
+        """注入 ServiceProvider，并监听连接状态变化以通知所有页面。"""
+        self._service_provider = sp
+        if sp and sp.cm:
+            sp.cm.connection_state_changed.connect(self._on_connection_changed)
+
+    def _on_connection_changed(self, state: str):
+        connected = state == "connected"
+        for page in self._cache.values():
+            page.on_connection_changed(connected)
 
     def navigate(self, spec: PageSpec):
         if spec.key == self._current_key:
@@ -31,6 +43,11 @@ class PageRouter(QObject):
             self._cache[spec.key] = page
 
         page = self._cache[spec.key]
+
+        # 注入 ServiceProvider（仅首次）
+        if self._service_provider and page._service_provider is None:
+            page._service_provider = self._service_provider
+
         self._stack.setCurrentWidget(page)
         self._current_key = spec.key
 

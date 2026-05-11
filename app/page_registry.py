@@ -62,7 +62,7 @@ PAGE_REGISTRY = [
     PageSpec("home", "首页", "main", _home),
     PageSpec("motion", "运动", "robot", _motion),
     PageSpec("welding", "焊接", "process", _welding),
-    PageSpec("writing", "写字", "process", _writing),
+    PageSpec("writing", "绘图", "process", _writing),
     PageSpec("io", "IO", "robot", _io),
     PageSpec("program", "程序", "robot", _program),
     PageSpec("upload", "上传", "tools", _upload),
