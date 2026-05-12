@@ -1,0 +1,151 @@
+"""Phase 7.1 points.txt 导出 — ProcessSegment[] → CSV 点位文件
+
+PointsWriter: 将 ProcessSegment 序列导出为机器可读 points.txt。
+应用 normal_offset_mm 到最终坐标；不生成 Lua/arcOn/setWelderParam。
+"""
+
+from pathlib import Path as _Path
+
+from core.types import RobotPoint, ProcessSegment
+
+# WorkPlane 可选依赖
+try:
+    from pipeline.mapping.workplane import WorkPlane as _WorkPlane
+except ImportError:
+    _WorkPlane = None  # type: ignore
+
+# 固定表头
+_HEADER = (
+    "segment_id,stroke_id,segment_type,point_index,"
+    "x,y,z,rx,ry,rz,speed_mm_s,arc_enabled,voltage,current,tag"
+)
+
+
+class PointsWriter:
+    """points.txt 点位文件导出器。
+
+    用法:
+        writer = PointsWriter()
+        stats = writer.write_points_txt(segments, "output/points.txt",
+                                         workplane=wp)
+    """
+
+    @staticmethod
+    def write_points_txt(
+        segments: list[ProcessSegment],
+        output_path: str | _Path,
+        workplane: object | None = None,
+        already_applied_offsets: bool = False,
+        include_header: bool = True,
+    ) -> dict:
+        """导出 points.txt。
+
+        Args:
+            segments: ProcessSegment 序列
+            output_path: 输出文件路径
+            workplane: WorkPlane 实例（用于 normal_offset 计算）
+            already_applied_offsets: True=points 已是最终坐标，不再应用 normal_offset
+            include_header: 是否输出表头行
+
+        Returns:
+            stats dict
+
+        Raises:
+            ValueError: normal_offset_mm != 0 且无 WorkPlane 且未 already_applied
+        """
+        path = _Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        normal = _get_normal(workplane)
+        warnings_list: list[str] = []
+        row_count = 0
+        arc_on_count = 0
+        arc_off_count = 0
+        needs_workplane = False
+
+        # 预检查：是否需要 WorkPlane
+        for seg in segments:
+            if abs(seg.normal_offset_mm) > 1e-9 and not already_applied_offsets:
+                needs_workplane = True
+                break
+
+        if needs_workplane and normal is None:
+            raise ValueError(
+                "normal_offset_mm requires WorkPlane normal; "
+                "provide workplane or set already_applied_offsets=True"
+            )
+
+        lines: list[str] = []
+        if include_header:
+            lines.append(_HEADER)
+
+        for seg in segments:
+            weld_params = (seg.metadata or {}).get("weld_params", {})
+            voltage = _fmt_num(weld_params.get("voltage", 0))
+            current = _fmt_num(weld_params.get("current", 0))
+
+            for pi, pt in enumerate(seg.points):
+                # 应用 normal_offset
+                if not already_applied_offsets and normal is not None and abs(seg.normal_offset_mm) > 1e-9:
+                    export_pt = _apply_offset(pt, normal, seg.normal_offset_mm)
+                else:
+                    export_pt = pt
+
+                arc_str = "1" if seg.arc_enabled else "0"
+                if seg.arc_enabled:
+                    arc_on_count += 1
+                else:
+                    arc_off_count += 1
+
+                row = (
+                    f"{seg.id},{seg.stroke_id},{seg.type},{pi},"
+                    f"{_fmt_num(export_pt.x)},{_fmt_num(export_pt.y)},{_fmt_num(export_pt.z)},"
+                    f"{_fmt_num(export_pt.rx)},{_fmt_num(export_pt.ry)},{_fmt_num(export_pt.rz)},"
+                    f"{_fmt_num(seg.speed_mm_s)},{arc_str},{voltage},{current},{seg.type}"
+                )
+                lines.append(row)
+                row_count += 1
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+        return {
+            "output_path": str(path),
+            "segment_count": len(segments),
+            "row_count": row_count,
+            "arc_on_row_count": arc_on_count,
+            "arc_off_row_count": arc_off_count,
+            "normal_offset_applied": needs_workplane,
+            "workplane_required": needs_workplane,
+            "workplane_used": normal is not None,
+            "already_applied_offsets": already_applied_offsets,
+            "warnings": warnings_list,
+        }
+
+
+def _get_normal(workplane: object | None) -> RobotPoint | None:
+    if workplane is None:
+        return None
+    n = getattr(workplane, "normal", None)
+    if n is None:
+        return None
+    return n
+
+
+def _apply_offset(
+    pt: RobotPoint, normal: RobotPoint, offset_mm: float,
+) -> RobotPoint:
+    """沿 normal 偏移位置，保留原始姿态 rx/ry/rz。"""
+    return RobotPoint(
+        x=pt.x + normal.x * offset_mm,
+        y=pt.y + normal.y * offset_mm,
+        z=pt.z + normal.z * offset_mm,
+        rx=pt.rx, ry=pt.ry, rz=pt.rz,
+    )
+
+
+def _fmt_num(val: float | int) -> str:
+    """格式化数值，去掉尾部多余零。"""
+    if isinstance(val, int):
+        return str(val)
+    return f"{val:.6g}"

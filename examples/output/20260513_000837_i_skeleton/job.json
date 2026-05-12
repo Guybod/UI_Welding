@@ -1,0 +1,1060 @@
+{
+  "schema_version": "welding-job-v1",
+  "created_at": "2026-05-12T16:08:38.413547+00:00",
+  "generator": "pipeline.output.job_writer",
+  "input": {
+    "text": "i",
+    "mode": "skeleton"
+  },
+  "configs": {
+    "process": {
+      "lead_in_length_mm": 3.0,
+      "lead_out_length_mm": 3.0,
+      "overlap_length_mm": 5.0,
+      "weld_point_spacing_mm": 0.5,
+      "travel_speed_mm_s": 80.0,
+      "weld_speed_mm_s": 30.0,
+      "voltage": 24.0,
+      "current": 150.0,
+      "job": 0,
+      "inductance": 0.0
+    },
+    "path": {
+      "mode": "skeleton",
+      "min_path_length_mm": 2.0,
+      "sample_spacing_mm": 0.5,
+      "simplify_epsilon_mm": 0.2,
+      "preserve_corners": true,
+      "corner_angle_deg": 60.0,
+      "dot_strategy": "short_line",
+      "contour_max_vertices": 12,
+      "straight_tol_mm": 0.5,
+      "curve_epsilon_mm": 0.65,
+      "curve_resample_step_mm": 2.5,
+      "contour_inner_area_frac": 0.32
+    },
+    "workspace": {
+      "left_top": null,
+      "left_bottom": null,
+      "right_top": null,
+      "right_bottom": null,
+      "mapping_mode": "uv",
+      "normal_work_offset_mm": 5.0,
+      "normal_safe_offset_mm": 15.0,
+      "normal_super_safe_offset_mm": 25.0,
+      "normal_travel_offset_mm": 15.0,
+      "z_safe_mm": null,
+      "z_work_mm": null,
+      "z_super_safe_mm": null,
+      "pixel_per_mm": 10.0,
+      "tool_tilt_deg": 0.0,
+      "tool_rotate_about_normal_deg": 0.0
+    }
+  },
+  "workspace": {
+    "mapping_mode": "uv",
+    "TL": [
+      0,
+      0,
+      100,
+      -180,
+      0,
+      -135
+    ],
+    "TR": [
+      200,
+      0,
+      100,
+      -180,
+      0,
+      -135
+    ],
+    "BL": [
+      0,
+      100,
+      100,
+      -180,
+      0,
+      -135
+    ],
+    "U": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "V": [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "N": [
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "width_mm": 200.0,
+    "height_mm": 100.0,
+    "compat_metadata": {}
+  },
+  "path_summary": {
+    "stroke_count": 2,
+    "segment_count": 10,
+    "total_segment_points": 72
+  },
+  "strokes": [
+    {
+      "id": "15eda362",
+      "source_type": "skeleton",
+      "closed": false,
+      "is_hole": false,
+      "glyph_id": null,
+      "group_id": null,
+      "points_px_count": 2,
+      "points_mm_count": 2,
+      "robot_points_count": 2,
+      "metadata": {
+        "dot_original_id": "5b23a86d",
+        "dot_original_len_px": 13.0,
+        "dot_strategy": "short_line",
+        "robot_points_count": 2
+      }
+    },
+    {
+      "id": "439db50a",
+      "source_type": "skeleton",
+      "closed": false,
+      "is_hole": false,
+      "glyph_id": null,
+      "group_id": null,
+      "points_px_count": 34,
+      "points_mm_count": 34,
+      "robot_points_count": 34,
+      "metadata": {
+        "robot_points_count": 34
+      }
+    }
+  ],
+  "segments": [
+    {
+      "id": "37b75a20",
+      "deterministic_index": 0,
+      "stroke_id": "15eda362",
+      "type": "travel",
+      "point_count": 2,
+      "points": [
+        {
+          "x": 44.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 44.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 80.0,
+      "arc_enabled": false,
+      "normal_offset_mm": 15.0,
+      "metadata": {}
+    },
+    {
+      "id": "dd3a1ed9",
+      "deterministic_index": 1,
+      "stroke_id": "15eda362",
+      "type": "lead_in",
+      "point_count": 7,
+      "points": [
+        {
+          "x": 44.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 44.1467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 43.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 43.1467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 42.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 42.1467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 41.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 30.0,
+      "arc_enabled": true,
+      "normal_offset_mm": 5.0,
+      "metadata": {
+        "weld_params": {
+          "voltage": 24.0,
+          "current": 150.0,
+          "job": 0,
+          "inductance": 0.0
+        }
+      }
+    },
+    {
+      "id": "83c59711",
+      "deterministic_index": 2,
+      "stroke_id": "15eda362",
+      "type": "weld",
+      "point_count": 2,
+      "points": [
+        {
+          "x": 44.6467,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 60.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 30.0,
+      "arc_enabled": true,
+      "normal_offset_mm": 5.0,
+      "metadata": {
+        "weld_params": {
+          "voltage": 24.0,
+          "current": 150.0,
+          "job": 0,
+          "inductance": 0.0
+        }
+      }
+    },
+    {
+      "id": "d30bd7fa",
+      "deterministic_index": 3,
+      "stroke_id": "15eda362",
+      "type": "lead_out",
+      "point_count": 7,
+      "points": [
+        {
+          "x": 60.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 61.1867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 61.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 62.1867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 62.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 63.1867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 63.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 30.0,
+      "arc_enabled": true,
+      "normal_offset_mm": 5.0,
+      "metadata": {
+        "weld_params": {
+          "voltage": 24.0,
+          "current": 150.0,
+          "job": 0,
+          "inductance": 0.0
+        }
+      }
+    },
+    {
+      "id": "556be0af",
+      "deterministic_index": 4,
+      "stroke_id": "15eda362",
+      "type": "retreat",
+      "point_count": 2,
+      "points": [
+        {
+          "x": 60.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 60.6867,
+          "y": 18.1667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 80.0,
+      "arc_enabled": false,
+      "normal_offset_mm": 15.0,
+      "metadata": {}
+    },
+    {
+      "id": "394ef264",
+      "deterministic_index": 5,
+      "stroke_id": "439db50a",
+      "type": "travel",
+      "point_count": 2,
+      "points": [
+        {
+          "x": 52.6667,
+          "y": 38.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 38.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 80.0,
+      "arc_enabled": false,
+      "normal_offset_mm": 15.0,
+      "metadata": {}
+    },
+    {
+      "id": "51f9ad16",
+      "deterministic_index": 6,
+      "stroke_id": "439db50a",
+      "type": "lead_in",
+      "point_count": 7,
+      "points": [
+        {
+          "x": 52.6667,
+          "y": 38.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 37.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 37.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 36.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 36.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 35.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 35.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 30.0,
+      "arc_enabled": true,
+      "normal_offset_mm": 5.0,
+      "metadata": {
+        "weld_params": {
+          "voltage": 24.0,
+          "current": 150.0,
+          "job": 0,
+          "inductance": 0.0
+        }
+      }
+    },
+    {
+      "id": "b98b5b3f",
+      "deterministic_index": 7,
+      "stroke_id": "439db50a",
+      "type": "weld",
+      "point_count": 34,
+      "points": [
+        {
+          "x": 52.6667,
+          "y": 38.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 39.7121,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 41.0909,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 42.4697,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 43.8485,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 45.2273,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 46.6061,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 47.9848,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 49.3636,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 50.7424,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 52.1212,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 53.5,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 54.8788,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 56.2576,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 57.6364,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 59.0152,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 60.3939,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 61.7727,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 63.1515,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 64.5303,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 65.9091,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 67.2879,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 68.6667,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 70.0455,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 71.4242,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 72.803,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 74.1818,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 75.5606,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 76.9394,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 78.3182,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 79.697,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 81.0758,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 82.4545,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 83.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 30.0,
+      "arc_enabled": true,
+      "normal_offset_mm": 5.0,
+      "metadata": {
+        "weld_params": {
+          "voltage": 24.0,
+          "current": 150.0,
+          "job": 0,
+          "inductance": 0.0
+        }
+      }
+    },
+    {
+      "id": "75f985de",
+      "deterministic_index": 8,
+      "stroke_id": "439db50a",
+      "type": "lead_out",
+      "point_count": 7,
+      "points": [
+        {
+          "x": 52.6667,
+          "y": 83.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 84.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 84.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 85.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 85.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 86.3333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 86.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 30.0,
+      "arc_enabled": true,
+      "normal_offset_mm": 5.0,
+      "metadata": {
+        "weld_params": {
+          "voltage": 24.0,
+          "current": 150.0,
+          "job": 0,
+          "inductance": 0.0
+        }
+      }
+    },
+    {
+      "id": "2900f11d",
+      "deterministic_index": 9,
+      "stroke_id": "439db50a",
+      "type": "retreat",
+      "point_count": 2,
+      "points": [
+        {
+          "x": 52.6667,
+          "y": 83.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        },
+        {
+          "x": 52.6667,
+          "y": 83.8333,
+          "z": 100.0,
+          "rx": -180,
+          "ry": 0,
+          "rz": -135
+        }
+      ],
+      "speed_mm_s": 80.0,
+      "arc_enabled": false,
+      "normal_offset_mm": 15.0,
+      "metadata": {}
+    }
+  ],
+  "export_files": {
+    "points_txt": "/home/ym/workspace/UI/examples/output/20260513_000837_i_skeleton/points.txt",
+    "job_json": "/home/ym/workspace/UI/examples/output/20260513_000837_i_skeleton/job.json"
+  },
+  "stats": {
+    "extract": {
+      "chars": 1,
+      "strokes": 2,
+      "per_char": {
+        "i": 2
+      }
+    },
+    "clean": {
+      "phase": "4.1",
+      "input_count": 2,
+      "output_count": 2,
+      "dropped_count": 0,
+      "dot_count": 1,
+      "px_per_mm": 10.0,
+      "spacing_px": 5.0,
+      "epsilon_px": 2.0,
+      "min_len_px": 20.0,
+      "max_step_px": 15.0,
+      "max_step_warnings": 1,
+      "max_step_details": [
+        {
+          "stroke_id": "15eda362",
+          "segment_index": 0,
+          "step_length_px": 48.12,
+          "max_allowed_px": 15.0,
+          "severity": "error"
+        }
+      ],
+      "used_default_px_per_mm": true
+    },
+    "refine": {
+      "phase": "4.2b",
+      "input_stroke_count": 2,
+      "output_stroke_count": 2,
+      "vertices_before": 58,
+      "vertices_after": 36,
+      "reduction_ratio": 0.6207,
+      "corners_total": 4,
+      "segments_straight": 4,
+      "segments_curve": 0,
+      "compression_guard_triggered_count": 1,
+      "compression_guard_details": [
+        {
+          "stroke_id": "439db50a",
+          "source_type": "skeleton",
+          "closed": false,
+          "before": 56,
+          "after": 34,
+          "min_required": 34,
+          "retention": 0.6071
+        }
+      ],
+      "min_retention_ratio_contour": 0.7,
+      "min_retention_ratio_skeleton": 0.6,
+      "min_closed_points": 48,
+      "per_stroke": [
+        {
+          "stroke_id": "15eda362",
+          "source_type": "skeleton",
+          "closed": false,
+          "before": 2,
+          "after": 2,
+          "retention": 1.0
+        },
+        {
+          "stroke_id": "439db50a",
+          "source_type": "skeleton",
+          "closed": false,
+          "before": 56,
+          "after": 34,
+          "retention": 0.6071
+        }
+      ],
+      "straight_tol_px": 5.0,
+      "curve_epsilon_px": 6.5,
+      "curve_resample_px": 25.0,
+      "corner_angle_deg": 60.0,
+      "max_vertices": 12,
+      "warnings": [
+        "compression guard: 439db5 (skeleton) 56->34 (guard resampled, target 34)"
+      ]
+    },
+    "schedule": {
+      "phase": "4.3",
+      "strategy": "nearest",
+      "input_stroke_count": 2,
+      "output_stroke_count": 2,
+      "original_travel_px": 123.37,
+      "optimized_travel_px": 123.37,
+      "travel_reduction_px": 0.0,
+      "travel_reduction_percent": 0.0,
+      "reversed_count": 0,
+      "allow_reverse": true,
+      "warnings": []
+    },
+    "map": {
+      "phase": "5.1",
+      "input_stroke_count": 2,
+      "output_stroke_count": 2,
+      "input_point_count": 36,
+      "mapped_point_count": 36,
+      "workplane_width_mm": 200.0,
+      "workplane_height_mm": 100.0,
+      "u_vector": {
+        "x": 1.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "v_vector": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "normal_vector": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 1.0
+      },
+      "normal_offset_mm": 0.0,
+      "orientation_mode": "fixed",
+      "orientation_source": "TL",
+      "mapping_mode": "uv",
+      "compatibility_mode_used": false,
+      "compat_metadata": {},
+      "normal_direction": {
+        "normal_x": 0.0,
+        "normal_y": 0.0,
+        "normal_z": 1.0,
+        "note": "normal_offset_mm > 0 moves along +N; verify N points away from workpiece"
+      },
+      "warnings": [
+        "tool orientation is fixed in Phase 5.1; normal-based orientation is reserved for later phase"
+      ]
+    },
+    "plan": {
+      "phase": "6.2",
+      "input_stroke_count": 2,
+      "generated_segment_count": 10,
+      "travel_count": 2,
+      "lead_in_count": 2,
+      "weld_count": 2,
+      "overlap_count": 0,
+      "lead_out_count": 2,
+      "retreat_count": 2,
+      "total_robot_points": 72,
+      "workplane_available": true,
+      "travel_offset_mm": 15.0,
+      "work_offset_mm": 5.0,
+      "weld_params_present": true,
+      "weld_job": 0,
+      "weld_current": 150.0,
+      "weld_voltage": 24.0,
+      "weld_inductance": 0.0,
+      "weld_param_segments_count": 6,
+      "warnings": []
+    }
+  },
+  "warnings": [],
+  "metadata": {}
+}

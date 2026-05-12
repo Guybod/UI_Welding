@@ -1,0 +1,219 @@
+"""Phase 7.2 job.json 导出 — WeldingJob → 结构化 JSON
+
+JobWriter: 完整任务结构序列化为 job.json。
+纯数据文件，不生成 Lua/arcOn/setWelderParam/PNG。
+"""
+
+import json
+import math
+from datetime import datetime, timezone
+from pathlib import Path as _Path
+
+from core.types import (
+    RobotPoint, PixelPoint, PlanePoint, Stroke, ProcessSegment,
+    TextLayoutConfig, PathConfig, WorkspaceConfig,
+    WeldingProcessConfig, ExportConfig,
+)
+
+SCHEMA_VERSION = "welding-job-v1"
+
+
+class JobWriter:
+    """job.json 任务文件导出器。
+
+    用法:
+        writer = JobWriter()
+        stats = writer.write_job_json("output/job.json",
+            input_info={...}, configs={...},
+            strokes=strokes, segments=segments,
+            workplane=wp, stage_stats={...})
+    """
+
+    @staticmethod
+    def write_job_json(
+        output_path: str | _Path,
+        *,
+        input_info: dict | None = None,
+        configs: dict | None = None,
+        workplane: object | None = None,
+        strokes: list[Stroke] | None = None,
+        segments: list[ProcessSegment] | None = None,
+        export_files: dict | None = None,
+        stage_stats: dict | None = None,
+        warnings_list: list[str] | None = None,
+        metadata: dict | None = None,
+        indent: int = 2,
+    ) -> dict:
+        path = _Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        strokes_out = _serialize_strokes(strokes or [])
+        segments_out = _serialize_segments(segments or [])
+        workspace_out = _serialize_workplane(workplane)
+        configs_out = _sanitize(configs or {})
+        export_out = export_files or {}
+        all_warnings = list(warnings_list or [])
+
+        doc = {
+            "schema_version": SCHEMA_VERSION,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "generator": "pipeline.output.job_writer",
+            "input": _sanitize(input_info or {}),
+            "configs": configs_out,
+            "workspace": workspace_out,
+            "path_summary": {
+                "stroke_count": len(strokes_out),
+                "segment_count": len(segments_out),
+                "total_segment_points": sum(
+                    s.get("point_count", 0) for s in segments_out
+                ),
+            },
+            "strokes": strokes_out,
+            "segments": segments_out,
+            "export_files": export_out,
+            "stats": _sanitize(stage_stats or {}),
+            "warnings": all_warnings,
+            "metadata": _sanitize(metadata or {}),
+        }
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=indent, ensure_ascii=False)
+
+        file_size = path.stat().st_size
+
+        return {
+            "output_path": str(path),
+            "schema_version": SCHEMA_VERSION,
+            "stroke_count": len(strokes_out),
+            "segment_count": len(segments_out),
+            "total_segment_points": doc["path_summary"]["total_segment_points"],
+            "file_size_bytes": file_size,
+            "warnings": all_warnings,
+        }
+
+
+# ---- 序列化 helpers ----
+
+def _serialize_robot_point(rp: RobotPoint) -> dict:
+    return {
+        "x": round(rp.x, 4),
+        "y": round(rp.y, 4),
+        "z": round(rp.z, 4),
+        "rx": round(rp.rx, 4),
+        "ry": round(rp.ry, 4),
+        "rz": round(rp.rz, 4),
+    }
+
+
+def _serialize_strokes(strokes: list[Stroke]) -> list[dict]:
+    result = []
+    for s in strokes:
+        robot_pts = (s.metadata or {}).get("robot_points", [])
+        result.append({
+            "id": s.id,
+            "source_type": s.source_type,
+            "closed": s.closed,
+            "is_hole": s.is_hole,
+            "glyph_id": s.glyph_id,
+            "group_id": s.group_id,
+            "points_px_count": len(s.points_px),
+            "points_mm_count": len(s.points_mm) if s.points_mm else 0,
+            "robot_points_count": len(robot_pts),
+            "metadata": _sanitize_metadata(s.metadata),
+        })
+    return result
+
+
+def _serialize_segments(segments: list[ProcessSegment]) -> list[dict]:
+    result = []
+    for idx, seg in enumerate(segments):
+        result.append({
+            "id": seg.id,
+            "deterministic_index": idx,
+            "stroke_id": seg.stroke_id,
+            "type": seg.type,
+            "point_count": len(seg.points),
+            "points": [_serialize_robot_point(p) for p in seg.points],
+            "speed_mm_s": round(seg.speed_mm_s, 2),
+            "arc_enabled": seg.arc_enabled,
+            "normal_offset_mm": round(seg.normal_offset_mm, 4),
+            "metadata": _sanitize_metadata(seg.metadata),
+        })
+    return result
+
+
+def _serialize_workplane(wp: object | None) -> dict | None:
+    if wp is None:
+        return None
+    # 检查是否有 WorkPlane 的典型属性
+    if not hasattr(wp, "tl"):
+        return None
+
+    def _rp(rp: RobotPoint) -> list[float]:
+        return [round(rp.x, 4), round(rp.y, 4), round(rp.z, 4),
+                round(rp.rx, 4), round(rp.ry, 4), round(rp.rz, 4)]
+
+    n = getattr(wp, "normal", None)
+    u = getattr(wp, "u_vec", None)
+    v = getattr(wp, "v_vec", None)
+
+    return _sanitize({
+        "mapping_mode": getattr(wp, "mapping_mode", "uv"),
+        "TL": _rp(getattr(wp, "tl", None)),
+        "TR": _rp(getattr(wp, "tr", None)),
+        "BL": _rp(getattr(wp, "bl", None)),
+        "U": _rp(u) if u else None,
+        "V": _rp(v) if v else None,
+        "N": _rp(n) if n else None,
+        "width_mm": round(getattr(wp, "width_mm", 0), 4),
+        "height_mm": round(getattr(wp, "height_mm", 0), 4),
+        "compat_metadata": getattr(wp, "compat_metadata", {}),
+    })
+
+
+# ---- sanitize ----
+
+def _sanitize_metadata(meta: dict | None) -> dict:
+    """清洗 metadata，移除不可 JSON 序列化的对象。"""
+    if meta is None:
+        return {}
+    result = {}
+    for k, v in meta.items():
+        if k == "robot_points":
+            # 不在 metadata 摘要中保存完整点位
+            result["robot_points_count"] = len(v) if isinstance(v, list) else 0
+        elif k == "dot_original_id" or k == "dot_strategy" or k == "dot_radius_px":
+            result[k] = v
+        elif isinstance(v, (str, int, float, bool)) or v is None:
+            result[k] = v
+        elif isinstance(v, dict):
+            result[k] = _sanitize_metadata(v)
+        elif isinstance(v, _Path):
+            result[k] = str(v)
+        else:
+            result[k] = str(v)[:200]  # 截断长字符串
+    return result
+
+
+def _sanitize(obj):
+    """递归清洗任意 Python 对象为 JSON 可序列化。"""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, bool)):
+        return obj
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return round(obj, 6)
+    if isinstance(obj, dict):
+        return {str(k): _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, _Path):
+        return str(obj)
+    if hasattr(obj, "__dataclass_fields__"):
+        return _sanitize({
+            f.name: getattr(obj, f.name)
+            for f in obj.__dataclass_fields__.values()
+        })
+    return str(obj)[:200]

@@ -1,4 +1,9 @@
-"""焊接/绘图路径预览 — matplotlib PNG 输出"""
+"""焊接/绘图路径预览 — matplotlib PNG 输出
+
+Deprecated: 本模块基于旧数据模型 (Path2D, WeldPointSegment, PenSegment)。
+新 pipeline 请使用 pipeline.output.preview_writer.DebugExporter。
+旧函数保留仅用于向后兼容，不做功能增强。
+"""
 
 import os
 import matplotlib

@@ -1,13 +1,41 @@
 {
   "graph_version": "1.0.0",
-  "updated_at": "2026-05-11 23:22:55",
+  "updated_at": "2026-05-11 10:05:38",
   "nodes": [
+    {
+      "node_id": "0516755a",
+      "node_type": "Int",
+      "title": "Int",
+      "x": -553.6286677077342,
+      "y": -645.0234240157805,
+      "data": {}
+    },
+    {
+      "node_id": "4af34ad5",
+      "node_type": "Int",
+      "title": "1",
+      "x": -702.2273362373635,
+      "y": -466.8365250267117,
+      "data": {
+        "value": 1
+      }
+    },
+    {
+      "node_id": "a9a48401",
+      "node_type": "Int",
+      "title": "1",
+      "x": -696.9672063779076,
+      "y": -553.6286677077343,
+      "data": {
+        "value": 1
+      }
+    },
     {
       "node_id": "65e0c9cc",
       "node_type": "GetVar",
       "title": "Get helo",
-      "x": -0.8521739130436004,
-      "y": -492.8586956521739,
+      "x": -313.6521739130435,
+      "y": -61.608695652173935,
       "data": {
         "_ports": [
           [
@@ -26,32 +54,32 @@
       "node_id": "accbca11",
       "node_type": "Start",
       "title": "Start",
-      "x": -709.8038177036246,
-      "y": -448.44894386455184,
+      "x": -682.8456521739131,
+      "y": -332.72608695652184,
       "data": {}
     },
     {
       "node_id": "ac56a310",
       "node_type": "End",
       "title": "End",
-      "x": -200.00652173913008,
-      "y": -354.4235869565217,
+      "x": 916.5934782608697,
+      "y": -242.02608695652177,
       "data": {}
     },
     {
       "node_id": "ef6f6f08",
       "node_type": "Wait",
       "title": "Wait",
-      "x": -197.2478260869565,
-      "y": -439.95652173913044,
+      "x": -144.34782608695653,
+      "y": -186.95652173913047,
       "data": {}
     },
     {
       "node_id": "4c579fb9",
       "node_type": "MoveJ",
       "title": "MoveJ",
-      "x": 1.8500000000000298,
-      "y": -438.76739130434794,
+      "x": 26.00000000000003,
+      "y": -281.217391304348,
       "data": {
         "speed": 200.0,
         "acc": 500.0,
@@ -63,8 +91,8 @@
       "node_id": "65762317",
       "node_type": "Position",
       "title": "p2",
-      "x": -200.84839319470706,
-      "y": -494.3434782608697,
+      "x": -168.648393194707,
+      "y": -331.0434782608697,
       "data": {
         "name": "p2",
         "jp": [
@@ -98,8 +126,8 @@
       "node_id": "383baa5e",
       "node_type": "Position",
       "title": "p1",
-      "x": 205.4275,
-      "y": -498.18249999999995,
+      "x": 109.0,
+      "y": -110.0,
       "data": {
         "name": "p1",
         "jp": [
@@ -111,12 +139,12 @@
           0.0
         ],
         "cp": {
-          "x": 927.5,
-          "y": 214.5,
-          "z": 899.0,
-          "a": -180.0,
+          "x": 0.0,
+          "y": 381.5,
+          "z": 1993.5,
+          "a": -90.0,
           "b": 0.0,
-          "c": -90.0
+          "c": 0.0
         },
         "ep": [],
         "jp_enabled": true,
@@ -133,17 +161,28 @@
       "node_id": "53e9cf7f",
       "node_type": "MoveJ",
       "title": "MoveJ",
-      "x": 416.12249999999995,
-      "y": -437.3575,
+      "x": 424.0,
+      "y": -228.0,
       "data": {}
     },
     {
       "node_id": "892267b1",
       "node_type": "Wait",
       "title": "Wait",
-      "x": 206.8,
-      "y": -437.54999999999995,
+      "x": 239.0,
+      "y": -349.0,
       "data": {}
+    },
+    {
+      "node_id": "1563e525",
+      "node_type": "SetRegister",
+      "title": "SetRegister",
+      "x": 672.7499999999999,
+      "y": -219.65,
+      "data": {
+        "address": 49300,
+        "value": 15
+      }
     },
     {
       "node_id": "de308ffa",
@@ -151,16 +190,22 @@
       "title": "For",
       "x": -438.97164461247644,
       "y": -432.8752362948962,
-      "data": {
-        "_for_index": 1.0
-      }
+      "data": {}
+    },
+    {
+      "node_id": "527eb7fe",
+      "node_type": "Print",
+      "title": "Print",
+      "x": -209.9621928166352,
+      "y": -417.9773156899812,
+      "data": {}
     },
     {
       "node_id": "ef64880d",
       "node_type": "GetVar",
       "title": "Get count",
-      "x": -711.2473699350703,
-      "y": -394.60216980356716,
+      "x": -701.392467329662,
+      "y": -399.3356332703215,
       "data": {
         "_ports": [
           [
@@ -174,117 +219,120 @@
         "var_type": "int",
         "value": 6
       }
-    },
-    {
-      "node_id": "8743ec84",
-      "node_type": "Int",
-      "title": "1",
-      "x": -708.6881479125649,
-      "y": -341.3080999567612,
-      "data": {
-        "value": 1
-      }
-    },
-    {
-      "node_id": "0c112e2d",
-      "node_type": "Int",
-      "title": "0",
-      "x": -707.6304044082177,
-      "y": -501.02736911317527,
-      "data": {}
     }
   ],
   "edges": [
     {
       "edge_id": "e1",
-      "source_node_id": "65e0c9cc",
+      "source_node_id": "4af34ad5",
       "source_port_name": "value",
-      "target_node_id": "ef6f6f08",
-      "target_port_name": "duration_ms"
+      "target_node_id": "de308ffa",
+      "target_port_name": "step"
     },
     {
       "edge_id": "e2",
-      "source_node_id": "ef6f6f08",
-      "source_port_name": "flow",
-      "target_node_id": "4c579fb9",
-      "target_port_name": "flow"
-    },
-    {
-      "edge_id": "e3",
-      "source_node_id": "65762317",
-      "source_port_name": "pose",
-      "target_node_id": "4c579fb9",
-      "target_port_name": "target"
-    },
-    {
-      "edge_id": "e4",
-      "source_node_id": "383baa5e",
-      "source_port_name": "pose",
-      "target_node_id": "53e9cf7f",
-      "target_port_name": "target"
-    },
-    {
-      "edge_id": "e5",
-      "source_node_id": "4c579fb9",
-      "source_port_name": "flow",
-      "target_node_id": "892267b1",
-      "target_port_name": "flow"
-    },
-    {
-      "edge_id": "e6",
-      "source_node_id": "892267b1",
-      "source_port_name": "flow",
-      "target_node_id": "53e9cf7f",
-      "target_port_name": "flow"
-    },
-    {
-      "edge_id": "e7",
-      "source_node_id": "65e0c9cc",
-      "source_port_name": "value",
-      "target_node_id": "892267b1",
-      "target_port_name": "duration_ms"
-    },
-    {
-      "edge_id": "e8",
-      "source_node_id": "accbca11",
-      "source_port_name": "flow",
-      "target_node_id": "de308ffa",
-      "target_port_name": "flow"
-    },
-    {
-      "edge_id": "e9",
-      "source_node_id": "0c112e2d",
+      "source_node_id": "a9a48401",
       "source_port_name": "value",
       "target_node_id": "de308ffa",
       "target_port_name": "start"
     },
     {
-      "edge_id": "e10",
-      "source_node_id": "de308ffa",
-      "source_port_name": "body",
-      "target_node_id": "ef6f6f08",
-      "target_port_name": "flow"
-    },
-    {
-      "edge_id": "e11",
-      "source_node_id": "de308ffa",
-      "source_port_name": "done",
-      "target_node_id": "ac56a310",
-      "target_port_name": "flow"
-    },
-    {
-      "edge_id": "e12",
+      "edge_id": "e3",
       "source_node_id": "ef64880d",
       "source_port_name": "value",
       "target_node_id": "de308ffa",
       "target_port_name": "end"
     },
     {
-      "edge_id": "e13",
-      "source_node_id": "8743ec84",
+      "edge_id": "e4",
+      "source_node_id": "de308ffa",
+      "source_port_name": "index",
+      "target_node_id": "527eb7fe",
+      "target_port_name": "value"
+    },
+    {
+      "edge_id": "e5",
+      "source_node_id": "65e0c9cc",
       "source_port_name": "value",
+      "target_node_id": "ef6f6f08",
+      "target_port_name": "duration_ms"
+    },
+    {
+      "edge_id": "e6",
+      "source_node_id": "ef6f6f08",
+      "source_port_name": "flow",
+      "target_node_id": "4c579fb9",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e7",
+      "source_node_id": "65762317",
+      "source_port_name": "pose",
+      "target_node_id": "4c579fb9",
+      "target_port_name": "target"
+    },
+    {
+      "edge_id": "e8",
+      "source_node_id": "383baa5e",
+      "source_port_name": "pose",
+      "target_node_id": "53e9cf7f",
+      "target_port_name": "target"
+    },
+    {
+      "edge_id": "e9",
+      "source_node_id": "4c579fb9",
+      "source_port_name": "flow",
+      "target_node_id": "892267b1",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e10",
+      "source_node_id": "892267b1",
+      "source_port_name": "flow",
+      "target_node_id": "53e9cf7f",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e11",
+      "source_node_id": "65e0c9cc",
+      "source_port_name": "value",
+      "target_node_id": "892267b1",
+      "target_port_name": "duration_ms"
+    },
+    {
+      "edge_id": "e12",
+      "source_node_id": "53e9cf7f",
+      "source_port_name": "flow",
+      "target_node_id": "1563e525",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e13",
+      "source_node_id": "1563e525",
+      "source_port_name": "flow",
+      "target_node_id": "ac56a310",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e14",
+      "source_node_id": "accbca11",
+      "source_port_name": "flow",
       "target_node_id": "de308ffa",
-      "target_port_name": "step"
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e15",
+      "source_node_id": "de308ffa",
+      "source_port_name": "body",
+      "target_node_id": "527eb7fe",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e16",
+      "source_node_id": "de308ffa",
+      "source_port_name": "done",
+      "target_node_id": "ef6f6f08",
+      "target_port_name": "flow"
     }
   ],
   "positions": [

@@ -2,6 +2,7 @@
 
 import os
 import sys
+from core.types import RobotPoint
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QGroupBox, QPushButton, QLineEdit, QComboBox,
@@ -53,6 +54,7 @@ class WeldingPage(BasePage):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._welding_service = None
+        self._use_v2_service = True  # True=V2 (new pipeline), False=V1 (fallback)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(48, 8, 8, 8)  # 左侧 48px 预留给收起状态的运动抽屉
@@ -125,6 +127,16 @@ class WeldingPage(BasePage):
         font_row.addWidget(self._font_combo)
         font_row.addStretch()
         text_layout.addLayout(font_row)
+
+        # Mode selector (contour / skeleton)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel(tr("weld_text_input") + " mode:"))
+        self._mode_combo = QComboBox()
+        self._mode_combo.addItem("contour (轮廓字)", "contour")
+        self._mode_combo.addItem("skeleton (骨架字)", "skeleton")
+        mode_row.addWidget(self._mode_combo)
+        mode_row.addStretch()
+        text_layout.addLayout(mode_row)
 
         content_layout.addWidget(text_group)
 
@@ -295,8 +307,16 @@ class WeldingPage(BasePage):
             return
         if self.sp is None:
             return
-        from services.welding_service import WeldingService
-        self._welding_service = WeldingService(self)
+
+        if self._use_v2_service:
+            from services.welding_service_v2 import WeldingServiceV2
+            self._welding_service = WeldingServiceV2(self, output_dir="output")
+            self._welding_service.progress.connect(self._on_progress)
+            self._welding_service.error_occurred.connect(self._on_service_error)
+        else:
+            from services.welding_service import WeldingService
+            self._welding_service = WeldingService(self)
+
         self._welding_service.log_message.connect(self._append_log)
         self._welding_service.state_changed.connect(self._on_state_changed)
         self._welding_service.finished.connect(self._on_finished)
@@ -313,6 +333,30 @@ class WeldingPage(BasePage):
         self._last_json_path = json_path
         self._btn_export.setEnabled(True)
         self._btn_preview.setEnabled(True)
+
+    def _read_workspace_calibration(self) -> dict:
+        """从 UI 控件读取三点标定数据。
+
+        返回 {left_top, left_bottom, right_bottom} 各为 RobotPoint。
+        索引: row 0=left_top, 1=left_bottom, 2=right_bottom
+        """
+        def _rp(row):
+            spins = self._ws_spins[row]
+            return RobotPoint(
+                x=spins[0].value(), y=spins[1].value(), z=spins[2].value(),
+                rx=spins[3].value(), ry=spins[4].value(), rz=spins[5].value(),
+            )
+        return {
+            "left_top": _rp(0),
+            "left_bottom": _rp(1),
+            "right_bottom": _rp(2),
+        }
+
+    def _on_progress(self, current: int, total: int):
+        pass  # 当前仅接收，UI 可后续加进度条
+
+    def _on_service_error(self, msg: str):
+        self._append_log(f"SERVICE ERROR: {msg}")
 
     def _on_preview_ready(self, png_path: str):
         self._last_preview_path = png_path
@@ -353,7 +397,22 @@ class WeldingPage(BasePage):
         self._log.clear()
         self._btn_export.setEnabled(False)
         self._btn_preview.setEnabled(False)
-        self._welding_service.generate_weld_points(**params)
+
+        if self._use_v2_service:
+            # V2: read workspace calibration from UI spin boxes
+            mode = self._mode_combo.currentData()
+            ws = self._read_workspace_calibration()
+            self._welding_service.generate(
+                text=params["text"],
+                mode=mode,
+                left_top=ws["left_top"],
+                left_bottom=ws["left_bottom"],
+                right_bottom=ws["right_bottom"],
+                font_size_px=600,
+                px_per_mm=10.0,
+            )
+        else:
+            self._welding_service.generate_weld_points(**params)
 
     def _on_preview(self):
         if self._last_preview_path and os.path.exists(self._last_preview_path):

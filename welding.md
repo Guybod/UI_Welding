@@ -1,377 +1,253 @@
-# 机器人文字/绘图/焊接轨迹系统开发计划（Claude Code 执行版 v2）
+# welding.md 执行约束修订版
 
-> 本文档是给 Claude Code / 编程 Agent 直接执行的完整任务说明。  
-> 目标是让 Agent 按阶段、按 Part 实现，不允许一次性写一个“看似完整但不可维护”的大文件。  
-> 本文档中的约束优先级高于 Agent 的任何自行推断。
-
----
-
-## 0. 项目最终目标
-
-开发一个通用的 **文字 / 绘图 / 焊接轨迹生成系统**。
-
-系统输入可以是：
-
-```text
-1. 文字：汉字、A-Z、a-z、0-9、常用符号
-2. 字体：TTF / OTF 字体
-3. 排版参数：字号、字高 mm、字间距、行距、换行、自动换行、左右/居中对齐、竖排、右到左、对联格式
-4. 绘图：内置几何图形、SVG、位图轮廓/骨架
-5. 工作空间：机器人示教的左上、左下、右下三个点
-6. 模式：写字 / 绘图 / 焊接点位生成
-```
-
-系统输出分三类：
-
-```text
-1. 写字模式：通过 CRI 实时控制接口执行轨迹
-2. 绘图模式：通过 CRI 实时控制接口执行轨迹
-3. 焊接模式：只生成 TXT 点位文件，不直接下发运动、不直接控制 IO、不生成 Lua 运动脚本
-```
+> 本文档基于原始 welding.md 修订。
+> 修订日期: 2026-05-12
+> 约束来源: 用户执行范围限定、高度命名规范、TXT 格式规范、Part 执行纪律要求。
 
 ---
 
-## 1. 最高优先级硬约束
+## 0. 执行范围约束（最高优先级）
 
-### 1.1 绝对禁止事项
+### 0.1 本轮允许执行的 Phase
 
-Claude Code 必须严格遵守：
+| Phase | 内容 | 本轮状态 |
+|-------|------|----------|
+| Phase 0 | 现状审计 | ✅ 已完成 |
+| Phase 1 | 核心数据模型与配置模型 | 🔲 本轮执行 |
+| Phase 2 | ContourExtractor 轮廓字引擎 | 🔲 本轮执行 |
+| Phase 3 | SkeletonExtractor 骨架字引擎 | 🔲 本轮执行 |
+| Phase 4 | Path Refinement 路径整形层 | 🔲 本轮执行 |
+| Phase 5 | Workspace UV Mapping 空间映射 | 🔲 本轮执行 |
+| Phase 6 | Welding Process 工艺段生成 | 🔲 本轮执行 |
+| Phase 7 | Export 导出系统 (Lua脚本 + weld_points.txt + job.json + debug PNG) | 🔲 本轮执行 |
+| Phase 8 | Preview 可视化预览 | 🔲 本轮执行 |
 
-```text
-1. 焊接模式禁止调用 Robot/move、Robot/moveTo、movJ、movL、movC、movS、movCircle 等机器人 API 运动接口。
-2. 焊接模式禁止调用 IOManager/SetIOValue、setDO、setAO、寄存器写入、Modbus 写入等焊机/IO控制接口。
-3. 焊接模式第一版只生成 TXT 点位文件，后续由外部系统处理焊接工艺和执行。
-4. 写字模式和绘图模式必须走 CRI 实时控制接口，不使用 Robot/move 系列接口。
-5. 所有曲线在焊接点位文件中统一离散成足够小间距的点，等价于后续按 movL 点到点执行。
-6. 不允许为了铺满工作区而拉伸字体；只能等比例缩放。
-7. 不允许把所有路径、断笔、空移、抬笔、落笔混成一条全局三次样条。
-8. 不允许直接对欧拉角做三次样条插值。
-9. 不允许在字形特征点、尖角、短碎段、闭环关键点直接起弧或灭弧。
-10. 不允许把安全高度简单写成 Z+height；必须沿工作平面法向偏移。
-11. 不允许把 PIL/OpenCV/轨迹规划/CRI通信/TXT输出全部写在一个文件里。
-12. 不允许跳过测试字符和预览输出。
-```
+### 0.2 Future Phase（保留但不允许本轮实现）
 
-### 1.2 本项目使用的机器人接口范围
+| Phase | 内容 | 本轮状态 |
+|-------|------|----------|
+| Phase 9 | Trajectory Planner 轨迹规划（绘图用） | ❌ Future Phase |
+| Phase 10 | UI 接入（焊接页/绘图页/上传页/后台线程） | ❌ Future Phase |
+| Phase 11 | CRI 控制预留 | ❌ Future Phase |
 
-允许使用：
+> **规定**：Phase 9/10/11 在本文档中仅保留标题和概要说明，不拆 Part，不执行。当前不允许修改任何 UI 文件，不允许接入 CRI，不允许连接机器人，不允许实现自动上传。
 
-```text
-1. TCP 9001：用于 CRI/StartDataPush、CRI/StopDataPush、CRI/StartControl、CRI/StopControl 等 JSON 控制请求。
-2. UDP 9030：用于 CRI 实时控制数据流和状态推送。
-3. CRI 状态推送：用于获取机器人实时状态、错误码、末端位姿、运动状态。
-4. CRI 控制接口：用于写字/绘图/空跑实时控制。
-```
+### 0.3 焊接 vs 绘图输出格式（关键区分）
 
-暂时不使用：
+| 模式 | 输出格式 | 用途 | 本轮状态 |
+|------|---------|------|----------|
+| **焊接** | **Lua 脚本**（movL + setWelderParam + arcOn/Off） | 后续通过 upload_page 上传到机器人项目槽位执行 | 🔲 本轮实现 |
+| **焊接** | job.json（结构化任务文件） | 保存完整配置、路径、段、统计，方便复现和调试 | 🔲 本轮实现 |
+| **绘图** | points.txt（CSV-like 点位文件） | 给 CRI 实时控制器消费（points.txt → trajectory → UDP） | ❌ Future Phase |
+| **通用** | debug PNG / preview PNG | 各阶段调试预览 | 🔲 本轮实现 |
 
-```text
-1. Robot/move
-2. Robot/moveTo
-3. Robot/jog
-4. Robot/stopMove
-5. project/runScript
-6. 远程脚本 9002
-7. IOManager/SetIOValue
-8. RegisterManager/SetRegisterValue
-9. ModbusTcp/setVal
-10. Lua 脚本生成
-```
+### 0.4 本轮输出范围限定
 
-> 注意：文档里可以保留未来扩展接口，但第一版代码中不得调用这些接口。
+焊接 pipeline 本轮**仅生成**：
+1. **Lua 脚本** — `movL(x, y, z, rx, ry, rz, speed, acc, blend)` + `setWelderParam(...)` + `arcOn()`/`arcOff()` 格式，兼容旧版 wledfont2_UI 的上传方式
+2. **点位参考文件** — `weld_points.txt`（空格分隔 `x y z rx ry rz`，供人工检查）
+3. **job.json** — 结构化任务文件（含完整配置、路径、段、统计）
+4. **debug PNG + preview PNG** — 各阶段调试图和统一预览图
+
+**不允许**：
+- 自动上传 Lua 脚本到机器人
+- 真实连接机器人
+- 真实下发运动或 IO 控制
+- 修改 UI 代码（upload_page、welding_page、writing_page 均不动）
+- 接入 CRI 实时控制
+- 生成绘图用的 TXT 点位文件（那是 Future Phase 的绘图模式输出）
 
 ---
 
-## 2. 已知 API 约束摘要
+## 1. 项目目标
 
-根据接口文档，机器人控制器包含 TCP/IP 与 UDP 通信，端口包括 9001 主接口、9002 远程脚本模式、9030 UDP CRI 实时控制接口；JSON 通信使用 UTF-8 编码。第一版仅使用 9001 上的 CRI 控制请求和 9030 UDP CRI 实时数据通道。
+开发一个 **双路径引擎 + 统一后处理** 的文字/图案/焊接轨迹生成系统。
 
-### 2.1 CRI 数据推送
+**双路径引擎**：
+- **ContourExtractor**（轮廓字引擎）：PIL 渲染 + cv2.findContours，适用于粗字体、艺术字、封闭字形
+- **SkeletonExtractor**（骨架字引擎）：PIL 渲染 + skimage.skeletonize + 骨架图遍历，适用于单线字、快速写字、减少热输入
 
-2.3.3.23 及以上版本 StartDataPush 请求结构：
+**统一后处理**：两种引擎输出统一的 `Stroke` 数据结构，之后进入同一套 PathRefinement → WorkspaceMapping → WeldingProcess → Export/Preview 流程。
 
-```json
-{
-  "id": 1,
-  "ty": "CRI/StartDataPush",
-  "db": {
-    "ip": "192.168.1.150",
-    "port": 18888,
-    "duration": 1,
-    "highPercision": true,
-    "mask": 65535
-  }
-}
+**输出模式**：
+- 焊接模式（本轮）→ Lua 脚本 + weld_points.txt（参考） + job.json + debug PNG + preview PNG
+- 绘图模式（Future Phase）→ points.txt 点位文件（CSV-like，给 CRI 消费）
+
+---
+
+## 2. 非目标（当前阶段不做）
+
+1. 真实连接机器人执行焊接或绘图
+2. 真实下发 Robot/move、Robot/jog、IOManager/SetIOValue 等 API
+3. 摆动焊接（只保留 voltage / current 参数，不做摆动参数和波形）
+4. 绘图 TXT 点位文件生成（那是 Future Phase 绘图模式输出，不是焊接输出）
+5. 汉字完整笔顺级路径规划（第二版）
+6. SVG 贝塞尔解析（第二版）
+7. 位图复杂轮廓清洗（第二版）
+8. UI 接入（焊接页/绘图页/上传页均不动）
+9. CRI 实时控制
+10. 自动上传项目到机器人
+11. Trajectory Planner 轨迹规划（绘图专用，Future Phase）
+
+---
+
+## 3. 关键命名与设计约束
+
+### 3.1 高度字段：法向偏移为主，全局 Z 为辅
+
+所有高度必须优先表达为沿工作平面法向 N 的 offset。主线字段：
+
+| 字段名 | 含义 | 用途 |
+|--------|------|------|
+| `normal_work_offset_mm` | 沿法向的工作偏移 | 焊接/落笔高度（从工作平面沿法向的偏移量） |
+| `normal_safe_offset_mm` | 沿法向的安全偏移 | 安全高度（抬笔/空走，从工作平面沿法向的偏移量） |
+| `normal_super_safe_offset_mm` | 沿法向的超安全偏移 | 任务间绝对安全高度 |
+| `normal_travel_offset_mm` | 沿法向的空移偏移 | travel 段专用高度 |
+
+**兼容保留**（仅用于 `mapping_mode="ortho"` 遗留模式）：
+- `z_safe_mm`, `z_work_mm`, `z_super_safe_mm` — 仅在 ortho 映射模式下生效
+- 在主线 UV 映射模式下，这些字段**不在主流程中使用**，仅在导出 header 中作为参考注释
+
+**禁止**：在 UV 映射模式下使用 `z + height` 计算安全高度。必须使用 `pos + normal * normal_safe_offset_mm`。
+
+### 3.2 RobotPoint 格式
+
+`RobotPoint` 以 `x/y/z/rx/ry/rz`（mm / deg）作为 TXT 导出主格式。
+
+`Quaternion` 只作为 `core/types.py` 中的**预留类型**。本轮执行中：
+- 允许定义 `Quaternion` dataclass 和 `euler_to_quat` / `quat_to_euler` 转换函数
+- **不允许**在主流程中使用 quaternion 做姿态表示
+- **不允许**实现 slerp 或任何姿态插值
+- **不允许**在 pipeline 中将 EulerDeg 替换为 Quaternion
+
+### 3.3 ContourExtractor 首轮验收字符
+
+第一轮验收限定为：**A, B, O, 0, 8**
+
+扩展字符（中文字符如 田、国、焊）放到增强测试阶段，不作为第一轮阻塞项。
+
+---
+
+## 4. 核心数据流
+
 ```
-
-StopDataPush：
-
-```json
-{
-  "id": 1,
-  "ty": "CRI/StopDataPush",
-  "db": {
-    "ip": "192.168.1.150",
-    "port": 18888
-  }
-}
-```
-
-### 2.2 CRI 实时控制
-
-StartControl 请求结构：
-
-```json
-{
-  "id": 1,
-  "ty": "CRI/StartControl",
-  "db": {
-    "filterType": 0,
-    "duration": 1,
-    "startBuffer": 3
-  }
-}
-```
-
-StopControl：
-
-```json
-{
-  "id": 1,
-  "ty": "CRI/StopControl"
-}
-```
-
-### 2.3 CRI CommandData 结构
-
-CRI 控制数据结构：
-
-```cpp
-struct CommandData {
-    Int64 timestamp{0};
-    Float64 position[6]{0};
-    UInt8 type{0};      // 0: 关节, 1: 末端
-    UInt8 nc[7]{0};     // 保留字节
-};
-```
-
-本项目第一版默认使用：
-
-```text
-type = 1
-position = [x, y, z, rx, ry, rz]
-```
-
-单位约定：
-
-```text
-内部几何计算：mm、deg、quaternion
-CRI 末端控制发送：根据接口文档，末端位置 x/y/z 为 m，rx/ry/rz 为 rad
-TXT 点位文件：mm、deg，便于人读和后续脚本处理
-```
-
-发送 CRI 前必须做单位转换：
-
-```text
-x_mm / 1000 -> x_m
-y_mm / 1000 -> y_m
-z_mm / 1000 -> z_m
-rx_deg -> rx_rad
-ry_deg -> ry_rad
-rz_deg -> rz_rad
+[文字输入 + 字体 + 字号]
+    │
+    ├──(contour 模式)──► ContourExtractor
+    │   PIL 渲染 → 二值化 → cv2.findContours
+    │   → 内外轮廓分离 → 小轮廓过滤 → 轮廓方向统一
+    │   → 输出 list[Stroke]
+    │
+    └──(skeleton 模式)─► SkeletonExtractor
+        PIL 渲染 → 二值化 → skimage.skeletonize
+        → 骨架图构建 → 端点/分叉点检测 → 图遍历
+        → spur pruning → stroke 拆分
+        → 输出 list[Stroke]
+            │
+            ▼
+    Path Refinement（统一整形）
+    去重 → 去短线 → RDP 简化 → 重采样 → 平滑
+    → 拐角保护 → 路径排序 → travel 优化
+            │
+            ▼
+    Workspace Mapping（UV 映射主线）
+    三点 TL/TR/BL → U/V/N 计算
+    pixel → UV 平面 → Robot 坐标
+    + 法向偏移补偿（normal_work_offset / normal_safe_offset 等）
+            │
+            ▼
+    Welding Process（工艺段生成）
+    travel → lead_in → weld → overlap → lead_out → retreat
+    速度/arc_enabled 区分
+            │
+       ┌────┴────┐
+       ▼         ▼
+    Export     Preview
+    Lua脚本   2D/3D PNG
+    job.json
 ```
 
 ---
 
-## 3. 总体架构
+## 5. 核心数据结构
 
-必须采用分层架构。
-
-```text
-app/
-  main.py
-  config/
-    defaults.py
-    schema.py
-  core/
-    geometry.py
-    types.py
-    units.py
-    errors.py
-  layout/
-    text_layout.py
-    vertical_layout.py
-    couplet_layout.py
-    drawing_layout.py
-  raster/
-    font_rasterizer.py
-    bitmap_preprocess.py
-  vision/
-    contour_extractor.py
-    skeleton_extractor.py
-    graph_paths.py
-  path/
-    path_cleaner.py
-    path_resampler.py
-    path_classifier.py
-    path_scheduler.py
-    overlap_planner.py
-  mapping/
-    workplane.py
-    pose_mapper.py
-  process/
-    pen_process.py
-    weld_point_process.py
-  trajectory/
-    time_parameterizer.py
-    cubic_spline.py
-    orientation.py
-    trajectory_planner.py
-    trajectory_validator.py
-  cri/
-    tcp_client.py
-    udp_status_receiver.py
-    udp_command_sender.py
-    cri_packet.py
-    cri_controller.py
-  output/
-    txt_point_writer.py
-    preview_writer.py
-    debug_exporter.py
-  tests/
-    test_layout.py
-    test_paths.py
-    test_workplane.py
-    test_trajectory.py
-    test_txt_output.py
-    test_cri_packet.py
-  examples/
-    configs/
-    output/
-```
-
-所有模块必须遵守：
-
-```text
-1. layout/raster/vision/path 只处理二维排版和路径。
-2. mapping 只负责二维到三维工作平面映射。
-3. process 只负责添加抬笔/落笔、起弧/灭弧语义、搭接、引入/引出等工艺路径。
-4. trajectory 只负责 CRI 实时控制轨迹采样。
-5. cri 只负责通信，不做路径算法。
-6. output 只负责文件输出和调试预览。
-```
-
----
-
-## 4. 核心数据结构
-
-必须先实现数据结构，再实现算法。
-
-### 4.1 基础几何类型
+### 5.1 坐标类型
 
 ```python
 @dataclass
-class Point2D:
+class PixelPoint:
+    """像素坐标 (渲染画布空间)"""
     x: float
     y: float
 
 @dataclass
-class Point3D:
+class PlanePoint:
+    """UV 平面坐标 (mm, 工作平面 2D)"""
+    u_mm: float
+    v_mm: float
+
+@dataclass
+class RobotPoint:
+    """机器人笛卡尔坐标 (mm, deg) — TXT 导出主格式"""
     x: float
     y: float
     z: float
+    rx: float
+    ry: float
+    rz: float
+```
 
+### 5.2 预留类型（定义但不强制使用）
+
+```python
 @dataclass
 class Quaternion:
+    """四元数 — 预留类型，本轮主流程不使用"""
     w: float
     x: float
     y: float
     z: float
-
-@dataclass
-class EulerDeg:
-    rx: float
-    ry: float
-    rz: float
-
-@dataclass
-class Pose:
-    position: Point3D
-    orientation_q: Quaternion
-    orientation_euler_deg: EulerDeg | None = None
 ```
 
-### 4.2 路径类型
+### 5.3 Stroke, ProcessSegment, WeldingJob
 
 ```python
 @dataclass
-class Path2D:
+class Stroke:
     id: str
-    points: list[Point2D]
-    closed: bool
-    source: str                  # text / drawing / svg / bitmap
-    glyph: str | None = None
-    role: str = "stroke"          # stroke / contour_outer / contour_inner / dot / travel
+    source_type: str          # "contour" | "skeleton" | "image"
+    points_px: list[PixelPoint]
+    points_mm: list[PlanePoint] | None = None
+    closed: bool = False
+    is_hole: bool = False
+    glyph_id: str | None = None
+    group_id: str | None = None
     metadata: dict = field(default_factory=dict)
 
 @dataclass
-class Path3D:
+class ProcessSegment:
     id: str
-    poses: list[Pose]
-    closed: bool
-    source_path_id: str
-    role: str
+    type: str          # "travel" | "lead_in" | "weld" | "overlap" | "lead_out" | "retreat"
+    points: list[RobotPoint]
+    speed_mm_s: float
+    arc_enabled: bool
+    normal_offset_mm: float        # 法向偏移量（当前段的高度）
+    stroke_id: str
+    metadata: dict = field(default_factory=dict)  # 含 voltage, current 等
+
+@dataclass
+class WeldingJob:
+    input_config: object           # TextLayoutConfig
+    workspace_config: object       # WorkspaceConfig
+    process_config: object         # WeldingProcessConfig
+    strokes: list[Stroke]
+    segments: list[ProcessSegment]
+    export_files: dict[str, str]
+    preview_data: dict
     metadata: dict = field(default_factory=dict)
 ```
 
-### 4.3 工艺段类型
-
-```python
-@dataclass
-class PenSegment:
-    id: str
-    approach: list[Pose]
-    pen_down: list[Pose]
-    draw_path: list[Pose]
-    pen_up: list[Pose]
-    travel_to_next: list[Pose]
-
-@dataclass
-class WeldPointSegment:
-    id: str
-    approach_path: list[Pose]
-    arc_start_path: list[Pose]
-    lead_in_path: list[Pose]
-    main_weld_path: list[Pose]
-    overlap_path: list[Pose]
-    lead_out_path: list[Pose]
-    arc_end_path: list[Pose]
-    retreat_path: list[Pose]
-    closed: bool
-    overlap_length_mm: float
-    metadata: dict = field(default_factory=dict)
-```
-
-### 4.4 轨迹类型
-
-```python
-@dataclass
-class TrajectorySample:
-    t: float
-    pose: Pose
-    linear_velocity_mm_s: float
-    segment_id: str
-    phase: str   # approach / pen_down / draw / pen_up / travel
-
-@dataclass
-class TrajectoryResult:
-    samples: list[TrajectorySample]
-    sample_rate_hz: int
-    duration_s: float
-    warnings: list[str]
-```
-
-### 4.5 配置类型
+### 5.4 配置数据类
 
 ```python
 @dataclass
@@ -382,1366 +258,897 @@ class TextLayoutConfig:
     target_char_height_mm: float | None = 20.0
     char_spacing_mm: float = 2.0
     line_spacing_mm: float = 5.0
-    column_spacing_mm: float = 8.0
-    margin_mm: float = 5.0
-    writing_mode: str = "horizontal"       # horizontal / vertical / couplet
-    primary_flow: str = "left_to_right"    # left_to_right / right_to_left / top_to_bottom
-    secondary_flow: str = "top_to_bottom"  # top_to_bottom / right_to_left / left_to_right
-    align: str = "center"                  # left / center / right
-    vertical_align: str = "center"         # top / center / bottom
-    wrap_mode: str = "manual"              # none / manual / auto
-    scale_mode: str = "shrink_to_fit"      # fixed_size / shrink_to_fit / fit_workspace
+    writing_mode: str = "horizontal"
+    primary_flow: str = "left_to_right"
+    align: str = "center"
+    scale_mode: str = "shrink_to_fit"
     keep_aspect_ratio: bool = True
-    allow_stretch: bool = False
-```
 
-```python
 @dataclass
 class PathConfig:
-    mode: str = "skeleton"                 # skeleton / contour
-    min_feature_size_mm: float = 2.0
+    mode: str = "contour"             # "contour" | "skeleton"
     min_path_length_mm: float = 2.0
-    sample_distance_mm: float = 0.5
-    max_point_distance_mm: float = 1.0
+    sample_spacing_mm: float = 0.5
     simplify_epsilon_mm: float = 0.2
     preserve_corners: bool = True
     corner_angle_deg: float = 60.0
-    dot_strategy: str = "short_line"       # keep / filter / short_line / small_circle
-```
+    dot_strategy: str = "short_line"
+    contour_max_vertices: int = 12
+    straight_tol_mm: float = 0.5
+    curve_epsilon_mm: float = 0.65
+    curve_resample_step_mm: float = 2.5
+    contour_inner_area_frac: float = 0.32
 
-```python
 @dataclass
 class WorkspaceConfig:
-    left_top: Pose
-    left_bottom: Pose
-    right_bottom: Pose
+    # 主线：三点标定 UV 映射
+    left_top: RobotPoint
+    left_bottom: RobotPoint
+    right_top: RobotPoint
+    right_bottom: RobotPoint | None = None   # 可选第四点
+    mapping_mode: str = "uv"                  # "uv" | "perspective" | "ortho"
+
+    # 主线：法向偏移高度
+    normal_work_offset_mm: float = 5.0        # 工作高度偏移
+    normal_safe_offset_mm: float = 15.0       # 安全高度偏移
+    normal_super_safe_offset_mm: float = 25.0 # 超安全高度偏移
+    normal_travel_offset_mm: float = 15.0     # travel 空移高度偏移
+
+    # 兼容：旧 ortho 模式的全局 Z
+    z_safe_mm: float | None = None
+    z_work_mm: float | None = None
+    z_super_safe_mm: float | None = None
+
+    # 兼容
+    pixel_per_mm: float = 10.0
+
+    # 工具姿态
     tool_tilt_deg: float = 0.0
     tool_rotate_about_normal_deg: float = 0.0
-    pen_up_height_mm: float = 5.0
-    weld_up_height_mm: float = 10.0
-```
 
-```python
 @dataclass
-class CriTrajectoryConfig:
-    sample_rate_hz: int = 250
-    interpolation: str = "cubic_spline"
-    target_speed_mm_s: float = 30.0
-    max_speed_mm_s: float = 80.0
-    max_acc_mm_s2: float = 300.0
-    min_waypoint_distance_mm: float = 0.2
-    max_step_distance_mm: float = 1.0
-    boundary_condition: str = "clamped_zero_velocity"
-    orientation_mode: str = "fixed"        # fixed / slerp
-    validate_before_execute: bool = True
-```
-
-```python
-@dataclass
-class WeldPointConfig:
+class WeldingProcessConfig:
     lead_in_length_mm: float = 3.0
     lead_out_length_mm: float = 3.0
-    overlap_length_mm: float = 3.0
-    min_straight_for_start_mm: float = 8.0
-    min_distance_from_corner_mm: float = 3.0
+    overlap_length_mm: float = 5.0
     weld_point_spacing_mm: float = 0.5
-    include_process_markers: bool = True
+    voltage: float = 24.0
+    current: float = 150.0
+    travel_speed_mm_s: float = 80.0
+    weld_speed_mm_s: float = 30.0
+
+@dataclass
+class ExportConfig:
+    output_dir: str = "output"
+    txt_enabled: bool = True
+    json_enabled: bool = True
+    preview_enabled: bool = True
+    preview_dpi: int = 150
+    timestamp_prefix: bool = True
 ```
 
 ---
 
-## 5. 功能范围
+## 6. Phase 0：现状审计（已完成）
 
-### 5.1 第一版必须支持
-
-```text
-1. 字符：A-Z、a-z、0-9、空格、-、_、.、/、+、=、:、;、#
-2. 模式：骨架字优先，轮廓字预留接口
-3. 字体：TTF / OTF
-4. 字高：按 mm 设置，必须等比例缩放
-5. 字距、行距、列距
-6. 手动换行
-7. 横排、竖排
-8. 左对齐、居中、右对齐
-9. 从左到右、从右到左、从上到下
-10. 工作空间三点标定：左上、左下、右下
-11. 写字/绘图 CRI 实时控制完整流程
-12. 焊接 TXT 点位文件输出
-13. 封闭路径搭接 overlap_length_mm
-14. 开放路径引入 lead_in 和引出 lead_out
-15. 小写 i/j 点状特征处理
-16. 轨迹预览图和调试导出
-```
-
-### 5.2 第二版支持
-
-```text
-1. 汉字骨架字
-2. 对联模式完整模板
-3. 自动换行
-4. SVG 导入
-5. 位图轮廓绘图
-6. 轮廓字内外轮廓排序
-7. 闭合轮廓最佳起点自动评分
-8. 曲率自适应点距
-9. 更高级的速度规划
-```
+Phase 0 审计涵盖旧版 wledfont2_UI、旧版 write4.0、当前 pipeline 半成品、当前 UI/服务层。详细结论见原 welding.md 第 3 节。
 
 ---
 
-## 6. 文本排版要求
-
-### 6.1 排版模式
-
-必须支持：
-
-```text
-1. horizontal：横排
-2. vertical：竖排
-3. couplet：对联格式，第一版可只保留接口和简单实现
-```
-
-流向规则：
-
-```text
-普通横排：primary_flow=left_to_right, secondary_flow=top_to_bottom
-横排右到左：primary_flow=right_to_left, secondary_flow=top_to_bottom
-普通竖排：primary_flow=top_to_bottom, secondary_flow=left_to_right
-传统竖排/对联：primary_flow=top_to_bottom, secondary_flow=right_to_left
-```
-
-### 6.2 缩放策略
-
-必须实现三种：
-
-```text
-fixed_size:
-  按用户设置的字高 mm 输出；如果超出工作区，返回错误，不自动缩小。
-
-shrink_to_fit:
-  优先按用户字高 mm 排版；若超出工作区，整体等比例缩小。
-
-fit_workspace:
-  忽略固定字高，以整体内容为单位等比例铺入工作区，不能拉伸。
-```
-
-默认：
-
-```text
-shrink_to_fit
-```
-
-禁止：
-
-```text
-scale_x != scale_y
-```
-
-### 6.3 PIL 渲染要求
-
-必须使用高分辨率渲染，避免路径锯齿：
-
-```text
-render_font_size_px 默认 600
-最低不得小于 300
-```
-
-文字先由 PIL 渲染为高分辨率二值图，再交给 OpenCV。
-
----
-
-## 7. 路径提取要求
-
-### 7.1 骨架字
-
-第一版主线是骨架字：
-
-```text
-PIL 高分辨率文字图
-    -> 二值化
-    -> skeletonize / thinning
-    -> 8 邻域图结构
-    -> 识别端点、交叉点、闭环、小点
-    -> 拆分 Path2D[]
-```
-
-必须处理：
-
-```text
-1. 开放笔画
-2. 闭合骨架环
-3. 小写 i/j 点
-4. 交叉点
-5. 短碎段过滤
-6. 点距重采样
-```
-
-### 7.2 轮廓字
-
-第一版可以只实现基础接口，第二版完善：
-
-```text
-cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-```
-
-轮廓字后续必须支持：
-
-```text
-1. 外轮廓
-2. 内轮廓
-3. 先内后外
-4. 封闭轮廓起点重排
-5. 搭接段
-```
-
----
-
-## 8. 路径清洗与分类
-
-每条 Path2D 必须经过：
-
-```text
-1. 删除重复点
-2. 删除距离过近点
-3. 删除长度小于 min_path_length_mm 的路径
-4. 小特征处理
-5. 按 sample_distance_mm 重采样
-6. 识别 closed/open
-7. 识别 dot/stroke/loop
-8. 识别尖角和低曲率段
-```
-
-### 8.1 小写 i/j 点处理
-
-小写 i/j 的点状特征必须单独处理。
-
-支持策略：
-
-```text
-keep：保留原路径
-filter：过滤掉
-short_line：替换成短横线，默认
-small_circle：替换成小圆
-```
-
-默认：
-
-```text
-short_line
-```
-
-短横线长度：
-
-```text
-max(2.0mm, 0.12 * target_char_height_mm)
-```
-
----
-
-## 9. 工作空间三点标定
-
-用户示教三个点：
-
-```text
-P_LT：左上
-P_LB：左下
-P_RB：右下
-```
-
-计算：
-
-```text
-X_vec = P_RB - P_LB
-Y_vec = P_LB - P_LT
-normal = normalize(cross(X_vec, Y_vec))
-```
-
-二维点映射：
-
-```text
-P(u, v) = P_LT + (u / canvas_width) * X_vec + (v / canvas_height) * Y_vec
-```
-
-安全高度：
-
-```text
-P_safe = P + normal * height_mm
-```
-
-禁止：
-
-```text
-P_safe.z = P.z + height_mm
-```
-
-姿态要求：
-
-```text
-1. 第一版默认固定姿态。
-2. 工具方向由用户示教姿态或工作平面法向生成。
-3. 内部姿态用 quaternion 表示。
-4. 输出 CRI 前转为 rx/ry/rz。
-```
-
----
-
-## 10. 写字 / 绘图 CRI 实时控制计划
-
-### 10.1 总体流程
-
-```text
-输入文字/图形
-  -> PIL/SVG/位图生成 Path2D[]
-  -> Path2D 清洗、排序、重采样
-  -> WorkPlaneMapper 转 Path3D[]
-  -> PenProcessPlanner 插入抬笔/落笔/空移
-  -> TrajectoryPlanner 生成等周期 PoseSample[]
-  -> CRI Controller 开启状态推送
-  -> CRI Controller 开启实时控制
-  -> UDP CommandSender 按周期发送 CommandData
-  -> UDP StatusReceiver 接收状态
-  -> 执行结束 StopControl
-```
-
-### 10.2 PenProcessPlanner
-
-每条绘制路径生成：
-
-```text
-approach_path：抬笔高度移动到起点上方
-pen_down_path：下降到绘制高度
-draw_path：连续绘制路径
-pen_up_path：抬笔离开画布
-travel_to_next：抬笔状态下移动到下一段
-```
-
-不同 Path2D 之间默认抬笔。
-
-允许后续增加连笔参数：
-
-```text
-connect_gap_threshold_mm
-```
-
-第一版默认不连笔。
-
-### 10.3 三次样条约束
-
-CRI 轨迹规划器使用三次样条，但必须遵守：
-
-```text
-1. 每条连续绘制路径单独规划。
-2. 抬笔路径单独规划。
-3. 落笔路径单独规划。
-4. 空移路径单独规划。
-5. 不允许样条跨断笔。
-6. 不允许样条跨尖角。
-7. 不允许样条跨不同工艺段。
-8. 位置可以三次样条，姿态默认 fixed。
-9. 不允许对欧拉角做三次样条。
-```
-
-### 10.4 轨迹采样
-
-默认参数：
-
-```text
-sample_rate_hz = 250
-duration_ms = 4
-startBuffer = 5
-filterType = 0
-target_speed_mm_s = 30
-max_step_distance_mm = 1.0
-```
-
-如果用户配置 1000Hz，则：
-
-```text
-duration_ms = 1
-sample_rate_hz = 1000
-```
-
-但第一版默认 250Hz，更稳。
-
-### 10.5 CRI 通信启动顺序
-
-执行前：
-
-```text
-1. 建立 TCP 9001 连接
-2. StopDataPush，一律先停旧推送
-3. StartDataPush，设置本机 UDP IP、端口、duration、mask、highPercision
-4. 等待收到至少一帧状态数据
-5. StartControl，设置 filterType、duration、startBuffer
-6. 发送 startBuffer + 额外预缓冲点
-7. 进入周期发送循环
-```
-
-执行后：
-
-```text
-1. 发送最后保持点若干帧
-2. StopControl
-3. StopDataPush
-4. 关闭 UDP sender/receiver
-5. 关闭 TCP 或保持连接供下次使用
-```
-
-异常停止：
-
-```text
-1. 停止发送新点
-2. 发送若干帧当前保持点，可配置
-3. StopControl
-4. 记录错误
-```
-
-### 10.6 UDP CommandData 打包
-
-必须实现 `cri_packet.py`：
-
-```python
-pack_command_data(
-    timestamp: int,
-    position: list[float],
-    type: int = 1,
-    endian: str = "little"
-) -> bytes
-```
-
-字段：
-
-```text
-Int64 timestamp
-Float64 position[6]
-UInt8 type
-UInt8 nc[7]
-```
-
-默认使用小端；如实机测试不匹配，再切换。
-
-### 10.7 CRI 状态接收
-
-必须解析：
-
-```text
-1. 时间戳
-2. 状态数据1
-3. 状态数据2
-4. 关节位置
-5. 末端位置
-6. 末端速度，可选
-```
-
-状态数据至少要判断：
-
-```text
-1. 是否运动中
-2. 是否报警
-3. 是否急停
-4. 是否实时控制模式
-5. CRI 错误码
-```
-
-第一版只记录和回调，不做复杂安全策略。
-
----
-
-## 11. 焊接 TXT 点位文件生成计划
-
-### 11.1 焊接模式原则
-
-焊接模式不实时下发，不调用任何机器人运动 API，不控制 IO。  
-焊接模式只输出点位文件，供外部系统或人工处理。
-
-焊接模式的目标：
-
-```text
-1. 将字母/数字/文字/图形路径转为可焊接点位。
-2. 所有曲线离散为足够密的点。
-3. 点位间距足够小，使后续逐点 movL 不影响曲线效果。
-4. 开放路径生成 lead_in 和 lead_out。
-5. 闭合路径生成 overlap 搭接段。
-6. 起弧/灭弧点不在字形特征点上。
-7. 输出 TXT 文件，包含路径段、点位、语义标记。
-```
-
-### 11.2 焊接段结构
-
-每条路径输出 WeldPointSegment：
-
-```text
-approach_path：接近点，高于焊接面
-arc_start_path：起弧位置路径，不在字形特征点
-lead_in_path：引入段
-main_weld_path：正式字形路径
-overlap_path：闭合路径搭接段，开放路径为空
-lead_out_path：引出段
-arc_end_path：灭弧位置路径，不在字形特征点
-retreat_path：抬枪路径
-```
-
-### 11.3 开放路径规则
-
-原始开放路径：
-
-```text
-P0 -> P1 -> ... -> Pn
-```
-
-生成：
-
-```text
-arc_start = P0 - tangent_start * lead_in_length_mm
-lead_in = arc_start -> P0
-main = P0 -> ... -> Pn
-lead_out = Pn -> Pn + tangent_end * lead_out_length_mm
-arc_end = lead_out end
-```
-
-要求：
-
-```text
-1. P0/Pn 是字形特征点，不能作为起弧/灭弧点。
-2. 起弧发生在 arc_start。
-3. 灭弧发生在 arc_end。
-4. lead_in/lead_out 与主路径方向一致。
-```
-
-### 11.4 闭合路径规则
-
-原始闭合路径：
-
-```text
-P0 -> P1 -> ... -> Pn -> P0
-```
-
-生成：
-
-```text
-1. 找到低曲率/长直线/非尖角位置 S 作为起点。
-2. 从 S 重排闭合路径。
-3. main_weld_path 走完整一圈回到 S。
-4. overlap_path 继续沿路径方向走 overlap_length_mm。
-5. 灭弧点在搭接段之后，不在 S 本身。
-```
-
-第一版起点选择简化规则：
-
-```text
-1. 优先找最长近似直线段。
-2. 如果没有直线段，找曲率最小的连续段。
-3. 在该段中部作为 S。
-4. 避开尖角、交叉点、小碎段。
-```
-
-### 11.5 搭接长度
-
-搭接长度是焊接点位生成的核心参数。
-
-默认：
-
-```text
-overlap_length_mm = 3.0
-```
-
-可调范围：
-
-```text
-0.5mm - 20mm
-```
-
-要求：
-
-```text
-1. 所有 closed=True 的焊接路径必须生成 overlap_path。
-2. overlap_path 实际长度必须 >= overlap_length_mm 的 95%。
-3. overlap_path 必须包含在 TXT 文件中，并有 phase=overlap 标记。
-4. 不能把 overlap 和 lead_out 混成同一个字段。
-```
-
-### 11.6 点位间距
-
-默认：
-
-```text
-weld_point_spacing_mm = 0.5
-```
-
-要求：
-
-```text
-1. 相邻焊接点距离不得大于 max(1.2 * weld_point_spacing_mm, weld_point_spacing_mm + 0.2mm)
-2. 曲线也必须离散为小间距点。
-3. 不再生成 movC/movS 指令。
-4. 后续外部系统可以按点位顺序使用 movL 执行。
-```
-
-### 11.7 TXT 文件格式
-
-必须输出一个主 TXT 文件：
-
-```text
-output/weld_points_<timestamp>.txt
-```
-
-推荐格式：
-
-```text
-# Robot Text/Shape Weld Point File
-# version: 1.0
-# units: position=mm, orientation=deg
-# text: Abc123
-# font: path/to/font.ttf
-# mode: skeleton
-# workspace: left_top=[...], left_bottom=[...], right_bottom=[...]
-# weld_point_spacing_mm: 0.5
-# lead_in_length_mm: 3.0
-# lead_out_length_mm: 3.0
-# overlap_length_mm: 3.0
-
-SEGMENT id=seg_0001 source=A role=stroke closed=false
-# phase,index,x,y,z,rx,ry,rz,tag
-approach,0,100.000,200.000,310.000,180.000,0.000,90.000,approach
-arc_start,0,100.000,200.000,300.000,180.000,0.000,90.000,arc_start
-lead_in,0,101.000,200.000,300.000,180.000,0.000,90.000,lead_in
-main,0,102.000,200.000,300.000,180.000,0.000,90.000,weld
-...
-lead_out,0,150.000,200.000,300.000,180.000,0.000,90.000,lead_out
-arc_end,0,153.000,200.000,300.000,180.000,0.000,90.000,arc_end
-retreat,0,153.000,200.000,310.000,180.000,0.000,90.000,retreat
-END_SEGMENT
-
-SEGMENT id=seg_0002 source=O role=loop closed=true
-...
-overlap,0,...
-overlap,1,...
-...
-END_SEGMENT
-```
-
-同时输出 JSON 调试文件：
-
-```text
-output/weld_points_<timestamp>.json
-```
-
-用于程序再次读取和预览。
-
-### 11.8 焊接预览
-
-必须输出：
-
-```text
-output/preview_weld_<timestamp>.png
-```
-
-图中必须显示：
-
-```text
-1. 原始路径
-2. 焊接主路径
-3. lead_in
-4. lead_out
-5. overlap
-6. arc_start
-7. arc_end
-8. segment 编号
-9. 路径方向箭头
-```
-
----
-
-## 12. 轨迹规划器设计
-
-### 12.1 输入
-
-```python
-TrajectoryRequest:
-    segments: list[PenSegment]
-    config: CriTrajectoryConfig
-```
-
-### 12.2 输出
-
-```python
-TrajectoryResult:
-    samples: list[TrajectorySample]
-```
-
-### 12.3 时间参数化
-
-```text
-dt_i = distance(P[i], P[i+1]) / target_speed_mm_s
-```
-
-并强制：
-
-```text
-dt_i >= 1 / sample_rate_hz
-```
-
-### 12.4 三次样条
-
-使用三次样条时：
-
-```text
-1. x(t), y(t), z(t) 分别插值。
-2. 每个连续 phase 单独插值。
-3. phase 边界速度默认为 0 或按切线估计，第一版用 clamped_zero_velocity。
-4. 尖角处分段。
-5. 如果样条过冲超过阈值，退化为线性重采样。
-```
-
-### 12.5 姿态
-
-第一版：
-
-```text
-orientation_mode = fixed
-```
-
-内部：
-
-```text
-quaternion
-```
-
-发送前：
-
-```text
-quaternion -> rx/ry/rz -> rad
-```
-
----
-
-## 13. 测试字符和验收样例
-
-必须使用以下测试集。
-
-### 13.1 基础大写
-
-```text
-ABCDEF
-GHIJKL
-MNOPQR
-STUVWXYZ
-```
-
-覆盖：
-
-```text
-A: 尖角
-B: 多闭环/曲线
-D/O/P/R: 闭合路径
-S: 曲线
-W/M/N/V/X/Y/Z: 尖角和折线
-```
-
-### 13.2 小写
-
-```text
-abcdefg
-hijklmn
-opqrstuvwxyz
-```
-
-覆盖：
-
-```text
-i/j: 点状特征
-g/j/p/q/y: 下伸部
-a/b/d/e/g/o/p/q: 闭合骨架/闭环
-f/t/r: 小特征
-```
-
-### 13.3 数字
-
-```text
-0123456789
-```
-
-覆盖：
-
-```text
-0/6/8/9: 闭合路径 + overlap
-2/3/5: 曲线
-1/4/7: 开放路径
-```
-
-### 13.4 混排
-
-```text
-Abc123
-Weld-09
-OpenAI_2026
-```
-
-### 13.5 排版
-
-```text
-1. 横排左对齐
-2. 横排居中
-3. 横排右对齐
-4. 右到左
-5. 竖排
-6. 手动换行
-7. shrink_to_fit
-8. fit_workspace
-```
-
----
-
-## 14. 分阶段开发计划
-
-# Phase 0：工程骨架和基础数据结构
-
-## Part 0.1 创建工程结构
-
-任务：
-
-```text
-1. 创建 app/ 目录结构。
-2. 创建 config/core/layout/raster/vision/path/mapping/process/trajectory/cri/output/tests/examples。
-3. 添加 requirements.txt。
-4. 添加 README.md。
-5. 添加 main.py 命令行入口。
-```
-
-依赖建议：
-
-```text
-pillow
-opencv-python
-numpy
-scipy
-matplotlib
-scikit-image
-pytest
-```
-
-验收：
-
-```text
-python -m pytest
-python app/main.py --help
-```
-
-禁止：
-
-```text
-不得在 main.py 中实现业务算法。
-```
-
-## Part 0.2 实现核心数据结构
-
-任务：
-
-```text
-1. 实现 core/types.py。
-2. 实现 core/geometry.py。
-3. 实现 core/units.py。
-4. 实现 config/schema.py。
-```
-
-验收：
-
-```text
-pytest tests/test_types.py
-```
-
----
-
-# Phase 1：文本排版和高分辨率渲染
-
-## Part 1.1 PIL 字体渲染
-
-任务：
-
-```text
-1. 实现 FontRasterizer。
-2. 支持 TTF/OTF。
-3. 支持高分辨率渲染。
-4. 输出二值图和 debug png。
-```
-
-验收：
-
-```text
-生成 examples/output/raster_Abc123.png
-```
-
-## Part 1.2 排版引擎
-
-任务：
-
-```text
-1. 实现 TextLayoutEngine。
-2. 支持横排、竖排、手动换行。
-3. 支持左/中/右对齐。
-4. 支持字距、行距、列距。
-5. 支持 left_to_right/right_to_left/top_to_bottom。
-```
-
-验收：
-
-```text
-生成横排、竖排、右到左的 debug png。
-```
-
-## Part 1.3 等比例缩放
-
-任务：
-
-```text
-1. fixed_size。
-2. shrink_to_fit。
-3. fit_workspace。
-4. 禁止拉伸。
-```
-
-验收：
-
-```text
-相同字体在不同工作区中比例不变。
-```
-
----
-
-# Phase 2：OpenCV 路径提取
-
-## Part 2.1 骨架提取
-
-任务：
-
-```text
-1. 二值图 skeletonize。
-2. 构建 8 邻域图。
-3. 识别端点、交叉点、闭环。
-4. 拆分 Path2D[]。
-```
-
-验收：
-
-```text
-A-Z、a-z、0-9 均能输出 Path2D。
-```
-
-## Part 2.2 路径清洗和重采样
-
-任务：
-
-```text
-1. 删除重复点。
-2. 删除过短路径。
-3. 小点特征处理。
-4. 按 mm 点距重采样。
-5. 标记 closed/open/dot/stroke。
-```
-
-验收：
-
-```text
-i/j 点能按 short_line 策略替换。
-0/O/o 能识别 closed。
-```
-
-## Part 2.3 路径预览
-
-任务：
-
-```text
-1. 输出路径编号。
-2. 输出方向箭头。
-3. 输出端点/交叉点/闭环标记。
-```
-
-验收：
-
-```text
-examples/output/preview_paths_Abc123.png
-```
-
----
-
-# Phase 3：工作平面映射
-
-## Part 3.1 三点标定
-
-任务：
-
-```text
-1. 实现 WorkPlane。
-2. 输入 left_top/left_bottom/right_bottom。
-3. 计算 X_vec/Y_vec/normal。
-4. 检查三点不共线。
-```
-
-验收：
-
-```text
-二维矩形四角能映射到正确三维点。
-```
-
-## Part 3.2 Path2D -> Path3D
-
-任务：
-
-```text
-1. 将 Path2D 映射为 Path3D。
-2. 安全高度沿 normal 偏移。
-3. 姿态固定。
-```
-
-验收：
-
-```text
-同一文字在倾斜平面也能正确生成 3D 点。
-```
-
----
-
-# Phase 4：写字/绘图 CRI 轨迹规划
-
-## Part 4.1 PenProcessPlanner
-
-任务：
-
-```text
-1. 每条 Path3D 生成 PenSegment。
-2. 添加 approach、pen_down、draw、pen_up、travel_to_next。
-3. 不同路径之间默认抬笔。
-```
-
-验收：
-
-```text
-预览图能看到空移线和绘制线分离。
-```
-
-## Part 4.2 三次样条轨迹规划器
-
-任务：
-
-```text
-1. TimeParameterizer。
-2. CubicSplineInterpolator。
-3. FixedOrientationInterpolator。
-4. TrajectoryValidator。
-5. 每个 phase 单独规划。
-```
-
-验收：
-
-```text
-输出 TrajectoryResult，采样周期稳定。
-相邻点距离不超过 max_step_distance_mm。
-```
-
-## Part 4.3 CRI 数据包
-
-任务：
-
-```text
-1. 实现 CommandData 打包。
-2. 末端控制 type=1。
-3. mm/deg 转 m/rad。
-4. 支持 little/big endian 配置。
-```
-
-验收：
-
-```text
-pytest tests/test_cri_packet.py
-```
-
-## Part 4.4 CRI 通信控制器
-
-任务：
-
-```text
-1. TCP 9001 JSON 请求。
-2. StopDataPush -> StartDataPush。
-3. UDP StatusReceiver。
-4. StartControl。
-5. UDP CommandSender 周期发送。
-6. StopControl。
-7. StopDataPush。
-```
-
-验收：
-
-```text
-提供 dry-run 模式，不连接实机也能打印完整流程。
-提供 real-run 模式，用户手动启用。
-```
-
-禁止：
-
-```text
-不得调用 Robot/move、Robot/moveTo、IO、Register、Modbus。
-```
-
----
-
-# Phase 5：焊接 TXT 点位文件
-
-## Part 5.1 WeldPointProcessPlanner
-
-任务：
-
-```text
-1. 开放路径生成 lead_in/lead_out。
-2. 闭合路径选择起点并重排。
-3. 闭合路径生成 overlap_path。
-4. 生成 approach/retreat。
-```
-
-验收：
-
-```text
-O/o/0/6/8/9 必须有 overlap。
-A/1/4/7 必须有 lead_in 和 lead_out。
-```
-
-## Part 5.2 TXT 点位输出
-
-任务：
-
-```text
-1. 实现 TxtPointWriter。
-2. 输出 phase,index,x,y,z,rx,ry,rz,tag。
-3. 输出 metadata header。
-4. 输出 JSON 调试文件。
-```
-
-验收：
-
-```text
-examples/output/weld_points_Abc123.txt
-examples/output/weld_points_Abc123.json
-```
-
-禁止：
-
-```text
-不得生成 Lua。
-不得调用机器人 API。
-不得控制 IO。
-```
-
-## Part 5.3 焊接点位预览
-
-任务：
-
-```text
-1. 显示 main/lead_in/lead_out/overlap。
-2. 显示 arc_start/arc_end。
-3. 显示方向箭头。
-4. 显示 segment 编号。
-```
-
-验收：
-
-```text
-preview_weld_Abc123.png 中能清楚看到 overlap。
-```
-
----
-
-# Phase 6：绘图模式
-
-## Part 6.1 内置几何图形
-
-任务：
-
-```text
-1. 直线。
-2. 矩形。
-3. 圆。
-4. 椭圆。
-5. 多边形。
-6. 五角星。
-```
-
-验收：
-
-```text
-所有图形可走 CRI 轨迹规划，也可生成焊接 TXT 点位。
-```
-
-## Part 6.2 SVG 预留接口
-
-任务：
-
-```text
-1. 定义 SvgImporter 接口。
-2. 暂时可抛 NotImplementedError。
-3. 不影响第一版运行。
-```
-
----
-
-# Phase 7：命令行和集成
-
-## Part 7.1 CLI 命令
-
-必须支持：
-
+## 7. Phase 1：核心数据模型与配置模型
+
+### Part 1.1 — 补全基础几何类型
+
+**目标**：在 `core/types.py` 中补全本轮所需的基础类型。
+
+**涉及文件**（仅限）：
+- `core/types.py`（修改）
+- `core/geometry.py`（修改，新增转换函数）
+- `core/errors.py`（修改，新增异常类）
+
+**新增内容**：
+- `Quaternion(w, x, y, z)` dataclass — **仅作为预留类型**
+- `PixelPoint`, `PlanePoint`, `RobotPoint` dataclass
+- `Stroke` dataclass
+- `ProcessSegment` dataclass（字段使用 `normal_offset_mm` 替代 `height_mm`）
+- `WeldingJob` dataclass
+- `Pose` 增加 `orientation_q: Quaternion | None = None` — **仅预留，本轮主流程不使用**
+
+**新增函数**（`core/geometry.py`）：
+- `euler_deg_to_quat(rx, ry, rz) -> Quaternion` — **预留**
+- `quat_to_euler_deg(q: Quaternion) -> tuple` — **预留**
+- `dot(a, b) -> float`
+- `length(v) -> float`
+- `distance(a, b) -> float`
+- `normal_from_three_points(tl, tr, bl) -> Point3D` — 已有，确认正确
+
+**新增异常**（`core/errors.py`）：
+- `PathExtractionError`
+- `ConfigurationError`
+- `MappingError`
+
+**验收标准**：
+- `Quaternion` dataclass 存在
+- `Pose` 有 `orientation_q` 字段但主流程不使用它
+- `Stroke`, `ProcessSegment`, `WeldingJob` 可实例化
+- `ProcessSegment.normal_offset_mm` 字段存在
+
+**测试方式**：
 ```bash
-python app/main.py render-text --text "Abc123" --font ./font.ttf --out examples/output
-python app/main.py extract-path --image examples/output/raster_Abc123.png --mode skeleton
-python app/main.py preview --text "Abc123" --font ./font.ttf
-python app/main.py weld-points --text "Abc123" --font ./font.ttf --out examples/output
-python app/main.py cri-dry-run --text "Abc123" --font ./font.ttf
-python app/main.py cri-run --text "Abc123" --font ./font.ttf --robot-ip 192.168.1.136 --local-ip 192.168.1.150 --udp-port 18888
+python -c "
+from core.types import Quaternion, Pose, Stroke, ProcessSegment, WeldingJob, RobotPoint
+from core.geometry import euler_deg_to_quat, quat_to_euler_deg
+q = euler_deg_to_quat(90, 0, 0)
+rx, ry, rz = quat_to_euler_deg(q)
+assert abs(rx - 90) < 0.001
+s = Stroke(id='s1', source_type='contour', points_px=[PixelPoint(0,0)])
+seg = ProcessSegment(id='p1', type='weld', points=[], speed_mm_s=30, arc_enabled=True, normal_offset_mm=5.0, stroke_id='s1')
+print('PASS')
+"
 ```
 
-`cri-run` 必须要求显式参数，不能默认连接实机。
+**风险点**：低。
 
-## Part 7.2 配置文件
+**不允许**：
+- 不要修改现有字段名（只新增）
+- 不要删除 `orientation_euler_deg` 字段
+- 不要在主流程中使用 `Quaternion`
 
-支持 YAML/JSON 配置：
-
-```text
-examples/configs/default_text.yaml
-examples/configs/default_cri.yaml
-examples/configs/default_weld_points.yaml
-```
+**Part 完成汇报**：
+- `git diff --name-only` 文件清单
+- 测试命令和输出
+- 下一 Part 依赖项
 
 ---
 
-# Phase 8：测试、验收、Agent 回报格式
+### Part 1.2 — 实现配置数据类
 
-## Part 8.1 单元测试
+**目标**：实现配置 dataclass，使用法向偏移字段。
 
-必须覆盖：
+**涉及文件**（仅限）：
+- `core/types.py`（新增配置类）
+- `config/welding_defaults.py`（使用新配置类提供默认实例）
 
-```text
-1. 单位转换
-2. 三点平面映射
-3. 文本排版缩放不拉伸
-4. 骨架路径提取
-5. 闭合路径 overlap
-6. 开放路径 lead_in/lead_out
-7. CRI CommandData 打包
-8. TXT 输出格式
+**新增内容**：
+- `TextLayoutConfig`, `PathConfig`, `WorkspaceConfig`, `WeldingProcessConfig`, `ExportConfig`
+- `WorkspaceConfig` 使用 `normal_*_offset_mm` 字段（主线）+ 保留 `z_*_mm`（兼容）
+- `config/welding_defaults.py` 提供 `DEFAULT_TEXT_CONFIG`, `DEFAULT_PATH_CONFIG`, `DEFAULT_WORKSPACE_CONFIG`, `DEFAULT_WELDING_CONFIG`, `DEFAULT_EXPORT_CONFIG`
+
+**验收标准**：
+- `WorkspaceConfig.normal_work_offset_mm` 等四个法向字段存在
+- 配置对象可被 `json.dumps(asdict(config))` 序列化
+
+**测试方式**：
+```bash
+python -c "
+from config.welding_defaults import DEFAULT_WORKSPACE_CONFIG
+assert hasattr(DEFAULT_WORKSPACE_CONFIG, 'normal_work_offset_mm')
+assert hasattr(DEFAULT_WORKSPACE_CONFIG, 'normal_safe_offset_mm')
+print('PASS')
+"
 ```
 
-## Part 8.2 集成测试
+**风险点**：低。
 
-必须生成以下文件：
-
-```text
-examples/output/raster_Abc123.png
-examples/output/preview_paths_Abc123.png
-examples/output/preview_pen_Abc123.png
-examples/output/preview_weld_Abc123.png
-examples/output/weld_points_Abc123.txt
-examples/output/weld_points_Abc123.json
-examples/output/cri_dry_run_Abc123.json
-```
-
-## Part 8.3 Claude Code 每完成一个 Part 必须汇报
-
-每个 Part 完成后，Claude Code 必须输出：
-
-```text
-1. 本 Part 修改/新增了哪些文件。
-2. 新增了哪些类和函数。
-3. 怎么运行本 Part 的测试。
-4. 生成了哪些预览/输出文件。
-5. 本 Part 没做什么。
-6. 下一 Part 依赖什么。
-7. 是否违反了禁止事项。
-```
+**不允许**：配置类不要包含 Qt/PySide6 依赖；不要绑定 UI 控件引用。
 
 ---
 
-## 15. 第一版完成定义
+## 8. Phase 2：ContourExtractor 轮廓字引擎
 
-第一版完成时，必须满足：
+### Part 2.1 — 字体渲染与二值化
 
-```text
-1. 可输入 Abc123 / 0123456789 / A-Z / a-z。
-2. 可选择字体。
-3. 可设置字高 mm、字距、行距。
-4. 可横排、竖排、手动换行、左中右对齐。
-5. 可通过三点标定映射到三维工作面。
-6. 可生成骨架路径。
-7. 可生成写字/绘图 CRI dry-run 轨迹。
-8. 可真实启用 CRI run，但必须由用户显式命令触发。
-9. 可生成焊接 TXT 点位文件。
-10. 闭合路径必须有 overlap。
-11. 开放路径必须有 lead_in/lead_out。
-12. i/j 点状特征必须可处理。
-13. 有清晰预览图。
-14. 没有调用 Robot/move、Robot/moveTo、IO、Register、Modbus、Lua。
+**目标**：从当前 `font_renderer.py` 提取独立的字体渲染模块。
+
+**涉及文件**（仅限）：
+- `pipeline/raster/__init__.py`（新建）
+- `pipeline/raster/font_rasterizer.py`（新建，从 `font_renderer.py` 提取）
+
+**新增内容**：
+- `FontRasterizer` 类：封装 PIL 渲染、字号自适应、二值化
+- `render_char(char, font_path, font_size_px) -> np.ndarray`
+- `render_text(text, font_path, font_size_px) -> list[np.ndarray]`
+- `get_optimal_font_size(text, font_path, canvas_w, canvas_h) -> int`
+- `get_default_font_path() -> str`
+
+**验收标准**：
+- 渲染 'A' 和 'B' 到 600px 二值图成功
+- 生成 `examples/output/raster_A.png` debug 图
+
+**测试方式**：
+```bash
+python -c "
+from pipeline.raster.font_rasterizer import FontRasterizer
+r = FontRasterizer()
+img = r.render_char('A', r.get_default_font_path(), 600)
+assert img.shape[0] > 0 and img.shape[1] > 0
+print('PASS')
+"
 ```
+
+**不允许**：不要在 rasterizer 中做排版或路径提取。
 
 ---
 
-## 16. 重点实现顺序
+### Part 2.2 — 轮廓提取核心
 
-Claude Code 必须按顺序做：
+**目标**：实现 `ContourExtractor`，从二值图提取轮廓并输出 `Stroke[]`。
 
-```text
-Phase 0 -> Phase 1 -> Phase 2 -> Phase 3 -> Phase 5 -> Phase 4 -> Phase 7 -> Phase 8
+**涉及文件**（仅限）：
+- `pipeline/vision/__init__.py`（新建）
+- `pipeline/vision/contour_extractor.py`（新建）
+
+**新增内容**：
+- `ContourExtractor` 类
+  - `extract(binary, config) -> list[Stroke]`
+  - `_find_contours(binary)` — cv2.RETR_TREE, CHAIN_APPROX_NONE
+  - `_filter_small(contours, min_area)`
+  - `_classify_inner_outer(contours, hierarchy, area_frac)` — 内外轮廓分离
+  - `_extract_contour_path(cnt, is_inner, source) -> Stroke`
+  - `_unify_direction(strokes)` — 外轮廓 CCW / 内轮廓 CW
+  - `_order_strokes(strokes)` — 按 boundingRect X 排序
+
+**第一轮验收字符**：**A, B, O, 0, 8**
+
+**验收标准**：
+- 'A' 生成开放外轮廓 stroke(s)
+- 'B' 生成多段外轮廓 stroke(s) + 内轮廓(孔洞)
+- 'O' 生成 1 个外轮廓 + 1 个内轮廓（孔洞）
+- '0' 同 O
+- '8' 生成 2 个外轮廓或 1 个外轮廓（上下两个环）
+- 生成 `examples/output/contour_ABO08.png` 预览图
+
+**测试方式**：
+```bash
+python -c "
+from pipeline.raster.font_rasterizer import FontRasterizer
+from pipeline.vision.contour_extractor import ContourExtractor
+from config.welding_defaults import DEFAULT_PATH_CONFIG
+r = FontRasterizer()
+ext = ContourExtractor()
+cfg = DEFAULT_PATH_CONFIG; cfg.mode = 'contour'
+for ch in ['A','B','O','0','8']:
+    img = r.render_char(ch, r.get_default_font_path(), 600)
+    strokes = ext.extract(img, cfg)
+    outer = [s for s in strokes if not s.is_hole]
+    inner = [s for s in strokes if s.is_hole]
+    print(f'{ch}: {len(strokes)} strokes, outer={len(outer)}, inner={len(inner)}')
+print('PASS')
+"
 ```
 
-说明：
-
-```text
-1. 先做焊接 TXT 点位输出，再做真实 CRI 控制。
-2. CRI 真实控制风险更高，必须在路径、预览、TXT 输出稳定后再做。
-3. Phase 4 可以先完成 dry-run，再做 real-run。
-```
+**不允许**：
+- 不要在 ContourExtractor 中做空间映射
+- 不要在 ContourExtractor 中做工艺段插入
 
 ---
 
-## 17. 给 Claude Code 的最终执行指令
+### Part 2.3 — 轮廓简化与自适应精调
 
-请严格按本文档开发，不要自由发挥接口边界。
+**目标**：迁移旧版 `_adaptive_xy_closed()` 算法链到 ContourExtractor 的像素空间版本。
 
-第一轮只执行：
+**涉及文件**（仅限）：
+- `pipeline/vision/contour_extractor.py`（修改，增加简化方法）
 
-```text
-Phase 0 + Phase 1 + Phase 2 的最小可运行版本
-```
+**新增内容**：
+- `_simplify_contour_vertices(cnt, max_v)` — 顶点上限 approxPolyDP
+- `_adaptive_simplify_closed(cnt, config)` — 直曲线自适应简化
+- `_max_deviation_from_chord(pts)` — 最大弦偏差
 
-完成后输出：
+**验收标准**：
+- 正方形 → 4 角点
+- 圆 → 多点保留（无尖角丢失）
+- 拐角 'A' 字形在两个尖角处保留点
 
-```text
-1. 项目结构
-2. 运行命令
-3. 预览图片路径
-4. 测试结果
-5. 下一步建议执行的 Part
-```
-
-不要一次性完成全部 Phase。每个 Part 完成后必须等待用户测试结果，再进入下一 Part。
+**不允许**：不要在像素空间做 mm 阈值判断（PathRefinement 会重做）。
 
 ---
 
-## 18. 本计划评分目标
+## 9. Phase 3：SkeletonExtractor 骨架字引擎
 
-本版本目标是：
+### Part 3.1 — 骨架图构建与拓扑分析
 
-```text
-作为 Claude Code 任务文档：9.8/10
-作为第一版工程规格：9.5/10
-作为长期完整技术规格：9.0/10
+**目标**：完善骨架提取，增加骨架图构建、端点/分叉点检测。
+
+**涉及文件**（仅限）：
+- `pipeline/vision/skeleton_extractor.py`（重写当前文件）
+
+**新增内容**：
+- `SkeletonGraph` 类（nodes / edges）
+- `_detect_endpoints(skel)`, `_detect_branchpoints(skel)`
+- `_connected_components(skel)`
+- `_trace_edge(start, skel, visited)`
+- `_spur_pruning(graph, min_len_px)`
+
+**验收标准**：
+- 'A' 骨架图端点/分叉点正确
+- 生成 `examples/output/skeleton_graph_A.png` 调试图
+
+**测试方式**：
+```bash
+python -c "
+from pipeline.raster.font_rasterizer import FontRasterizer
+from pipeline.vision.skeleton_extractor import SkeletonExtractor
+from config.welding_defaults import DEFAULT_PATH_CONFIG
+r = FontRasterizer()
+img = r.render_char('A', r.get_default_font_path(), 600)
+ext = SkeletonExtractor()
+strokes, stats = ext.extract(img, DEFAULT_PATH_CONFIG)
+print(f'A: {len(strokes)} strokes, {stats}')
+"
 ```
 
-剩余非第一版内容：
+**不允许**：不要把骨架像素直接当机器人路径。
 
-```text
-1. 完整汉字笔顺级路径规划
-2. 完整 SVG 贝塞尔解析
-3. 位图复杂轮廓清洗
-4. 完整关节空间连续性检查
-5. 焊接工艺执行系统
-6. Lua 脚本执行系统
+---
+
+### Part 3.2 — Stroke 提取与路径排序
+
+**目标**：从 SkeletonGraph 提取 Stroke，支持笔画排序。
+
+**涉及文件**（仅限）：
+- `pipeline/vision/skeleton_extractor.py`（修改）
+
+**新增内容**：
+- `_extract_strokes_from_graph(graph, config) -> list[Stroke]`
+- `_extract_open_strokes(graph)`, `_extract_closed_loops(graph)`
+- `_order_strokes(strokes)` — 最近邻贪心 + 双向选择
+
+**验收标准**：
+- 'A'-'Z', 'a'-'z', '0'-'9' 每字符 stroke 数量合理
+- 闭环 (O/o/0/6/8/9) 正确识别
+- 输出调试统计（端点/分叉点/短枝/连通域数量）
+
+**不允许**：不要把骨架提取器的排序做为最终排序。
+
+---
+
+## 10. Phase 4：Path Refinement 路径整形层
+
+### Part 4.1 — 基础清洗与重采样
+
+**目标**：统一处理 contour 和 skeleton 产出的 Stroke。
+
+**涉及文件**（仅限）：
+- `pipeline/path/__init__.py`（新建）
+- `pipeline/path/path_cleaner.py`（新建）
+- `pipeline/path/path_resampler.py`（新建）
+
+**新增内容**：
+- `remove_duplicate_points(pts, eps)` — 去重
+- `remove_short_paths(strokes, min_len)` — 去短线
+- `normalize_direction(strokes)` — 方向统一
+- `detect_closed(pts, threshold)` — 闭环检测
+- `resample_uniform(pts, spacing)` — 等距重采样
+- `simplify_rdp(pts, epsilon)` — Douglas-Peucker
+- `check_max_step(pts, max_mm) -> list[str]` — 步长检查
+
+**验收标准**：
+- 重复点被删除
+- 重采样间距误差 < 10%
+- 步长超过阈值的报警
+
+**不允许**：不要在清洗中做空间映射或工艺段插入。
+
+---
+
+### Part 4.2 — 拐角保护与自适应简化
+
+**目标**：迁移旧版自适应简化到 mm 空间的 PathRefinement 层。
+
+**涉及文件**（仅限）：
+- `pipeline/path/path_refiner.py`（新建）
+
+**新增内容**：
+- `AdaptivePathRefiner` 类
+  - `refine(points, config) -> list`
+  - `_detect_corners(points, angle_thresh)` — 拐角检测
+  - `_classify_straight_curve(points, chord_tol)` — 直曲分类
+  - `_simplify_straight(points)` / `_simplify_curve(points, epsilon, min_p)`
+
+**验收标准**：
+- 正方形 → 4 角点
+- 锯齿 → 全部拐角保留
+- 弦偏差 < straight_tol_mm
+
+**不允许**：不要引入焊接工艺逻辑。
+
+---
+
+### Part 4.3 — 路径排序与 Travel 优化
+
+**目标**：多段路径执行顺序优化。
+
+**涉及文件**（仅限）：
+- `pipeline/path/path_scheduler.py`（新建）
+
+**新增内容**：
+- `PathScheduler` 类
+  - `optimize(strokes) -> list[Stroke]`
+  - `_nearest_neighbor(strokes)` — 最近邻贪心
+  - `_consider_reverse(strokes)` — 双向选择
+  - `calc_total_travel(strokes) -> float`
+
+**验收标准**：
+- 排序后 travel 距离 <= 原始距离
+- 同字符笔画不打散
+
+**不允许**：不要在此层做路径简化。
+
+---
+
+## 11. Phase 5：Workspace UV Mapping 空间映射
+
+### Part 5.1 — UV 映射主线
+
+**目标**：实现三点 + 法向量 UV 映射。所有高度使用法向偏移。
+
+**涉及文件**（仅限）：
+- `pipeline/mapping/__init__.py`（新建）
+- `pipeline/mapping/workplane.py`（新建）
+- `pipeline/mapping/pose_mapper.py`（新建）
+
+**新增内容**：
+
+`workplane.py`：
+- `WorkPlane` 类
+  - `__init__(tl, tr, bl)` — U=normalize(TR-TL), V=normalize(BL-TL), N=normalize(U×V)
+  - `pixel_to_plane(px, canvas_w, canvas_h) -> PlanePoint`
+  - `plane_to_robot(pm, normal_offset_mm) -> RobotPoint` — 使用法向偏移
+  - `get_safe_position(xy, normal_offset_mm) -> RobotPoint` — P + N * normal_offset
+  - `validate() -> bool` — 三点不共线检查
+
+`pose_mapper.py`：
+- `PoseMapper` 类
+  - `map_strokes(strokes, workplane, canvas_w, canvas_h, config) -> list[Stroke]`
+  - `set_stroke_heights(stroke, workplane, config)` — 使用 `normal_*_offset_mm` 设置各段高度
+
+**法向偏移使用规则**：
+```
+travel 高度:    pos + normal * normal_travel_offset_mm
+lead_in 过渡:   从 normal_travel_offset_mm 渐变到 normal_work_offset_mm
+weld 高度:      pos + normal * normal_work_offset_mm
+lead_out 过渡:  从 normal_work_offset_mm 渐变到 normal_travel_offset_mm
+retreat 高度:   pos + normal * normal_travel_offset_mm
 ```
 
-这些不是第一版目标，不要让 Claude Code 提前实现。
+**验收标准**：
+- 水平平面上 four corners 映射正确
+- 45° 倾斜平面安全高度方向沿法向（非 global Z）
+- 输出 U/V/N 向量值和平面尺寸
+
+**测试方式**：
+```bash
+python -c "
+from pipeline.mapping.workplane import WorkPlane
+from core.types import RobotPoint
+tl = RobotPoint(0, 0, 100, -180, 0, -135)
+tr = RobotPoint(200, 0, 100, -180, 0, -135)
+bl = RobotPoint(0, 200, 100, -180, 0, -135)
+wp = WorkPlane(tl, tr, bl)
+assert abs(wp.normal[2] - 1.0) < 0.01  # 法向 ≈ (0,0,1)
+# 安全位置应沿法向偏移
+safe = wp.get_safe_position(PlanePoint(100, 100), 15.0)
+assert abs(safe.z - 115.0) < 0.01  # 100 + 15 = 115（法向为(0,0,1)时等价于 z+height）
+print('PASS')
+"
+```
+
+**不允许**：
+- 不要使用 `z + height` 替代法向偏移
+- 不要在 mapper 中修改 stroke 拓扑关系
+
+---
+
+### Part 5.2 — 兼容模式保留
+
+**目标**：保留旧 ortho 和 perspective 模式。
+
+**涉及文件**（仅限）：
+- `pipeline/mapping/workplane.py`（修改）
+
+**新增内容**：
+- `WorkPlane.from_four_corners(tl, tr, bl, br)` — perspective 兼容
+- `WorkPlane.from_ortho(tl, pixel_per_mm, w, h)` — ortho 兼容
+- 兼容模式下允许使用 `z_safe_mm` / `z_work_mm` 字段
+
+**验收标准**：
+- ortho 模式与旧版 pixel_per_mm 输出一致
+- 默认 mapping_mode = "uv"
+
+**不允许**：不要让兼容模式成为默认。
+
+---
+
+## 12. Phase 6：Welding Process 工艺段生成
+
+### Part 6.1 — 工艺段结构生成
+
+**目标**：从 Stroke 生成 ProcessSegment 序列，高度使用法向偏移。
+
+**涉及文件**（仅限）：
+- `pipeline/process/__init__.py`（新建）
+- `pipeline/process/weld_process.py`（新建）
+
+**新增内容**：
+- `WeldingProcessPlanner` 类
+  - `plan(strokes, workplane, config) -> list[ProcessSegment]`
+  - `_plan_open(stroke, workplane, config)` — 开放路径
+  - `_plan_closed(stroke, workplane, config)` — 闭合路径 + overlap
+  - `_build_travel(from_pt, to_pt, workplane, config)` — travel 段（normal_travel_offset）
+  - `_build_lead_in(stroke, workplane, config)` — lead_in 段
+  - `_build_weld(stroke, workplane, config)` — weld 段（normal_work_offset）
+  - `_build_overlap(stroke, workplane, config)` — overlap 段（闭合）
+  - `_build_lead_out(stroke, workplane, config)` — lead_out 段
+  - `_build_retreat(stroke, workplane, config)` — retreat 段
+  - `_find_best_start(closed_points, config)` — 找低曲率段中部
+
+**工艺段序列**：
+```
+[travel]  → 空移到 stroke 起点上方 (normal_travel_offset_mm, arc_enabled=False)
+[lead_in]  → 从安全高度下降到工作高度并起弧 (normal_work_offset_mm, arc_enabled=True)
+[weld]     → 正式焊接路径 (normal_work_offset_mm, arc_enabled=True)
+[overlap]  → 闭合路径搭接段 (normal_work_offset_mm, arc_enabled=True)，开放路径为空
+[lead_out] → 引出段 (normal_work_offset_mm, arc_enabled=True)
+[retreat]  → 退枪到安全高度 (normal_travel_offset_mm, arc_enabled=False)
+```
+
+**验收标准**：
+| 路径类型 | travel | lead_in | weld | overlap | lead_out | retreat |
+|----------|--------|---------|------|---------|----------|---------|
+| 'A'(开放) | 有 | 有 | 有 | 无 | 有 | 有 |
+| 'O'(闭合) | 有 | 有 | 有 | 有(>=overlap_mm*0.95) | 有 | 有 |
+| '0/8'(闭合) | 有 | 有 | 有 | 有 | 有 | 有 |
+| 'B'(开放+内孔) | 有 | 有 | 有 | 无/有(依路径) | 有 | 有 |
+
+- lead_in/lead_out 起弧灭弧点不在字形特征点
+- 所有段高度通过 workplane.normal 计算（非法向不得使用 z+height）
+- travel 段 arc_enabled=False
+
+**不允许**：
+- 不要硬编码 Z 高度偏移
+- 不要在开放路径生成 overlap
+
+---
+
+### Part 6.2 — 焊接参数集成
+
+**目标**：ProcessSegment.metadata 中包含 voltage、current。
+
+**涉及文件**（仅限）：
+- `pipeline/process/weld_process.py`（修改）
+- `config/welding_defaults.py`（修改）
+
+**验收标准**：
+- 每个 weld 段的 metadata 含 voltage 和 current
+- TXT 导出 header 含电压电流
+
+**不允许**：不要实现摆动焊接参数（wtype/wfreq/wamp）。
+
+---
+
+## 13. Phase 7：Export 导出系统
+
+### Part 7.1 — Lua 脚本导出（焊接主线）
+
+**目标**：输出焊接用 Lua 脚本，格式兼容旧版 wledfont2_UI，movL + setWelderParam + arcOn/Off。
+
+**涉及文件**（仅限）：
+- `pipeline/output/__init__.py`（新建）
+- `pipeline/output/lua_writer.py`（新建）
+
+**新增内容**：
+- `LuaWriter` 类
+  - `write(segments, output_path, config, weld_params) -> str` — 写入 Lua 脚本
+  - `_write_set_welder_param(f, voltage, current)` — setWelderParam({job=0, I=..., U=..., L=0})
+  - `_format_movl(point, speed, acc, blend=0) -> str` — 格式化单条 movL
+  - `_write_arcon(f)` / `_write_arcoff(f)` — arcOn() / arcOff()
+  - `_write_comment(f, text)` — Lua 注释行
+  - `_maybe_insert_breakpoint(f, line_count, interval=30)` — 每 N 行插入 print("")
+
+**Lua 脚本结构**（按旧版格式）：
+```lua
+-- Robot Weld Path Lua Script v1.0
+-- text: Abc123
+-- font: /path/to/font.ttf
+-- mode: contour
+-- voltage: 24.0V  current: 150.0A
+-- normal_work_offset_mm: 5.0
+-- normal_safe_offset_mm: 15.0
+-- lead_in_mm: 3.0  lead_out_mm: 3.0  overlap_mm: 5.0
+
+setWelderParam({job=0, I=150.0, U=24.0, L=0})
+
+-- stroke_A  seg_0001  approach
+movL(100.000, 200.000, 182.500, -180.000, 0.000, -135.000, v=80.0, a=300, b=0)
+-- stroke_A  seg_0001  lead_in (arc on)
+movL(100.000, 200.000, 172.500, -180.000, 0.000, -135.000, v=30.0, a=300, b=0)
+arcOn()
+
+-- stroke_A  seg_0001  weld
+movL(101.000, 200.000, 172.500, -180.000, 0.000, -135.000, v=30.0, a=300, b=0)
+movL(102.000, 200.500, 172.500, -180.000, 0.000, -135.000, v=30.0, a=300, b=0)
+...
+print("")
+
+-- stroke_A  seg_0001  overlap
+movL(150.000, 200.000, 172.500, -180.000, 0.000, -135.000, v=30.0, a=300, b=0)
+
+-- stroke_A  seg_0001  lead_out (arc off)
+arcOff()
+movL(153.000, 200.000, 182.500, -180.000, 0.000, -135.000, v=30.0, a=300, b=0)
+print("")
+
+-- ... 后续 stroke ...
+```
+
+**Lua 格式规则**：
+- `movL(x, y, z, rx, ry, rz, v=<speed>, a=<acc>, b=<blend>)`
+- `v` 参数使用 ProcessSegment.speed_mm_s
+- `a` (加速度) 默认 300 mm/s²
+- `b` (blend 过渡) 默认 0
+- travel 段不调用 arcOn/arcOff
+- lead_in 起始处调用 arcOn()
+- lead_out 末尾处调用 arcOff()
+- travel 和 retreat 段 speed 使用 travel_speed_mm_s
+- 每 stroke 结束 insert print("")
+- 每 30 行 movL 插入 print("") 断点（兼容旧版）
+
+**输入**：`list[ProcessSegment]` + ExportConfig + 焊接参数(voltage/current)
+
+**输出**：Lua 文件路径 + `weld_points.txt` 参考文件（空格分隔 x y z rx ry rz）
+
+**验收标准**：
+- Lua 脚本可在机器人控制器 Lua 解释器中执行
+- setWelderParam 在文件开头只调用一次
+- arcOn/arcOff 成对出现（每 stroke 一次）
+- travel 段不含 arcOn/arcOff
+- 每 30 行有 print("") 断点
+
+**不允许**：
+- 不要改变 movL 参数顺序（x, y, z, rx, ry, rz 必须是前 6 个位置参数）
+- 不要在 weld 段中错误调用 arcOff
+- 不要在 Lua 中嵌入 IO 寄存器写入（那是机器人端的内部逻辑）
+
+---
+
+### Part 7.2 — job.json 任务文件导出
+
+---
+
+### Part 7.2 — job.json + weld_points.txt 参考文件导出
+
+**目标**：输出结构化 JSON + 人可读点位参考文件。
+
+**涉及文件**（仅限）：
+- `pipeline/output/json_writer.py`（新建）
+
+**新增内容**：
+- `JsonJobWriter` 类
+  - `write(job: WeldingJob, output_path) -> str` — 写入 JSON
+- `PointsRefWriter` 类
+  - `write(segments, output_path) -> str` — 写入空格分隔的点位参考文件（x y z rx ry rz 每行）
+
+**JSON 结构**：
+```json
+{
+  "version": "1.0",
+  "timestamp": "...",
+  "input": {"text": "Abc123", "font": "...", "mode": "contour"},
+  "config": {
+    "text_layout": {...},
+    "path": {...},
+    "workspace": {
+      "tl": {"x": 100, "y": 200, "z": 167.5, "rx": -180, "ry": 0, "rz": -135},
+      "bl": {...}, "tr": {...},
+      "normal": {"x": 0, "y": 0, "z": 1},
+      "normal_work_offset_mm": 5.0,
+      "normal_safe_offset_mm": 15.0
+    },
+    "welding": {"lead_in_mm": 3.0, "lead_out_mm": 3.0, "overlap_mm": 5.0, "voltage": 24.0, "current": 150.0}
+  },
+  "strokes": [{"id": "stroke_A", "source_type": "contour", "point_count": 42, "closed": false, "is_hole": false}],
+  "segments": [
+    {
+      "id": "seg_0001",
+      "type": "weld",
+      "arc_enabled": true,
+      "stroke_id": "stroke_A",
+      "points": [{"x": 101.0, "y": 200.0, "z": 172.5, "rx": -180, "ry": 0, "rz": -135}],
+      "metadata": {"voltage": 24.0, "current": 150.0}
+    }
+  ],
+  "stats": {"total_points": 500, "total_segments": 10, "total_length_mm": 320.5}
+}
+```
+
+**不允许**：JSON 中不要包含二进制数据或文件引用。
+
+---
+
+### Part 7.3 — Debug PNG 导出
+
+**目标**：导出各阶段调试图像。
+
+**涉及文件**（仅限）：
+- `pipeline/output/preview_writer.py`（新建）
+
+**新增内容**：
+- `DebugExporter` 类
+  - `export_original_binary(binary, path)` — 原始二值图
+  - `export_contour_overlay(binary, strokes, path)` — 轮廓叠加
+  - `export_skeleton_overlay(binary, graph, strokes, path)` — 骨架叠加（含端点/分叉点）
+  - `export_stroke_order(strokes, path)` — stroke 顺序
+  - `export_process_segments(segments, workplane, path)` — 工艺段彩色
+
+**验收标准**：
+- 生成 `examples/output/original_A.png`, `contour_A.png`, `segments_A.png`
+- travel 虚线 / weld 实线 / overlap 红色
+
+**不允许**：不要在导出函数中做路径计算。
+
+---
+
+## 14. Phase 8：Preview 可视化预览
+
+### Part 8.1 — 统一预览管线
+
+**目标**：整合所有预览到统一的 PreviewManager。
+
+**涉及文件**（仅限）：
+- `pipeline/preview.py`（重写当前文件）
+
+**新增内容**：
+- `PreviewManager` 类
+  - `preview_all(job, output_dir) -> dict[str, str]`
+  - `preview_extraction(binary, strokes)` — 路径提取预览
+  - `preview_refinement(before, after)` — 整形前后对比
+  - `preview_workspace(strokes, workplane)` — 工作平面 3D 投影
+  - `preview_segments(segments, workplane)` — 工艺段预览
+  - `preview_robot_path(segments, workplane)` — 机器人路径投影
+
+**验收标准**：
+- 所有预览图正常生成
+- 3D 工作平面投影正确显示倾斜平面
+
+**不允许**：不要在 PreviewManager 中修改数据。
+
+---
+
+## 15. Future Phase A：Trajectory Planner 轨迹规划（绘图用）
+
+> **状态**：Future Phase，本轮不允许执行。
+>
+> 概要：将旧 write4.0 ConstantVelocitySpline 重构为通用 TrajectoryPlanner，为 WritingPage 的 CRI 控制做准备。
+>
+> 绘图模式输出：**points.txt**（CSV-like 固定字段格式，给 CRI 控制器消费）
+> ```
+> segment_id,stroke_id,segment_type,point_index,x,y,z,rx,ry,rz,speed_mm_s,arc_enabled,voltage,current,tag
+> ```
+> 涉及文件：`pipeline/trajectory/` 目录（新建）、`cubic_spline.py`、`time_parameterizer.py`、`trajectory_planner.py`
+
+---
+
+## 16. Future Phase B：UI 接入
+
+> **状态**：Future Phase，本轮不允许执行。
+>
+> 概要：焊接页增加电压/电流/模式选择；绘画页实现 CRI 轨迹生成界面（dry-run）；上传页实现项目管理上传。
+> 涉及文件：`welding_page.py`、`writing_page.py`、`upload_page.py`、`signal_binder.py`、`welding_service.py`（后台线程化）
+>
+> **重要**：upload_page 是独立功能模块，不允许绑定到本轮 welding pipeline 中。
+
+---
+
+## 17. Future Phase C：CRI 控制预留
+
+> **状态**：Future Phase，本轮不允许执行。
+>
+> 概要：设计 CRIController / CriTrajectoryPlayer / CriStateCache 接口，明确 points.txt → CommandData 的转换规则。
+> 不实现真实下发。
+
+---
+
+## 18. 本轮 Part 执行纪律（每个 Part 必须遵守）
+
+1. **只改本 Part 明确涉及的文件**——不允许顺手修其他模块
+2. **不跨 Phase 修改**——当前 Phase 未完成前，不允许动下一 Phase 的文件
+3. **不顺手重构 UI**——不允许修改 `app/` 目录下任何文件
+4. **不顺手接入 CRI**——不允许修改 `services/cri_service.py`、`network/protocol/cri_packer.py`
+5. **不顺手改网络层**——不允许修改 `network/connection_manager.py` 或 TCP/UDP 相关文件
+6. **每个 Part 完成后必须输出**：
+   - `git diff --name-only` 文件变更清单
+   - 测试命令
+   - 测试结果（复制终端输出）
+   - 下一 Part 建议
+   - 是否违反了任何禁止事项
+
+---
+
+## 19. 风险总表
+
+| 风险编号 | 风险描述 | 严重程度 | 影响 Phase | 缓解措施 |
+|----------|----------|----------|------------|----------|
+| R1 | 安全高度仍可能被写成 z+height | 严重 | Phase 5,6 | Phase 5 强制使用 normal_offset，Phase 6 审查 |
+| R2 | ContourExtractor hierarchy 解析错误 | 中 | Phase 2 | 用 A/B/O/0/8 做回归测试 |
+| R3 | SkeletonExtractor 交叉点在复杂字符中丢失连接 | 中 | Phase 3 | 首批只支持字母数字 |
+| R4 | 三点共线导致法向计算不稳定 | 低 | Phase 5 | 共线性检测 + 用户提示 |
+| R5 | matplotlib 在 headless 环境 crash | 低 | Phase 7,8 | 使用 Agg backend |
+| R6 | 旧 pipeline 与新技术栈共存期间的模块冲突 | 低 | 全 Phase | 新 pipeline 放独立子目录 |
+
+---
+
+## 20. 测试总表
+
+| Phase | 测试内容 | 方法 | 预期 |
+|-------|----------|------|------|
+| 1.1 | 类型实例化 | import + 构造 | 所有类型可用 |
+| 1.2 | 配置序列化 | `json.dumps(asdict(config))` | 成功 |
+| 2.1 | 字体渲染 | 渲染 'A' 600px | 二值图非空 |
+| 2.2 | 轮廓提取 | A/B/O/0/8 → strokes | 内外轮廓数量正确 |
+| 2.3 | 轮廓简化 | 正方→4角点 | 简化正确 |
+| 3.1 | 骨架图构建 | 'A' → graph | 端点/分叉点正确 |
+| 3.2 | stroke 提取 | A-Z → strokes | 数量合理 |
+| 4.1 | 清洗重采样 | 冗余数据 → 清洗后 | 去重/间距正确 |
+| 4.2 | 自适应简化 | 正方/锯齿/圆 | 角点保留 |
+| 4.3 | 路径排序 | 随机路径 → 优化后 | travel 减少 |
+| 5.1 | UV 映射 | 三点 → 平面映射 | 坐标/法向正确 |
+| 5.1 | 安全高度方向 | 45° 倾斜平面 | 沿法向 |
+| 6.1 | 工艺段 | O→闭合/V→开放 | 段类型顺序正确 |
+| 7.1 | points.txt | 输出 → csv.reader 解析 | 14 字段固定 |
+| 7.2 | job.json | 输出 → json.load | 可解析可复现 |
+| 7.3 | debug PNG | 输出 → 查看 | 图像正确 |
+| 8.1 | preview | 一键生成 | 无崩溃 |
+
+---
+
+## 21. 推荐执行顺序
+
+```
+Phase 1.1 → 1.2
+    ↓
+Phase 2.1 → 2.2 → 2.3
+    ↓
+Phase 3.1 → 3.2
+    ↓
+Phase 4.1 → 4.2 → 4.3
+    ↓
+Phase 5.1 → 5.2
+    ↓
+Phase 6.1 → 6.2
+    ↓
+Phase 7.1 → 7.2 → 7.3
+    ↓
+Phase 8.1
+```
+
+每 1-2 个 Part 完成后必须验证，通过后再进入下一步。
+
+---
+
+## 22. 绝对禁止事项
+
+1. 不要修改代码（除非进入执行阶段且获得用户确认）
+2. 不要真实连接机器人
+3. 不要真实下发运动（Robot/move、Robot/jog、Robot/moveTo 等）
+4. 不要使用普通 IO 接口（IOManager/SetIOValue、setDO、setAO 等）
+5. 不要把焊接/写字/绘图和旧运动拖拽可视化模块混在一起
+6. 不要把 skeletonize 输出直接当机器人路径
+7. 不要只做骨架字（必须同时支持轮廓字）
+8. 不要让路径提取器承担工艺段、空间映射、导出职责
+9. 不要把 TXT 导出格式写得随意（必须 CSV-like 固定字段）
+10. 不要修改 UI 文件（本轮不允许动 app/ 目录）
+11. 不要对欧拉角做样条插值
+12. 不要在安全高度计算中使用简单的 z+height（必须用法向偏移）
+13. 不要允许 scale_x != scale_y
+14. 不要把 Quaternion 强制用于主流程
+15. 不要在 pipeline 模块中引入 Qt/PySide6 依赖
+16. 不要实现 Phase 9/10/11（Future Phase）
+17. 不要实现自动上传
+18. 不要跨 Phase 顺手重构
+
+---
+
+*修订日期: 2026-05-12*
+*原版: welding.md (v2)*
+*修订范围: 执行范围限定、高度命名规范、TXT 格式固定化、Part 执行纪律*

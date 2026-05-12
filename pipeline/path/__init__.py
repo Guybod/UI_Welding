@@ -1,0 +1,25 @@
+"""Phase 4: Path Refinement — 清洗、重采样、拐角保护、自适应简化、路径排序
+
+纯像素空间路径整形操作。不涉及 mm 映射、工艺段、导出、UI/CRI。
+"""
+
+from pipeline.path.path_cleaner import (
+    remove_duplicate_points,
+    remove_short_strokes,
+    normalize_direction,
+    filter_noise_strokes,
+)
+from pipeline.path.path_resampler import (
+    resample_uniform,
+    simplify_rdp,
+    check_max_step,
+    clean_and_resample_strokes,
+)
+from pipeline.path.path_refiner import (
+    detect_corners,
+    classify_segments,
+    AdaptivePathRefiner,
+)
+from pipeline.path.path_scheduler import (
+    PathScheduler,
+)

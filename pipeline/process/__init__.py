@@ -1,0 +1,7 @@
+"""Phase 6: Welding Process — 工艺段生成
+
+WeldingProcessPlanner: Stroke → ProcessSegment 序列
+只生成结构化工艺段；不生成 Lua/arcOn/setWelderParam/points.txt。
+"""
+
+from pipeline.process.weld_process import WeldingProcessPlanner
