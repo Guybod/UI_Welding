@@ -183,10 +183,39 @@ class OfflinePipelineRunner:
         # ── Stage 6: map ──
         try:
             from pipeline.mapping import PoseMapper
+
+            # bbox 归一化：多字符 pixel 缩放/平移到 WorkPlane 内
+            map_w, map_h = self.canvas_w_px, self.canvas_h_px
+            source_bbox = None
             strokes_to_map = strokes_sc
-            if self.y_flip and self.canvas_h_px > 0:
-                strokes_to_map = _flip_strokes_y(strokes_sc, self.canvas_h_px)
-            strokes_mp, s6 = PoseMapper.map_strokes(strokes_to_map, workplane, self.canvas_w_px, self.canvas_h_px)
+            if strokes_sc:
+                from core.types import PixelPoint
+                all_x = [p.x for s in strokes_sc for p in s.points_px]
+                all_y = [p.y for s in strokes_sc for p in s.points_px]
+                min_x, max_x = min(all_x), max(all_x)
+                min_y, max_y = min(all_y), max(all_y)
+                bbox_w = max_x - min_x
+                bbox_h = max_y - min_y
+                source_bbox = {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
+
+                # 平移到原点
+                import copy as _copy
+                strokes_to_map = []
+                for s in strokes_sc:
+                    pts = [PixelPoint(x=p.x - min_x, y=p.y - min_y) for p in s.points_px]
+                    import dataclasses
+                    strokes_to_map.append(dataclasses.replace(s, points_px=pts))
+
+                if bbox_w > 0 and bbox_h > 0:
+                    map_w, map_h = bbox_w, bbox_h
+
+            if self.y_flip and map_h > 0:
+                strokes_to_map = _flip_strokes_y(strokes_to_map, map_h)
+            strokes_mp, s6 = PoseMapper.map_strokes(strokes_to_map, workplane, map_w, map_h)
+            if source_bbox:
+                s6["source_bbox_px"] = source_bbox
+                s6["normalized_canvas_w"] = round(map_w, 1)
+                s6["normalized_canvas_h"] = round(map_h, 1)
             stage_stats.append(StageStats(name="map", status="ok", stats=s6))
         except Exception as exc:
             errors.append(f"map: {exc}")
