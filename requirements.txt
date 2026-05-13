@@ -3,3 +3,7 @@ PyOpenGL>=3.1
 numpy>=1.24
 psutil>=5.9
 PyYAML>=6.0
+Pillow>=9.0
+opencv-python>=4.6
+matplotlib>=3.5
+scikit-image>=0.19
