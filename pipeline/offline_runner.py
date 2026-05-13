@@ -82,6 +82,7 @@ class OfflinePipelineRunner:
         canvas_h_px: float = 600.0,
         px_per_mm: float = 10.0,
         y_flip: bool = True,
+        allow_overflow: bool = False,
         path_config: PathConfig | None = None,
         process_config: WeldingProcessConfig | None = None,
         workspace_config: WorkspaceConfig | None = None,
@@ -95,6 +96,7 @@ class OfflinePipelineRunner:
         self.y_flip = y_flip
         self.px_per_mm = px_per_mm
         self.char_spacing_mm = char_spacing_mm
+        self.allow_overflow = allow_overflow
         self.path_config = path_config or PathConfig()
         self.process_config = process_config or WeldingProcessConfig()
         self.workspace_config = workspace_config or WorkspaceConfig()
@@ -184,38 +186,62 @@ class OfflinePipelineRunner:
         try:
             from pipeline.mapping import PoseMapper
 
-            # bbox 归一化：多字符 pixel 缩放/平移到 WorkPlane 内
-            map_w, map_h = self.canvas_w_px, self.canvas_h_px
-            source_bbox = None
-            strokes_to_map = strokes_sc
-            if strokes_sc:
-                from core.types import PixelPoint
+            # 尺寸校验：文字是否超出 WorkPlane
+            layout_bbox_px = None
+            required_w_mm, required_h_mm = 0.0, 0.0
+            shortage_w_mm, shortage_h_mm = 0.0, 0.0
+            overflow_detected = False
+            if strokes_sc and self.px_per_mm > 0:
                 all_x = [p.x for s in strokes_sc for p in s.points_px]
                 all_y = [p.y for s in strokes_sc for p in s.points_px]
                 min_x, max_x = min(all_x), max(all_x)
                 min_y, max_y = min(all_y), max(all_y)
-                bbox_w = max_x - min_x
-                bbox_h = max_y - min_y
-                source_bbox = {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
+                layout_bbox_px = {"min_x": min_x, "max_x": max_x, "min_y": min_y, "max_y": max_y}
+                required_w_mm = (max_x - min_x) / self.px_per_mm
+                required_h_mm = (max_y - min_y) / self.px_per_mm
+                available_w = getattr(workplane, "width_mm", 0)
+                available_h = getattr(workplane, "height_mm", 0)
+                shortage_w_mm = max(0.0, required_w_mm - available_w)
+                shortage_h_mm = max(0.0, required_h_mm - available_h)
+                overflow_detected = shortage_w_mm > 0.01 or shortage_h_mm > 0.01
 
-                # 平移到原点
-                import copy as _copy
-                strokes_to_map = []
-                for s in strokes_sc:
-                    pts = [PixelPoint(x=p.x - min_x, y=p.y - min_y) for p in s.points_px]
-                    import dataclasses
-                    strokes_to_map.append(dataclasses.replace(s, points_px=pts))
+                if overflow_detected:
+                    msg = (
+                        f"text size exceeds workplane: "
+                        f"required {required_w_mm:.1f}×{required_h_mm:.1f} mm, "
+                        f"available {available_w:.1f}×{available_h:.1f} mm, "
+                        f"shortage {shortage_w_mm:.1f}×{shortage_h_mm:.1f} mm"
+                    )
+                    warnings.append(msg)
+                    if not self.allow_overflow:
+                        errors.append(msg)
+                        err_stats = {
+                            "layout_bbox_px": layout_bbox_px,
+                            "required_width_mm": round(required_w_mm, 1),
+                            "required_height_mm": round(required_h_mm, 1),
+                            "available_width_mm": round(available_w, 1),
+                            "available_height_mm": round(available_h, 1),
+                            "shortage_width_mm": round(shortage_w_mm, 1),
+                            "shortage_height_mm": round(shortage_h_mm, 1),
+                            "allow_overflow": self.allow_overflow,
+                            "overflow_detected": True,
+                        }
+                        stage_stats.append(StageStats(name="map", status="error", stats=err_stats,
+                            error=msg))
+                        return _fail(text, mode, run_dir, stage_stats, errors)
 
-                if bbox_w > 0 and bbox_h > 0:
-                    map_w, map_h = bbox_w, bbox_h
-
+            strokes_to_map = strokes_sc
+            map_w, map_h = self.canvas_w_px, self.canvas_h_px
             if self.y_flip and map_h > 0:
                 strokes_to_map = _flip_strokes_y(strokes_to_map, map_h)
             strokes_mp, s6 = PoseMapper.map_strokes(strokes_to_map, workplane, map_w, map_h)
-            if source_bbox:
-                s6["source_bbox_px"] = source_bbox
-                s6["normalized_canvas_w"] = round(map_w, 1)
-                s6["normalized_canvas_h"] = round(map_h, 1)
+            s6["layout_bbox_px"] = layout_bbox_px
+            s6["required_width_mm"] = round(required_w_mm, 1)
+            s6["required_height_mm"] = round(required_h_mm, 1)
+            s6["shortage_width_mm"] = round(shortage_w_mm, 1)
+            s6["shortage_height_mm"] = round(shortage_h_mm, 1)
+            s6["allow_overflow"] = self.allow_overflow
+            s6["overflow_detected"] = overflow_detected
             stage_stats.append(StageStats(name="map", status="ok", stats=s6))
         except Exception as exc:
             errors.append(f"map: {exc}")
