@@ -410,6 +410,7 @@ class WeldingPage(BasePage):
                 right_bottom=ws["right_bottom"],
                 font_size_px=600,
                 px_per_mm=10.0,
+                char_spacing_mm=params["char_spacing_mm"],
             )
         else:
             self._welding_service.generate_weld_points(**params)

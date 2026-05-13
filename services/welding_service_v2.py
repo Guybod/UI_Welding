@@ -52,6 +52,7 @@ class WeldingServiceV2(QObject):
         # 可选配置
         font_size_px: int = 600,
         px_per_mm: float = 10.0,
+        char_spacing_mm: float = 2.0,
         output_dir: str | None = None,
     ):
         """生成焊接点位文件。
@@ -93,6 +94,7 @@ class WeldingServiceV2(QObject):
                 output_dir=out,
                 font_size_px=font_size_px,
                 px_per_mm=px_per_mm,
+                char_spacing_mm=char_spacing_mm,
             )
             result = runner.run(text, mode=mode, workplane=wp)
             self.progress.emit(90, 100)

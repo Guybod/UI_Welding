@@ -85,6 +85,7 @@ class OfflinePipelineRunner:
         path_config: PathConfig | None = None,
         process_config: WeldingProcessConfig | None = None,
         workspace_config: WorkspaceConfig | None = None,
+        char_spacing_mm: float = 2.0,
     ):
         self.output_dir = output_dir
         self.font_path = font_path or get_default_font_path()
@@ -93,6 +94,7 @@ class OfflinePipelineRunner:
         self.canvas_h_px = canvas_h_px
         self.y_flip = y_flip
         self.px_per_mm = px_per_mm
+        self.char_spacing_mm = char_spacing_mm
         self.path_config = path_config or PathConfig()
         self.process_config = process_config or WeldingProcessConfig()
         self.workspace_config = workspace_config or WorkspaceConfig()
@@ -117,8 +119,10 @@ class OfflinePipelineRunner:
         # ── Stage 1-2: render + extract ──
         try:
             from pipeline.vision import ContourExtractor, SkeletonExtractor
+            from core.types import PixelPoint
             strokes_raw = []
             ch_counts: dict[str, int] = {}
+            x_cursor_px = 0.0
             for ch in text:
                 binary = render_char(ch, self.font_path, self.font_size_px)
                 if mode == "contour":
@@ -128,6 +132,13 @@ class OfflinePipelineRunner:
                     strokes, _ = SkeletonExtractor.extract(binary, config=self.path_config, backend="auto")
                 else:
                     raise ValueError(f"unknown mode: {mode!r}")
+                # 字符排版：累加水平偏移
+                if x_cursor_px > 0:
+                    for s in strokes:
+                        s.points_px = [PixelPoint(x=p.x + x_cursor_px, y=p.y) for p in s.points_px]
+                char_w_px = binary.shape[1]
+                spacing_px = self.char_spacing_mm * self.px_per_mm
+                x_cursor_px += char_w_px + spacing_px
                 for s in strokes:
                     assert len(s.points_px) >= 2
                 strokes_raw.extend(strokes)
