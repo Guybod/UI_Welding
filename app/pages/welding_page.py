@@ -18,6 +18,16 @@ from config.welding_defaults import (
 )
 
 
+def _open_file(path: str):
+    """跨平台打开文件/目录。"""
+    if sys.platform == "win32":
+        os.startfile(path)  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        import subprocess; subprocess.run(["open", path])
+    else:
+        import subprocess; subprocess.run(["xdg-open", path])
+
+
 def _find_system_fonts() -> list[str]:
     """列出系统可用字体路径。"""
     fonts = []
@@ -335,10 +345,13 @@ class WeldingPage(BasePage):
         self._btn_preview.setEnabled(True)
 
     def _read_workspace_calibration(self) -> dict:
-        """从 UI 控件读取三点标定数据。
+        """从 UI 控件读取三点标定数据，推导第四角。
 
-        返回 {left_top, left_bottom, right_bottom} 各为 RobotPoint。
+        返回 {left_top, right_top, left_bottom, right_bottom} 各为 RobotPoint。
         索引: row 0=left_top, 1=left_bottom, 2=right_bottom
+
+        right_top 由 left_top + (right_bottom - left_bottom) 推导，
+        确保 WorkPlane 的 U/V/N 正确 (N 指向 +Z 安全方向)。
         """
         def _rp(row):
             spins = self._ws_spins[row]
@@ -346,10 +359,21 @@ class WeldingPage(BasePage):
                 x=spins[0].value(), y=spins[1].value(), z=spins[2].value(),
                 rx=spins[3].value(), ry=spins[4].value(), rz=spins[5].value(),
             )
+        lt = _rp(0)
+        lb = _rp(1)
+        rb = _rp(2)
+        # 推导 right_top: 从 left_top 沿水平方向偏移 (right_bottom - left_bottom)
+        rt = RobotPoint(
+            x=lt.x + (rb.x - lb.x),
+            y=lt.y + (rb.y - lb.y),
+            z=lt.z + (rb.z - lb.z),
+            rx=lt.rx, ry=lt.ry, rz=lt.rz,
+        )
         return {
-            "left_top": _rp(0),
-            "left_bottom": _rp(1),
-            "right_bottom": _rp(2),
+            "left_top": lt,
+            "right_top": rt,
+            "left_bottom": lb,
+            "right_bottom": rb,
         }
 
     def _on_progress(self, current: int, total: int):
@@ -406,8 +430,8 @@ class WeldingPage(BasePage):
                 text=params["text"],
                 mode=mode,
                 left_top=ws["left_top"],
+                right_top=ws["right_top"],
                 left_bottom=ws["left_bottom"],
-                right_bottom=ws["right_bottom"],
                 font_size_px=600,
                 px_per_mm=10.0,
                 char_spacing_mm=params["char_spacing_mm"],
@@ -417,14 +441,14 @@ class WeldingPage(BasePage):
 
     def _on_preview(self):
         if self._last_preview_path and os.path.exists(self._last_preview_path):
-            os.startfile(self._last_preview_path)
+            _open_file(self._last_preview_path)
         else:
             self._append_log("请先生成焊接点")
 
     def _on_export(self):
         if self._last_txt_path:
             dir_path = os.path.dirname(self._last_txt_path)
-            os.startfile(dir_path)
+            _open_file(dir_path)
         else:
             self._append_log("请先生成焊接点")
 
