@@ -296,14 +296,22 @@ class SkeletonExtractor:
 
     @staticmethod
     def _trace_edges(skeleton: np.ndarray) -> list[list[PixelPoint]]:
-        """从骨架图中追踪出所有边。"""
+        """从骨架图中追踪出所有边。
+
+        对 branchpoints 做空间聚类（默认半径 5px），消除 Zhang-Suen zigzag 产生的
+        密集伪分叉点，避免一条长边被切碎为数十条短边。
+        """
         skel = (skeleton > 0).astype(np.uint8)
         h, w = skel.shape
-        special = set()
+        special: set[tuple[int, int]] = set()
+
+        # 端点：直接加入
         for ep in SkeletonExtractor.detect_endpoints(skeleton):
             special.add((int(ep.x), int(ep.y)))
-        for bp in SkeletonExtractor.detect_branchpoints(skeleton):
-            special.add((int(bp.x), int(bp.y)))
+
+        # 分叉点：空间聚类后每簇取质心
+        bp_raw = [(int(bp.x), int(bp.y)) for bp in SkeletonExtractor.detect_branchpoints(skeleton)]
+        special |= SkeletonExtractor._cluster_points(bp_raw, radius=5)
 
         visited = np.zeros((h, w), dtype=bool)
         edges = []
@@ -337,6 +345,50 @@ class SkeletonExtractor:
                                 visited[py, px] = True
                         break
         return edges
+
+    @staticmethod
+    def _cluster_points(points: list[tuple[int, int]], radius: int = 5) -> set[tuple[int, int]]:
+        """对二维点做连通性聚类，每簇返回质心。
+
+        距离度量：棋盘距离 (Chebyshev)，匹配 8 邻域骨架。
+        用于消除 Zhang-Suen zigzag 产生的密集伪分叉点。
+        """
+        if not points:
+            return set()
+        pts = set(points)
+        clusters: list[set[tuple[int, int]]] = []
+        assigned: set[tuple[int, int]] = set()
+
+        for p in sorted(pts):
+            if p in assigned:
+                continue
+            # BFS 收集连通簇
+            cluster: set[tuple[int, int]] = set()
+            stack = [p]
+            while stack:
+                q = stack.pop()
+                if q in assigned or q not in pts:
+                    continue
+                assigned.add(q)
+                cluster.add(q)
+                # 8 邻域扩展
+                for dy in range(-radius, radius + 1):
+                    for dx in range(-radius, radius + 1):
+                        if dy == 0 and dx == 0:
+                            continue
+                        n = (q[0] + dx, q[1] + dy)
+                        if n in pts and n not in assigned:
+                            stack.append(n)
+            if cluster:
+                clusters.append(cluster)
+
+        # 每簇质心
+        result: set[tuple[int, int]] = set()
+        for cl in clusters:
+            cx = int(round(sum(p[0] for p in cl) / len(cl)))
+            cy = int(round(sum(p[1] for p in cl) / len(cl)))
+            result.add((cx, cy))
+        return result
 
     @staticmethod
     def _neighbor_count(skel: np.ndarray, x: int, y: int) -> int:
@@ -614,6 +666,7 @@ class SkeletonExtractor:
         """对无端点的连通域提取闭环 Stroke。
 
         规则：edge 首尾均不在 endpoint 集合中 → 闭环。
+        滤除过短的 zigzag 伪闭环 (边长 < 10px)。
         """
         strokes: list[Stroke] = []
         ep_set: set[tuple[int, int]] = set(
@@ -622,6 +675,10 @@ class SkeletonExtractor:
 
         for edge in graph.edges:
             if len(edge) < 3:
+                continue
+            # 滤除极短 zigzag 伪闭环
+            path_len = SkeletonExtractor._edge_path_length(edge)
+            if path_len < 10.0:
                 continue
             first = (int(edge[0].x), int(edge[0].y))
             last = (int(edge[-1].x), int(edge[-1].y))
@@ -634,6 +691,16 @@ class SkeletonExtractor:
                     is_hole=False,
                 ))
         return strokes
+
+    @staticmethod
+    def _edge_path_length(edge: list[PixelPoint]) -> float:
+        """计算 edge 像素总长度。"""
+        total = 0.0
+        for i in range(len(edge) - 1):
+            dx = edge[i + 1].x - edge[i].x
+            dy = edge[i + 1].y - edge[i].y
+            total += (dx * dx + dy * dy) ** 0.5
+        return total
 
     # ---- 排序与合并 ----
 

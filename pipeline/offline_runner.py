@@ -235,6 +235,11 @@ class OfflinePipelineRunner:
             if self.y_flip and map_h > 0:
                 strokes_to_map = _flip_strokes_y(strokes_to_map, map_h)
             strokes_mp, s6 = PoseMapper.map_strokes(strokes_to_map, workplane, map_w, map_h)
+
+            # 骨架模式：baseline 对齐（所有字符底边统一）
+            if mode == "skeleton" and strokes_mp:
+                _align_skeleton_baseline(strokes_mp)
+
             s6["layout_bbox_px"] = layout_bbox_px
             s6["required_width_mm"] = round(required_w_mm, 1)
             s6["required_height_mm"] = round(required_h_mm, 1)
@@ -333,6 +338,43 @@ def _flip_strokes_y(strokes, canvas_h):
         ns = dataclasses.replace(s, points_px=flipped_px)
         result.append(ns)
     return result
+
+
+def _align_skeleton_baseline(strokes):
+    """骨架模式 baseline 统一：所有 stroke 底边对齐到全局最高底边。
+
+    包括 closed stroke (O/0/8 的闭环也可能被 Zhang-Suen 误分类)。
+    仅调整 robot Y 坐标，保持 X/Z 不变。
+    """
+    from core.types import RobotPoint as _RP
+    stroke_baselines: dict[str, float] = {}
+    global_max_y = -1e9
+    for s in strokes:
+        rp = s.metadata.get("robot_points")
+        if not rp:
+            continue
+        max_y = max(p.y for p in rp)
+        stroke_baselines[s.id] = max_y
+        if max_y > global_max_y:
+            global_max_y = max_y
+
+    if global_max_y < -1e8 or len(stroke_baselines) < 2:
+        return
+
+    # 对齐
+    for s in strokes:
+        if s.id not in stroke_baselines:
+            continue
+        dy = global_max_y - stroke_baselines[s.id]
+        if abs(dy) < 0.01:
+            continue
+        rp = s.metadata.get("robot_points")
+        if rp:
+            s.metadata["robot_points"] = [
+                _RP(x=p.x, y=p.y + dy, z=p.z, rx=p.rx, ry=p.ry, rz=p.rz)
+                for p in rp
+            ]
+        # points_mm: UV plane coords unchanged (baseline is robot-space concept)
 
 
 def _fail(text, mode, run_dir, stages, errors):
