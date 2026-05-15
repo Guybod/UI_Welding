@@ -234,6 +234,51 @@ class DebugExporter:
         }
 
     @staticmethod
+    def write_weld_only_preview(
+        segments: list[ProcessSegment],
+        output_path: str | _Path,
+        *,
+        title: str = "Working Path (weld + overlap only)",
+    ) -> dict:
+        """只绘制实际工作轨迹（weld + overlap），不含 travel/retreat/lead_in/lead_out。
+
+        用于焊接/绘图预览，只看工作路径本身。
+        """
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(10, 10))
+        point_count = 0
+
+        for seg in segments:
+            if seg.type not in ("weld", "overlap"):
+                continue
+            if not seg.points:
+                continue
+            xs = [p.x for p in seg.points]
+            ys = [p.y for p in seg.points]
+            point_count += len(xs)
+            color = "red" if seg.type == "overlap" else "blue"
+            lw = 2.0
+            ax.plot(xs, ys, "-", color=color, lw=lw, label=None)
+
+        ax.set_title(title)
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.set_aspect("equal")
+
+        path = _Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        return {
+            "output_path": str(path),
+            "file_size_bytes": path.stat().st_size,
+            "segment_count": sum(1 for s in segments if s.type in ("weld", "overlap")),
+            "point_count": point_count,
+            "warnings": [],
+        }
+
+    @staticmethod
     def write_run_preview(
         strokes: list[Stroke],
         segments: list[ProcessSegment],

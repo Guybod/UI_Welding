@@ -63,6 +63,7 @@ JOB_FILENAME = "job.json"
 STROKES_PREVIEW = "preview_strokes.png"
 SEGMENTS_PREVIEW = "preview_segments.png"
 COMBINED_PREVIEW = "preview_combined.png"
+WELD_ONLY_PREVIEW = "preview_weld_only.png"
 SUMMARY_FILENAME = "summary.json"
 
 
@@ -280,12 +281,15 @@ class OfflinePipelineRunner:
             )
             DebugExporter.write_run_preview(strokes_mp, segs, run_dir,
                                             title_prefix=f"{text} ({mode})")
+            DebugExporter.write_weld_only_preview(segs, str(Path(run_dir) / WELD_ONLY_PREVIEW),
+                                                  title=f"Working Path: {text} ({mode})")
 
             files["points_txt"] = pt
             files["job_json"] = jb
             files["strokes_preview_png"] = str(Path(run_dir) / STROKES_PREVIEW)
             files["segments_preview_png"] = str(Path(run_dir) / SEGMENTS_PREVIEW)
             files["combined_preview_png"] = str(Path(run_dir) / COMBINED_PREVIEW)
+            files["weld_only_preview_png"] = str(Path(run_dir) / WELD_ONLY_PREVIEW)
             stage_stats.append(StageStats(name="export", status="ok"))
         except Exception as exc:
             errors.append(f"export: {exc}")

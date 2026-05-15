@@ -108,7 +108,7 @@ class WeldingServiceV2(QObject):
 
             pts_path = result.files.get("points_txt", "")
             job_path = result.files.get("job_json", "")
-            png_path = result.files.get("combined_preview_png", "")
+            png_path = result.files.get("weld_only_preview_png", "") or result.files.get("combined_preview_png", "")
 
             self.log_message.emit(
                 f"Done: {result.total_strokes_raw} strokes → "
