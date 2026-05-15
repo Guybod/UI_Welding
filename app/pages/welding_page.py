@@ -3,6 +3,7 @@
 import os
 import sys
 from core.types import RobotPoint
+from core.platform_utils import open_path as _open_path
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QGroupBox, QPushButton, QLineEdit, QComboBox,
@@ -16,16 +17,6 @@ from config.welding_defaults import (
     CHAR_HEIGHT_MM, CHAR_SPACING_MM, LINE_SPACING_MM,
     LEAD_IN_MM, LEAD_OUT_MM, OVERLAP_MM, POINT_SPACING_MM,
 )
-
-
-def _open_file(path: str):
-    """跨平台打开文件/目录。"""
-    if sys.platform == "win32":
-        os.startfile(path)  # type: ignore[attr-defined]
-    elif sys.platform == "darwin":
-        import subprocess; subprocess.run(["open", path])
-    else:
-        import subprocess; subprocess.run(["xdg-open", path])
 
 
 def _find_system_fonts() -> list[str]:
@@ -441,14 +432,13 @@ class WeldingPage(BasePage):
 
     def _on_preview(self):
         if self._last_preview_path and os.path.exists(self._last_preview_path):
-            _open_file(self._last_preview_path)
+            _open_path(self._last_preview_path)
         else:
             self._append_log("请先生成焊接点")
 
     def _on_export(self):
         if self._last_txt_path:
-            dir_path = os.path.dirname(self._last_txt_path)
-            _open_file(dir_path)
+            _open_path(os.path.dirname(self._last_txt_path))
         else:
             self._append_log("请先生成焊接点")
 
