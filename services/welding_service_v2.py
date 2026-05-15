@@ -45,8 +45,9 @@ class WeldingServiceV2(QObject):
         text: str,
         mode: str = "contour",
         *,
-        # 三点标定 (匹配 UI: left_top, left_bottom, right_bottom)
+        # 四点标定 (UI 三点 + 推导 right_top)
         left_top: RobotPoint | dict | None = None,
+        right_top: RobotPoint | dict | None = None,
         left_bottom: RobotPoint | dict | None = None,
         right_bottom: RobotPoint | dict | None = None,
         # 可选配置
@@ -74,15 +75,13 @@ class WeldingServiceV2(QObject):
         try:
             out = output_dir or self.output_dir
 
-            # 构造 WorkPlane: 兼容旧 compute_workplane 几何
-            # TL=left_bottom (原点), TR=right_bottom (U), BL=left_top (V)
-            # N=(0,0,1) → 安全高度正确
-            # 注：pixel(0,0)=robot(0,0,100)=left_bottom, 图像原点在 robot 左下角
-            # 这是标准 CNC/robot 坐标系约定，非 bug
-            lb = _to_robot_point(left_bottom, default=RobotPoint(0, 100, 100, -180, 0, -135))
-            rb = _to_robot_point(right_bottom, default=RobotPoint(200, 100, 100, -180, 0, -135))
-            lt = _to_robot_point(left_top, default=RobotPoint(0, 0, 100, -180, 0, -135))
-            wp = WorkPlane(tl=lb, tr=rb, bl=lt)
+            # 构造 WorkPlane: TL=left_top, TR=right_top, BL=left_bottom
+            # U=水平右, V=垂直下, N=U×V=(0,0,1) 安全高度正确
+            # 配合 OfflinePipelineRunner y_flip=True 修正图像Y→robotY方向
+            lt = _to_robot_point(left_top, default=RobotPoint(100, 200, 300, 180, 0, 90))
+            rt = _to_robot_point(right_top, default=RobotPoint(300, 200, 300, 180, 0, 90))
+            lb = _to_robot_point(left_bottom, default=RobotPoint(100, 400, 300, 180, 0, 90))
+            wp = WorkPlane(tl=lt, tr=rt, bl=lb)
             self.progress.emit(10, 100)
             self.log_message.emit(f"WorkPlane: {wp.width_mm:.0f}×{wp.height_mm:.0f} mm, "
                                   f"N=({wp.normal.x:.3f},{wp.normal.y:.3f},{wp.normal.z:.3f})")
