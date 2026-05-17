@@ -1,0 +1,31 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 测试产出与本地运行结果
+examples/output/
+output/
+log/
+
+# 测试脚本与素材（仅本地保留）
+examples/test_*.py
+tests/
+
+# 旧版参考工程（勿入库）
+write4.0/
+wledfont2_UI/
+
+# IDE / 本地配置
+.cursor/
+.claude/settings.local.json
