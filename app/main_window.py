@@ -1,3 +1,4 @@
+import logging
 import os
 
 from PySide6.QtWidgets import (
@@ -8,7 +9,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 from PySide6.QtGui import QAction
-from PySide6.QtCore import QSettings, Signal, QPoint, QTimer
+from PySide6.QtCore import Qt, QSettings, Signal, QPoint, QTimer
 
 from app.i18n import I18nManager, tr
 from app.widgets.status_bar import StatusBar
@@ -23,6 +24,10 @@ VERSION = "v2.0.0"
 SETTINGS_ORG = "Codroid"
 SETTINGS_APP = "RobotUI"
 SETTINGS_KEY_STYLE = "ui/style"
+
+# reset_to_home 仅允许以下 reason（显式调用，禁止 show/hide 自动触发）
+_RESET_HOME_REASONS = frozenset({"app_init", "user_click_home", "logout"})
+_log = logging.getLogger("codroid")
 
 
 class MainWindow(QMainWindow):
@@ -48,7 +53,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
-        self._reset_home_on_next_show = True
+        self._curr_user_page: str = "home"
 
         # 加载 QSS
         saved_style = self._settings.value(SETTINGS_KEY_STYLE, self.DEFAULT_STYLE)
@@ -78,7 +83,7 @@ class MainWindow(QMainWindow):
         self._page_stack.setObjectName("pageStackPlaceholder")
 
         self._page_router = PageRouter(self._page_stack)
-        self._top_tab.tab_clicked.connect(self._page_router.navigate)
+        self._top_tab.tab_clicked.connect(self._on_user_tab_clicked)
 
         root.addWidget(self._page_stack, stretch=1)
 
@@ -100,8 +105,8 @@ class MainWindow(QMainWindow):
         self._status_bar = StatusBar()
         self.setStatusBar(self._status_bar)
 
-        # 初始化首页
-        self.reset_to_home()
+        # 初始化首页（仅此一处 app_init）
+        self.reset_to_home(reason="app_init")
 
         # 页面切换后重新定位并抬高抽屉，避免被当前页面盖住
         self._page_stack.currentChanged.connect(
@@ -112,47 +117,66 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._init_drawer_position)
         QTimer.singleShot(100, self._position_drawer)
 
+    # ════════════════ 页面导航 ════════════════
+
+    def _on_user_tab_clicked(self, spec):
+        home_key = PAGE_REGISTRY[0].key if PAGE_REGISTRY else "home"
+        if spec.key == home_key:
+            self.reset_to_home(reason="user_click_home")
+        else:
+            self._page_router.navigate(spec)
+            try:
+                self._top_tab.set_active(spec.key)
+            except Exception:
+                pass
+            self._schedule_drawer_position()
+        self._curr_user_page = spec.key
+
+    def reset_to_home(self, reason: str = ""):
+        """切换到首页。仅允许 app_init / user_click_home / logout。"""
+        if reason not in _RESET_HOME_REASONS:
+            _log.warning(
+                "[MainWindow] reset_to_home rejected: invalid reason=%r "
+                "(allowed: %s)",
+                reason,
+                ", ".join(sorted(_RESET_HOME_REASONS)),
+            )
+            return
+        if not PAGE_REGISTRY:
+            return
+        _log.info("[MainWindow] reset_to_home: reason=%s", reason)
+        home_spec = PAGE_REGISTRY[0]
+        try:
+            self._page_router.navigate(home_spec)
+        except Exception:
+            pass
+        try:
+            self._top_tab.set_active(home_spec.key)
+        except Exception:
+            pass
+        self._curr_user_page = home_spec.key
+        self._schedule_drawer_position()
+
     # ════════════════ Qt events ════════════════
+
+    def changeEvent(self, event):
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.windowState() & Qt.WindowState.WindowMinimized:
+                _log.debug("[MainWindow] window minimized (no page change)")
+            elif self.isVisible():
+                _log.debug("[MainWindow] window restored (no page change)")
+        super().changeEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
-
-        # 登录成功切到主界面时，自动回到首页
-        if self._reset_home_on_next_show:
-            self.reset_to_home()
-            self._reset_home_on_next_show = False
-
         self._schedule_drawer_position()
 
     def hideEvent(self, event):
         super().hideEvent(event)
 
-        # 从主界面返回登录页后，下次再次登录进来自动回首页
-        self._reset_home_on_next_show = True
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._schedule_drawer_position()
-
-    # ════════════════ 首页 / 抽屉定位 ════════════════
-
-    def reset_to_home(self):
-        """切换到首页。登录成功进入主界面时调用。"""
-        if not PAGE_REGISTRY:
-            return
-
-        home_spec = PAGE_REGISTRY[0]
-
-        try:
-            self._page_router.navigate(home_spec)
-        except Exception:
-            pass
-
-        try:
-            self._top_tab.set_active(home_spec.key)
-        except Exception:
-            pass
-
         self._schedule_drawer_position()
 
     def _init_drawer_position(self):
@@ -315,3 +339,7 @@ class MainWindow(QMainWindow):
         if os.path.exists(qss_path):
             with open(qss_path, "r", encoding="utf-8") as f:
                 QApplication.instance().setStyleSheet(f.read())
+
+    def closeEvent(self, event):
+        self._page_router.persist_all_page_settings()
+        super().closeEvent(event)

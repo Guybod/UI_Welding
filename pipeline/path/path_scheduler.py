@@ -94,6 +94,45 @@ class PathScheduler:
 
         return ordered, stats
 
+    @staticmethod
+    def schedule_by_line_groups(
+        strokes: list[Stroke],
+        *,
+        line_key: str = "layout_line_index",
+        strategy: str = "nearest",
+        allow_reverse: bool = True,
+    ) -> tuple[list[Stroke], dict]:
+        """多行模式：按行分组，行内 nearest，行间保持输入顺序。"""
+        if not strokes:
+            return [], _empty_stats("by_line_groups")
+
+        groups: dict[int, list[Stroke]] = {}
+        for s in strokes:
+            idx = int(s.metadata.get(line_key, 0))
+            groups.setdefault(idx, []).append(s)
+
+        ordered: list[Stroke] = []
+        line_stats: list[dict] = []
+        total_in = len(strokes)
+        for line_idx in sorted(groups.keys()):
+            grp = groups[line_idx]
+            sched, st = PathScheduler.schedule(
+                grp, strategy=strategy, allow_reverse=allow_reverse)
+            ordered.extend(sched)
+            line_stats.append({"line_index": line_idx, "stroke_count": len(grp), **st})
+
+        stats = {
+            "phase": "4.3",
+            "strategy": "by_line_groups",
+            "inner_strategy": strategy,
+            "input_stroke_count": total_in,
+            "output_stroke_count": len(ordered),
+            "line_group_count": len(groups),
+            "line_stats": line_stats,
+            "warnings": [],
+        }
+        return ordered, stats
+
     # ---- Travel 计算 ----
 
     @staticmethod
@@ -234,7 +273,7 @@ class PathScheduler:
         return ordered
 
 
-def _empty_stats(strategy: str) -> dict:
+def _empty_stats(strategy: str = "nearest") -> dict:
     return {
         "phase": "4.3",
         "strategy": strategy,

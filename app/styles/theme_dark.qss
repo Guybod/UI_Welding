@@ -11,7 +11,7 @@ QWidget {
     background-color: #0d0d0d;
     color: #cccccc;
     font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-    font-size: 13px;
+    font-size: 10pt;
 }
 
 /* ===== 占位区域 ===== */
@@ -41,7 +41,7 @@ QWidget {
 QStatusBar {
     background-color: #1a1a1a;
     color: #888888;
-    font-size: 12px;
+    font-size: 9pt;
     border-top: 1px solid #333333;
     padding: 2px 8px;
 }

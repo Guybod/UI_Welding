@@ -93,7 +93,10 @@ class _ThreeWaySwitch(QWidget):
         # text
         p.setPen(QColor("white"))
         font = QFont(self.font())
-        font.setPointSize(10)
+        if font.pointSize() > 0:
+            font.setPointSize(10)
+        else:
+            font.setPixelSize(13)
         font.setBold(True)
         p.setFont(font)
         for i, key in enumerate(self.MODE_KEYS):

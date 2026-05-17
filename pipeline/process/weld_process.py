@@ -50,8 +50,14 @@ class WeldingProcessPlanner:
         """
         warnings_list: list[str] = []
 
-        travel_offset = _get_travel_offset(workplane, workspace_cfg, warnings_list)
-        work_offset = _get_work_offset(workplane, workspace_cfg, warnings_list)
+        z_work = _get_z(workspace_cfg, "work")
+        z_safe = _get_z(workspace_cfg, "safe")
+        z_super_safe = _get_z(workspace_cfg, "super_safe")
+
+        if z_safe <= z_work:
+            warnings_list.append(
+                f"安全高度 z_safe ({z_safe:.1f}) 不高于工作高度 z_work ({z_work:.1f})，"
+                f"存在拖枪风险")
 
         weld_params = {
             "voltage": process_cfg.voltage,
@@ -67,12 +73,32 @@ class WeldingProcessPlanner:
         }
         total_points = 0
         weld_param_segments = 0
+        weld_pts_before = 0
+        weld_pts_after = 0
+        resample_warnings = 0
 
         for s in strokes:
             robot_pts = _get_robot_points(s)
+            pts_before = len(robot_pts)
+
+            # 对 weld 主路径做等距重采样
+            robot_pts = _resample_robot_points(
+                robot_pts, process_cfg.weld_point_spacing_mm, closed=s.closed)
+            pts_after = len(robot_pts)
+            weld_pts_before += pts_before
+            weld_pts_after += pts_after
+
+            # 检查重采样后步长
+            step_s = _compute_step_stats(robot_pts)
+            if step_s["max"] > 0.75:
+                resample_warnings += 1
+                warnings_list.append(
+                    f"stroke {s.id[:6]}: max weld step {step_s['max']}mm "
+                    f"> 0.75mm (mean={step_s['mean']}mm, p95={step_s['p95']}mm)")
+
             segs = WeldingProcessPlanner._plan_stroke(
                 s, robot_pts, process_cfg,
-                workplane, travel_offset, work_offset, weld_params, warnings_list,
+                workplane, z_work, z_safe, weld_params, warnings_list,
             )
             all_segments.extend(segs)
             for seg in segs:
@@ -93,185 +119,158 @@ class WeldingProcessPlanner:
             "retreat_count": stats_counts["retreat"],
             "total_robot_points": total_points,
             "workplane_available": workplane is not None,
-            "travel_offset_mm": travel_offset,
-            "work_offset_mm": work_offset,
+            "height_model": "absolute_z",
+            "z_work_mm": z_work,
+            "z_safe_mm": z_safe,
+            "z_super_safe_mm": z_super_safe,
             "weld_params_present": True,
             "weld_job": process_cfg.job,
             "weld_current": process_cfg.current,
             "weld_voltage": process_cfg.voltage,
             "weld_inductance": process_cfg.inductance,
             "weld_param_segments_count": weld_param_segments,
+            "weld_point_spacing_mm": process_cfg.weld_point_spacing_mm,
+            "weld_points_before_resample": weld_pts_before,
+            "weld_points_after_resample": weld_pts_after,
+            "resample_warning_count": resample_warnings,
             "warnings": warnings_list,
         }
+
+        # 汇总所有 weld/overlap 段的最终步长统计（逐段统计后合并）
+        all_step_stats = []
+        for seg in all_segments:
+            if seg.type in ("weld", "overlap"):
+                ss = _compute_step_stats(seg.points)
+                if ss["count"] > 0:
+                    all_step_stats.append(ss)
+        if all_step_stats:
+            stats["weld_step_min_mm"] = min(s["min"] for s in all_step_stats)
+            stats["weld_step_mean_mm"] = round(
+                sum(s["mean"] * s["count"] for s in all_step_stats) /
+                max(sum(s["count"] for s in all_step_stats), 1), 3)
+            stats["weld_step_median_mm"] = round(
+                sorted(s["median"] for s in all_step_stats)
+                [len(all_step_stats) // 2], 3)
+            stats["weld_step_max_mm"] = max(s["max"] for s in all_step_stats)
+            stats["weld_step_p95_mm"] = max(s["p95"] for s in all_step_stats)
 
         return all_segments, stats
 
     # ---- 内部 ----
 
     @staticmethod
+    @staticmethod
     def _plan_stroke(
         stroke: Stroke,
         robot_pts: list[RobotPoint],
         cfg: WeldingProcessConfig,
         workplane: object | None,
-        travel_offset: float,
-        work_offset: float,
+        z_work: float,
+        z_safe: float,
         weld_params: dict,
         warnings_list: list[str],
     ) -> list[ProcessSegment]:
         if stroke.closed:
             return WeldingProcessPlanner._plan_closed(
-                stroke, robot_pts, cfg, workplane,
-                travel_offset, work_offset, weld_params, warnings_list,
-            )
+                stroke, robot_pts, cfg, workplane, z_work, z_safe, weld_params, warnings_list)
         else:
             return WeldingProcessPlanner._plan_open(
-                stroke, robot_pts, cfg, workplane,
-                travel_offset, work_offset, weld_params, warnings_list,
-            )
+                stroke, robot_pts, cfg, workplane, z_work, z_safe, weld_params, warnings_list)
 
     @staticmethod
     def _plan_open(
-        stroke: Stroke,
-        pts: list[RobotPoint],
-        cfg: WeldingProcessConfig,
-        workplane: object | None,
-        travel_offset: float,
-        work_offset: float,
-        weld_params: dict,
-        warnings_list: list[str],
+        stroke: Stroke, pts: list[RobotPoint], cfg: WeldingProcessConfig,
+        workplane: object | None, z_work: float, z_safe: float,
+        weld_params: dict, warnings_list: list[str],
     ) -> list[ProcessSegment]:
-        """开放路径: travel → lead_in → weld → lead_out → retreat。无 overlap。"""
         segments: list[ProcessSegment] = []
-
         if len(pts) < 2:
             warnings_list.append(f"stroke {stroke.id[:6]}: <2 robot_points, skipped")
             return segments
-
-        # travel: arc_enabled=False, 不附加 weld_params
         segments.append(_make_segment(
-            "travel", stroke.id, [pts[0], pts[0]],
-            cfg.travel_speed_mm_s, False, travel_offset,
-        ))
-
-        # lead_in: arc_enabled=True, 附加 weld_params
+            "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+            cfg.travel_speed_mm_s, False))
         li_pts = _tangent_extend(pts, forward=False, length_mm=cfg.lead_in_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(li_pts) >= 2:
             segments.append(_make_segment(
-                "lead_in", stroke.id, li_pts,
-                cfg.weld_speed_mm_s, True, work_offset, weld_params,
-            ))
+                "lead_in", stroke.id, _with_z(li_pts, z_work),
+                cfg.weld_speed_mm_s, True, 0.0, weld_params))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_in too short, skipped")
-
-        # weld: arc_enabled=True
         segments.append(_make_segment(
-            "weld", stroke.id, list(pts),
-            cfg.weld_speed_mm_s, True, work_offset, weld_params,
-        ))
-
-        # lead_out: arc_enabled=True
+            "weld", stroke.id, _with_z(list(pts), z_work),
+            cfg.weld_speed_mm_s, True, 0.0, weld_params))
         lo_pts = _tangent_extend(pts, forward=True, length_mm=cfg.lead_out_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(lo_pts) >= 2:
             segments.append(_make_segment(
-                "lead_out", stroke.id, lo_pts,
-                cfg.weld_speed_mm_s, True, work_offset, weld_params,
-            ))
+                "lead_out", stroke.id, _with_z(lo_pts, z_work),
+                cfg.weld_speed_mm_s, True, 0.0, weld_params))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_out too short, skipped")
-
-        # retreat: arc_enabled=False
         segments.append(_make_segment(
-            "retreat", stroke.id, [pts[-1], pts[-1]],
-            cfg.travel_speed_mm_s, False, travel_offset,
-        ))
-
+            "retreat", stroke.id, _with_z([pts[-1], pts[-1]], z_safe),
+            cfg.travel_speed_mm_s, False))
         return segments
 
     @staticmethod
     def _plan_closed(
-        stroke: Stroke,
-        pts: list[RobotPoint],
-        cfg: WeldingProcessConfig,
-        workplane: object | None,
-        travel_offset: float,
-        work_offset: float,
-        weld_params: dict,
-        warnings_list: list[str],
+        stroke: Stroke, pts: list[RobotPoint], cfg: WeldingProcessConfig,
+        workplane: object | None, z_work: float, z_safe: float,
+        weld_params: dict, warnings_list: list[str],
     ) -> list[ProcessSegment]:
-        """闭合路径: travel → lead_in → weld → overlap → lead_out → retreat。"""
         segments: list[ProcessSegment] = []
-
         if len(pts) < 3:
             warnings_list.append(f"stroke {stroke.id[:6]}: <3 robot_points, skipped")
             return segments
-
-        # travel: arc_enabled=False
         segments.append(_make_segment(
-            "travel", stroke.id, [pts[0], pts[0]],
-            cfg.travel_speed_mm_s, False, travel_offset,
-        ))
-
-        # lead_in: arc_enabled=True
+            "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+            cfg.travel_speed_mm_s, False))
         li_pts = _tangent_extend(pts, forward=False, length_mm=cfg.lead_in_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(li_pts) >= 2:
             segments.append(_make_segment(
-                "lead_in", stroke.id, li_pts,
-                cfg.weld_speed_mm_s, True, work_offset, weld_params,
-            ))
+                "lead_in", stroke.id, _with_z(li_pts, z_work),
+                cfg.weld_speed_mm_s, True, 0.0, weld_params))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_in too short, skipped")
-
-        # weld: arc_enabled=True
         segments.append(_make_segment(
-            "weld", stroke.id, list(pts),
-            cfg.weld_speed_mm_s, True, work_offset, weld_params,
-        ))
-
-        # overlap: arc_enabled=True（仅闭合）
+            "weld", stroke.id, _with_z(list(pts), z_work),
+            cfg.weld_speed_mm_s, True, 0.0, weld_params))
         path_len = _path_length(pts)
         effective_overlap = min(cfg.overlap_length_mm, path_len * 0.5)
         if effective_overlap < cfg.overlap_length_mm:
             warnings_list.append(
                 f"stroke {stroke.id[:6]}: overlap clamped "
-                f"({cfg.overlap_length_mm}→{effective_overlap:.1f} mm, "
-                f"path_len={path_len:.1f} mm)"
-            )
-
+                f"({cfg.overlap_length_mm}→{effective_overlap:.1f} mm, path_len={path_len:.1f} mm)")
         if effective_overlap > 0.01:
             ol_pts = _copy_path_head(pts, effective_overlap)
             if len(ol_pts) >= 2:
                 segments.append(_make_segment(
-                    "overlap", stroke.id, ol_pts,
-                    cfg.weld_speed_mm_s, True, work_offset, weld_params,
-                ))
+                    "overlap", stroke.id, _with_z(ol_pts, z_work),
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params))
             else:
                 warnings_list.append(f"stroke {stroke.id[:6]}: overlap too short, skipped")
-
-        # lead_out: arc_enabled=True
         lo_pts = _tangent_extend(pts, forward=True, length_mm=cfg.lead_out_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(lo_pts) >= 2:
             segments.append(_make_segment(
-                "lead_out", stroke.id, lo_pts,
-                cfg.weld_speed_mm_s, True, work_offset, weld_params,
-            ))
+                "lead_out", stroke.id, _with_z(lo_pts, z_work),
+                cfg.weld_speed_mm_s, True, 0.0, weld_params))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_out too short, skipped")
-
-        # retreat: arc_enabled=False
         segments.append(_make_segment(
-            "retreat", stroke.id, [pts[0], pts[0]],
-            cfg.travel_speed_mm_s, False, travel_offset,
-        ))
-
+            "retreat", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+            cfg.travel_speed_mm_s, False))
         return segments
 
 
 # ---- 辅助函数 ----
+
+def _with_z(pts: list[RobotPoint], z: float) -> list[RobotPoint]:
+    """返回新列表，所有点 Z 替换为 z，X/Y/rx/ry/rz 不变。"""
+    return [RobotPoint(x=p.x, y=p.y, z=z, rx=p.rx, ry=p.ry, rz=p.rz) for p in pts]
 
 def _get_robot_points(stroke: Stroke) -> list[RobotPoint]:
     rp = stroke.metadata.get("robot_points")
@@ -291,7 +290,7 @@ def _make_segment(
     points: list[RobotPoint],
     speed: float,
     arc_enabled: bool,
-    normal_offset: float,
+    normal_offset: float = 0.0,
     weld_params: dict | None = None,
 ) -> ProcessSegment:
     meta: dict = {}
@@ -309,30 +308,17 @@ def _make_segment(
     )
 
 
-def _get_travel_offset(
-    workplane: object | None,
-    workspace_cfg: WorkspaceConfig | None,
-    warnings_list: list[str],
-) -> float:
-    if workspace_cfg is not None:
-        return workspace_cfg.normal_travel_offset_mm
-    if workplane is not None:
-        return 15.0  # default
-    warnings_list.append(
-        "safe/approach/retreat height requires mapped safe points "
-        "or workplane normal; deferred"
-    )
-    return 0.0
-
-
-def _get_work_offset(
-    workplane: object | None,
-    workspace_cfg: WorkspaceConfig | None,
-    warnings_list: list[str],
-) -> float:
-    if workspace_cfg is not None:
-        return workspace_cfg.normal_work_offset_mm
-    return 0.0
+def _get_z(workspace_cfg, kind: str) -> float:
+    """读取 WorkspaceConfig 中的绝对 Z 高度。"""
+    if workspace_cfg is None:
+        return {"work": 305.0, "safe": 315.0, "super_safe": 325.0}.get(kind, 305.0)
+    if kind == "work":
+        return workspace_cfg.z_work_mm
+    if kind == "safe":
+        return workspace_cfg.z_safe_mm
+    if kind == "super_safe":
+        return workspace_cfg.z_super_safe_mm
+    return 305.0
 
 
 def _path_length(pts: list[RobotPoint]) -> float:
@@ -408,3 +394,110 @@ def _copy_path_head(
         if accum >= length_mm:
             break
     return result
+
+
+def _resample_robot_points(
+    pts: list[RobotPoint],
+    spacing_mm: float,
+    closed: bool = False,
+) -> list[RobotPoint]:
+    """对 robot 点做等距弧长重采样。
+
+    开放路径保留首尾点；闭合路径重采样完整回路。
+    定位与姿态均做线性插值。
+    """
+    n = len(pts)
+    if n < 2 or spacing_mm <= 0:
+        return list(pts)
+
+    # 计算每段长度
+    seg_lens = []
+    total_len = 0.0
+    for i in range(n - 1):
+        dx = pts[i + 1].x - pts[i].x
+        dy = pts[i + 1].y - pts[i].y
+        dz = pts[i + 1].z - pts[i].z
+        sl = math.sqrt(dx * dx + dy * dy + dz * dz)
+        seg_lens.append(sl)
+        total_len += sl
+
+    closure_len = 0.0
+    if closed and n >= 3:
+        dx = pts[0].x - pts[-1].x
+        dy = pts[0].y - pts[-1].y
+        dz = pts[0].z - pts[-1].z
+        closure_len = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    target_len = total_len + (closure_len if closed else 0.0)
+    if target_len < spacing_mm:
+        return list(pts)
+
+    # 累积弧长表
+    cum = [0.0]
+    for sl in seg_lens:
+        cum.append(cum[-1] + sl)
+
+    result = [pts[0]]
+    seg_idx = 0
+    t = spacing_mm
+    n_targets = max(1, int(target_len / spacing_mm))
+
+    while t < target_len - 1e-9 and len(result) < n_targets + 2:
+        if closed and t > total_len + 1e-9:
+            frac = (t - total_len) / closure_len if closure_len > 1e-9 else 0.0
+            frac = max(0.0, min(1.0, frac))
+            a, b = pts[-1], pts[0]
+        else:
+            tc = min(t, total_len)
+            while seg_idx < len(cum) - 1 and cum[seg_idx + 1] < tc:
+                seg_idx += 1
+            if seg_idx >= len(cum) - 1:
+                break
+            seg_len = cum[seg_idx + 1] - cum[seg_idx]
+            frac = (tc - cum[seg_idx]) / seg_len if seg_len > 1e-9 else 0.0
+            frac = max(0.0, min(1.0, frac))
+            a, b = pts[seg_idx], pts[seg_idx + 1]
+
+        result.append(RobotPoint(
+            x=a.x + (b.x - a.x) * frac,
+            y=a.y + (b.y - a.y) * frac,
+            z=a.z + (b.z - a.z) * frac,
+            rx=a.rx + (b.rx - a.rx) * frac,
+            ry=a.ry + (b.ry - a.ry) * frac,
+            rz=a.rz + (b.rz - a.rz) * frac,
+        ))
+        t += spacing_mm
+
+    # 开放路径：确保末点存在
+    if not closed:
+        if len(result) == 0 or not _pts_eq(result[-1], pts[-1], 0.01):
+            result.append(pts[-1])
+
+    while len(result) < 2:
+        result.append(pts[-1] if pts else RobotPoint(0,0,0,0,0,0))
+
+    return result
+
+
+def _pts_eq(a: RobotPoint, b: RobotPoint, tol: float = 0.01) -> bool:
+    return abs(a.x - b.x) < tol and abs(a.y - b.y) < tol and abs(a.z - b.z) < tol
+
+
+def _compute_step_stats(pts: list[RobotPoint]) -> dict:
+    """计算相邻点 3D 欧氏步长统计。"""
+    if len(pts) < 2:
+        return {"count": 0, "min": 0, "max": 0, "mean": 0, "median": 0, "p95": 0}
+    steps = []
+    for i in range(len(pts) - 1):
+        dx = pts[i + 1].x - pts[i].x
+        dy = pts[i + 1].y - pts[i].y
+        dz = pts[i + 1].z - pts[i].z
+        steps.append(math.sqrt(dx * dx + dy * dy + dz * dz))
+    s = sorted(steps)
+    n = len(s)
+    p95_i = min(int(n * 0.95), n - 1)
+    return {
+        "count": n, "min": round(s[0], 3), "max": round(s[-1], 3),
+        "mean": round(sum(s) / n, 3), "median": round(s[n // 2], 3),
+        "p95": round(s[p95_i], 3),
+    }

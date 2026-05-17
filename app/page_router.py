@@ -58,3 +58,10 @@ class PageRouter(QObject):
         if self._current_key:
             return self._cache.get(self._current_key)
         return None
+
+    def persist_all_page_settings(self):
+        """退出前保存已缓存页面中的 QSettings（不触发 on_leave 副作用）。"""
+        for page in self._cache.values():
+            saver = getattr(page, "_save_settings", None)
+            if callable(saver):
+                saver()

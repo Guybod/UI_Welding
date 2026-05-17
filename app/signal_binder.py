@@ -20,6 +20,7 @@ def _bind_login_flow(cm, login, main_win, stack, state):
         cm.connect_to_robot(config)
 
     def on_return_to_login():
+        main_win.reset_to_home(reason="logout")
         cm.disconnect()
         main_win._status_bar.set_connection_status("未连接")
         main_win._drawer.set_jog_enabled(False)

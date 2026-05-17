@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QSlider,
 )
-from PySide6.QtCore import Signal, Qt, QPropertyAnimation, QEasingCurve, QRect, QSize
+from PySide6.QtCore import QSettings, Signal, Qt, QPropertyAnimation, QEasingCurve, QRect, QSize
 
 
 COLLAPSED_WIDTH = 48
@@ -396,10 +396,13 @@ class RobotControlDrawer(QWidget):
 
         self._speed_slider = QSlider(Qt.Horizontal)
         self._speed_slider.setRange(1, 100)
-        self._speed_slider.setValue(70)
         self._speed_slider.setCursor(Qt.PointingHandCursor)
         self._speed_slider.valueChanged.connect(self._on_speed_value_changed)
         self._speed_slider.sliderReleased.connect(self._emit_speed_rate_changed)
+
+        # 恢复上次保存的速度
+        saved_speed = QSettings("Codroid", "RobotUI").value("drawer/speed", 70, type=int)
+        self._speed_slider.setValue(saved_speed)
 
         speed_row.addWidget(speed_title)
         speed_row.addWidget(self._speed_slider, stretch=1)
@@ -601,7 +604,9 @@ class RobotControlDrawer(QWidget):
         self._speed_label.setText(f"{value}%")
 
     def _emit_speed_rate_changed(self):
-        self.speed_rate_changed.emit(self._speed_slider.value())
+        val = self._speed_slider.value()
+        QSettings("Codroid", "RobotUI").setValue("drawer/speed", val)
+        self.speed_rate_changed.emit(val)
 
     def speed_rate(self) -> int:
         return self._speed_slider.value()

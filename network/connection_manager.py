@@ -94,6 +94,9 @@ class ConnectionManager(QObject):
         self.connection_state_changed.emit("connecting")
 
         if self._first_connect:
+            if hasattr(self, '_connect_timeout') and self._connect_timeout is not None:
+                self._connect_timeout.stop()
+                self._connect_timeout.deleteLater()
             self._connect_timeout = QTimer(self)
             self._connect_timeout.setSingleShot(True)
             self._connect_timeout.timeout.connect(self._on_first_connect_timeout)
@@ -106,10 +109,11 @@ class ConnectionManager(QObject):
                     sig.disconnect(self._adapter)
                 except (TypeError, RuntimeError):
                     pass
+            self._adapter.deleteLater()
         if self._thread:
             if self._thread.isRunning():
                 self._sig_shutdown.emit()
-                self._thread.quit()              # 直接调用，不走信号（避免跨线程死锁）
+                self._thread.quit()
                 self._thread.wait(3000)
         self._adapter = None
         self._thread = None
@@ -137,6 +141,7 @@ class ConnectionManager(QObject):
                 except (TypeError, RuntimeError):
                     pass
             self._sig_shutdown.emit()
+            self._adapter.deleteLater()
         if self._thread:
             self._thread.quit()                  # 直接调用，线程安全（避免跨线程信号死锁）
             finished = self._thread.wait(3000)
@@ -233,9 +238,13 @@ class ConnectionManager(QObject):
             return
         err = msg.get("err")
         if err:
-            req["on_error"](Exception(f"RobotError: {err}"))
+            cb = req.get("on_error")
+            if callable(cb):
+                cb(Exception(f"RobotError: {err}"))
         else:
-            req["on_response"](msg.get("db", {}))
+            cb = req.get("on_response")
+            if callable(cb):
+                cb(msg.get("db", {}))
 
     def _dispatch_publish(self, msg: dict):
         ty = msg.get("ty", "")

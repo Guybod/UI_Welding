@@ -33,6 +33,17 @@ class CriService(QObject):
         self._config = config
 
         if self._udp_thread:
+            # 安全销毁旧 adapter（在其所属线程中 deleteLater）
+            if self._udp_adapter:
+                try:
+                    self._sig_bind.disconnect(self._udp_adapter.bind_and_listen)
+                    self._sig_shutdown_udp.disconnect(self._udp_adapter.shutdown)
+                    self._udp_adapter.bind_error.disconnect(self.bind_error.emit)
+                    self._udp_adapter.datagram_received.disconnect(self.cri_frame_received.emit)
+                except (TypeError, RuntimeError):
+                    pass
+                self._udp_adapter.deleteLater()
+                self._udp_adapter = None
             self._udp_thread.quit()
             self._udp_thread.wait(3000)
             self._udp_thread = None
@@ -68,6 +79,31 @@ class CriService(QObject):
         QTimer.singleShot(200, _do_start)
 
     # ════════════════ CRI 控制 (dry-run only) ════════════════
+
+    def start_control(
+        self,
+        filter_type: int = 1,
+        duration_ms: int = 2,
+        start_buffer: int = 5,
+    ) -> dict:
+        """发送 CRI/StartControl（TCP）。"""
+        msg = {
+            "id": 0,
+            "ty": "CRI/StartControl",
+            "db": {
+                "filterType": filter_type,
+                "duration": duration_ms,
+                "startBuffer": start_buffer,
+            },
+        }
+        self._cm.send_raw(msg)
+        return msg
+
+    def stop_control(self) -> dict:
+        """发送 CRI/StopControl（TCP）。"""
+        msg = {"id": 0, "ty": "CRI/StopControl"}
+        self._cm.send_raw(msg)
+        return msg
 
     def start_control_dry_run(
         self, filter_type: int = 0, duration: int = 1, start_buffer: int = 3
@@ -113,6 +149,7 @@ class CriService(QObject):
                     sig.disconnect()
                 except (TypeError, RuntimeError):
                     pass
+            self._udp_adapter.deleteLater()
 
         self._udp_thread = None
         self._udp_adapter = None

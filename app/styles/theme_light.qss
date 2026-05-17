@@ -1,11 +1,11 @@
 /* Codroid — 明亮主题 */
 QMainWindow { background-color: #f0f0f0; }
-QWidget { background-color: #f0f0f0; color: #222222; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 13px; }
+QWidget { background-color: #f0f0f0; color: #222222; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; font-size: 10pt; }
 #topTabBarPlaceholder { background-color: #e0e0e0; border-bottom: 1px solid #cccccc; min-height: 48px; }
 #pageStackPlaceholder { background-color: #f0f0f0; }
 #drawerPlaceholder { background-color: #e0e0e0; border-left: 1px solid #cccccc; min-width: 280px; }
 #commandBarPlaceholder { background-color: #e0e0e0; border-top: 1px solid #cccccc; min-height: 48px; }
-QStatusBar { background-color: #d8d8d8; color: #666666; font-size: 12px; border-top: 1px solid #cccccc; padding: 2px 8px; }
+QStatusBar { background-color: #d8d8d8; color: #666666; font-size: 9pt; border-top: 1px solid #cccccc; padding: 2px 8px; }
 QStatusBar QLabel { color: #666666; background: transparent; padding: 0 6px; }
 QPushButton { background-color: #e0e0e0; color: #222222; border: 1px solid #cccccc; border-radius: 4px; padding: 6px 14px; }
 QPushButton:hover { background-color: #ffffff; border-color: #3399ff; }

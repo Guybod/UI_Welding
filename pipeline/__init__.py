@@ -1,6 +1,11 @@
 """焊接/绘图轨迹生成管线 — 纯 Python 模块，无 Qt/PySide6 依赖"""
 
-from pipeline.raster import FontRasterizer, render_char, render_text, get_default_font_path
+from pipeline.raster import (
+    FontRasterizer, LineboxGlyph,
+    render_char, render_text,
+    render_char_in_linebox, render_text_linebox,
+    get_default_font_path,
+)
 
 _OPTIONAL_IMPORT_ERRORS = {}
 

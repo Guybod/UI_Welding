@@ -65,6 +65,6 @@ PAGE_REGISTRY = [
     PageSpec("writing", "绘图", "process", _writing),
     PageSpec("io", "IO", "robot", _io),
     PageSpec("program", "程序", "robot", _program),
-    PageSpec("upload", "上传", "tools", _upload),
+    PageSpec("upload", "上传", "tools", _upload, requires_connection=True),
     PageSpec("settings", "设置", "system", _settings),
 ]

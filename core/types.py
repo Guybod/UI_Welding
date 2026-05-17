@@ -215,6 +215,8 @@ class TextLayoutConfig:
     target_char_height_mm: float | None = 20.0
     char_spacing_mm: float = 2.0
     line_spacing_mm: float = 5.0
+    margin_left_mm: float = 0.0
+    margin_top_mm: float = 0.0
     writing_mode: str = "horizontal"       # "horizontal" | "vertical"
     primary_flow: str = "left_to_right"    # "left_to_right" | "right_to_left" | "top_to_bottom"
     align: str = "center"                  # "left" | "center" | "right"
@@ -240,6 +242,88 @@ class PathConfig:
 
 
 @dataclass
+class ImageProcessConfig:
+    """图像 → 轮廓预处理配置（绘图页图片模式）。
+
+    产品范围（口径）：
+    - 适合：线稿、Logo、剪影、简单花朵轮廓。
+    - 随手拍：需调阈值/边缘参数成线稿后再生成；复杂背景与照片级写实暂不承诺。
+
+    UI（MVP）：
+    - 生成前须有线稿预览，但为按钮触发的轻预览，不做参数联动实时预览。
+    - 映射至可写区：默认 fit_mode=contain（等比留白）；可选 stretch 拉伸铺满。
+    """
+    threshold_method: str = "adaptive"   # fixed | adaptive | otsu
+    threshold_value: int = 127
+    blur_kernel: int = 3                 # 高斯模糊核；0/1 关闭
+    gaussian_sigma: float = 0.0          # 0=自动
+    median_blur_kernel: int = 0            # 中值滤波；0 关闭
+    contrast: float = 1.0                # 对比度系数
+    brightness: int = 0                    # 亮度偏移
+    sharpen_amount: float = 0.0          # 锐化强度；0 关闭 (Unsharp Mask)
+    sharpen_sigma: float = 1.0
+    adaptive_block_size: int = 11          # adaptive 块大小（奇数）
+    adaptive_c: int = 2
+    edge_mode: str = "none"              # none | canny
+    canny_low: int = 50
+    canny_high: int = 150
+    morph_kernel_size: int = 2           # 闭运算核；<2 关闭
+    morph_open_size: int = 2             # 开运算核；<2 跳过
+    invert: bool = False
+    min_contour_area: float = 100.0
+    max_contours: int = 50
+    simplification_epsilon: float = 1.5  # approxPolyDP 像素 epsilon
+    keep_external_only: bool = False
+    fit_mode: str = "contain"            # contain | stretch
+    max_total_points: int = 20000
+
+    def __post_init__(self) -> None:
+        if self.fit_mode not in ("contain", "stretch"):
+            raise ValueError(
+                f"fit_mode must be 'contain' or 'stretch', got {self.fit_mode!r}"
+            )
+        if self.threshold_method not in ("fixed", "adaptive", "otsu"):
+            raise ValueError(
+                f"threshold_method must be fixed/adaptive/otsu, got {self.threshold_method!r}"
+            )
+        if self.edge_mode not in ("none", "canny"):
+            raise ValueError(
+                f"edge_mode must be 'none' or 'canny', got {self.edge_mode!r}"
+            )
+
+
+@dataclass
+class ImageDrawingConfig:
+    """图片模式绘图工艺（笔 Z / 速度 / 可写区边距）。"""
+    z_draw_mm: float = 305.0
+    z_safe_mm: float = 315.0
+    point_spacing_mm: float = 0.5
+    travel_speed_mm_s: float = 80.0
+    draw_speed_mm_s: float = 50.0
+    margin_mm: float = 0.0
+    max_total_points: int = 20000
+    sample_rate_hz: int = 500
+    max_robot_points: int = 50000
+
+    def __post_init__(self) -> None:
+        if self.z_safe_mm <= self.z_draw_mm:
+            raise ValueError(
+                f"z_safe_mm ({self.z_safe_mm}) must be greater than z_draw_mm ({self.z_draw_mm})"
+            )
+
+
+@dataclass
+class ImageRunResult:
+    """run_image_to_cri 输出摘要。"""
+    ok: bool
+    error: str = ""
+    output_dir: str = ""
+    files: dict[str, str] = field(default_factory=dict)
+    stats: dict = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
 class WorkspaceConfig:
     """工作空间标定配置 — 主线 UV 映射 + 法向偏移"""
     # 三点标定
@@ -251,16 +335,16 @@ class WorkspaceConfig:
     # 映射模式
     mapping_mode: str = "uv"                 # 主线 — "uv" | 兼容 — "perspective" | "ortho"
 
-    # 主线：法向偏移高度（沿工作平面法向 N 的 offset）
-    normal_work_offset_mm: float = 5.0       # 焊接/落笔高度偏移
-    normal_safe_offset_mm: float = 15.0      # 安全高度偏移
-    normal_super_safe_offset_mm: float = 25.0  # 任务间超安全高度偏移
-    normal_travel_offset_mm: float = 15.0    # travel 空移高度偏移
+    # ── 主线：绝对 Z 高度（Phase 9.3-c 起为主模型）──
+    z_work_mm: float = 305.0        # 焊接段绝对 Z（lead_in/weld/overlap/lead_out）
+    z_safe_mm: float = 315.0        # 安全高度绝对 Z（travel/retreat）
+    z_super_safe_mm: float = 325.0  # 超安全高度（预留）
 
-    # 兼容：仅 ortho legacy 模式使用的全局 Z（新 pipeline 主线不使用）
-    z_safe_mm: float | None = None
-    z_work_mm: float | None = None
-    z_super_safe_mm: float | None = None
+    # ── @deprecated: 法向偏移量，新代码不应使用 ──
+    normal_work_offset_mm: float = 5.0
+    normal_safe_offset_mm: float = 15.0
+    normal_super_safe_offset_mm: float = 25.0
+    normal_travel_offset_mm: float = 15.0
 
     # 兼容：正交映射栅格密度
     pixel_per_mm: float = 10.0
@@ -295,3 +379,31 @@ class ExportConfig:
     preview_enabled: bool = True            # debug PNG + preview PNG
     preview_dpi: int = 150
     timestamp_prefix: bool = True
+
+
+@dataclass
+class LuaExportConfig:
+    """Lua 焊接脚本导出格式配置"""
+    acceleration: float = 300.0          # mm/s^2, movL a= 参数
+    blend_mode: str = "absolute"         # "absolute" → b=, "relative" → rb=
+    blend_radius: float = 0.0           # mm, b= 值 (absolute 模式)
+    blend_ratio: int = 50               # 1-100, rb= 值 (relative 模式)
+    lua_filename: str = "job.lua"       # 固定文件名 (use_text_as_filename=False 时使用)
+    use_text_as_filename: bool = True   # True 时用 sanitize_lua_filename(text) 命名
+    fallback_filename: str = "job.lua"  # text 为空时的 fallback
+    precision: int = 3                   # x/y/z/rx/ry/rz 小数位数
+    speed_precision: int = 1             # v= 速度小数位数
+    skip_duplicate_points: bool = True   # 跳过连续相同位姿
+    duplicate_tolerance_mm: float = 0.001
+    include_travel: bool = True          # 输出 travel/retreat movL
+    include_comments: bool = True        # 输出 -- segment 注释
+    # wait() injection
+    insert_wait: bool = False            # True → 每 N 条 movL 后插入 wait
+    wait_every_movl: int = 30            # 每 N 条 movL 后插入一次 wait
+    wait_duration_ms: int = 1            # wait 时间 (毫秒)
+
+    def __post_init__(self):
+        if self.blend_mode not in ("absolute", "relative"):
+            raise ValueError(f"blend_mode must be 'absolute' or 'relative', got {self.blend_mode!r}")
+        self.blend_ratio = max(1, min(100, int(self.blend_ratio)))
+        self.wait_duration_ms = max(1, int(self.wait_duration_ms))
