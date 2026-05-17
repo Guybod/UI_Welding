@@ -11,6 +11,7 @@ class PropertyPanel(QWidget):
     """属性面板 — 根据选中节点类型显示参数, 支持双语"""
 
     apply_requested = Signal(object, dict)  # node_item, data
+    variable_value_changed = Signal(str, object)  # var_id, value
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -19,6 +20,9 @@ class PropertyPanel(QWidget):
         self.setMaximumWidth(360)
         self._node = None
         self._title_label = None
+        self._var_bound_id: str | None = None
+        self._var_value_widget = None
+        self._var_value_type: str | None = None
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -60,7 +64,7 @@ class PropertyPanel(QWidget):
             self._show_generic(node, [("port", "int", ""), ("value", "int", "")])
         elif nt in ("ReadDI", "ReadAI"):
             self._show_generic(node, [("port", "int", "")])
-        elif nt == "GetVar":
+        elif nt in ("GetVar", "SetVar"):
             self._show_var_value(node)
         elif nt == "SetRegister":
             self._show_generic(node, [("address", "int", ""), ("value", "int", "")])
@@ -158,72 +162,137 @@ class PropertyPanel(QWidget):
         self._scroll.setWidget(w)
 
     def _show_var_value(self, node):
-        """GetVar 节点 — 显示变量当前值, 可修改, 同步全局"""
+        """GetVar/SetVar — 显示并编辑绑定变量的当前值，全类型同步。"""
+        from PySide6.QtWidgets import QCheckBox, QPlainTextEdit
+        from app.widgets.node_editor.var_value import (
+            array_to_editor_text,
+            parse_array_editor_text,
+            parse_var_storage,
+        )
+
         data = node.node_data()
         var_id = data.get("var_id", "")
         var_name = data.get("var_name", "?")
         var_type = data.get("var_type", "int")
-        val = data.get("value", 0)
+        mode = "Get" if node.node_type() == "GetVar" else "Set"
+
+        val = parse_var_storage(data.get("value"), var_type)
+        scene = node.scene()
+        lib = getattr(scene, "_library", None) if scene else None
+        if lib and var_id:
+            for var in lib.variables():
+                if var.var_id == var_id:
+                    val = parse_var_storage(var.value, var_type)
+                    break
+
+        self._var_bound_id = var_id or None
+        self._var_value_widget = None
+        self._var_value_type = var_type
 
         w = QWidget()
         root = QVBoxLayout(w)
-        root.addWidget(QLabel(f"变量: {var_name} ({var_type})"))
+        root.addWidget(QLabel(f"{mode} · {var_name} ({var_type})"))
 
         form = QFormLayout()
-        widgets = {}
-        if var_type in ("int",):
+        widgets: dict = {}
+
+        if var_type == "int":
             spin = self._mk_spin(Range=(-999999, 999999))
             spin.setDecimals(0)
             spin.setValue(int(float(str(val))))
             form.addRow("值:", spin)
             widgets["value"] = ("int", spin)
-        elif var_type in ("float",):
+            self._var_value_widget = spin
+        elif var_type == "float":
             spin = self._mk_spin(Range=(-999999, 999999), Decimals=4)
             spin.setValue(float(val))
             form.addRow("值:", spin)
             widgets["value"] = ("float", spin)
+            self._var_value_widget = spin
         elif var_type == "bool":
-            from PySide6.QtWidgets import QCheckBox
             cb = QCheckBox("True")
             cb.setChecked(bool(val))
-            root.addWidget(cb)
+            form.addRow("值:", cb)
             widgets["value"] = ("bool", cb)
+            self._var_value_widget = cb
         elif var_type == "string":
             line = QLineEdit(str(val))
             form.addRow("值:", line)
             widgets["value"] = ("string", line)
+            self._var_value_widget = line
+        elif var_type == "array":
+            editor = QPlainTextEdit()
+            editor.setMaximumHeight(160)
+            editor.setStyleSheet(
+                "background: #3a3a3d; color: #e0e0e0; border: 1px solid #555;"
+                " border-radius: 4px; padding: 4px;",
+            )
+            editor.setPlainText(array_to_editor_text(val))
+            form.addRow("值:", editor)
+            widgets["value"] = ("array", editor)
+            self._var_value_widget = editor
+        else:
+            line = QLineEdit(str(val))
+            form.addRow("值:", line)
+            widgets["value"] = ("string", line)
+            self._var_value_widget = line
+
         root.addLayout(form)
 
         def apply():
-            for key, (ftype, wdg) in widgets.items():
-                if ftype in ("int",):
+            if not var_id:
+                return
+            for _key, (ftype, wdg) in widgets.items():
+                if ftype == "int":
                     v = int(wdg.value())
                 elif ftype == "float":
-                    v = wdg.value()
+                    v = float(wdg.value())
                 elif ftype == "bool":
-                    v = wdg.isChecked()
+                    v = bool(wdg.isChecked())
+                elif ftype == "array":
+                    v = parse_array_editor_text(wdg.toPlainText())
                 else:
                     v = wdg.text()
-                # update library
-                s = node.scene()
-                lib = getattr(s, '_library', None)
-                if lib and var_id:
-                    for var in lib.variables():
-                        if var.var_id == var_id:
-                            var.value = str(v)
-                            break
-                # update all GetVar nodes for same var_id on canvas
-                if s:
-                    from app.widgets.node_editor.node_item import NodeItem
-                    for item in s.items():
-                        if isinstance(item, NodeItem) and item.node_type() == "GetVar":
-                            d = item.node_data()
-                            if d.get("var_id") == var_id:
-                                d["value"] = v
-                                item.set_node_data(d)
-        btn = QPushButton(tr("node_btn_apply"))
+            self.variable_value_changed.emit(var_id, v)
+
+        for _key, (ftype, wdg) in widgets.items():
+            if ftype in ("int", "float"):
+                wdg.valueChanged.connect(apply)
+            elif ftype == "bool":
+                wdg.toggled.connect(apply)
+            elif ftype == "array":
+                wdg.textChanged.connect(apply)
+            else:
+                wdg.editingFinished.connect(apply)
+
         root.addStretch()
         self._scroll.setWidget(w)
+
+    def refresh_bound_variable_value(self, var_id: str, value) -> None:
+        """同 var_id 在别处被修改时，刷新右侧显示（不触发回写）。"""
+        from app.widgets.node_editor.var_value import array_to_editor_text, parse_var_storage
+
+        if not var_id or var_id != self._var_bound_id:
+            return
+        w = self._var_value_widget
+        if w is None:
+            return
+        val = parse_var_storage(value, self._var_value_type or "int")
+        w.blockSignals(True)
+        try:
+            vt = self._var_value_type
+            if vt == "int":
+                w.setValue(int(float(val)))
+            elif vt == "float":
+                w.setValue(float(val))
+            elif vt == "bool":
+                w.setChecked(bool(val))
+            elif vt == "array":
+                w.setPlainText(array_to_editor_text(val))
+            else:
+                w.setText(str(val))
+        finally:
+            w.blockSignals(False)
 
     def _show_generic(self, node, fields: list[tuple[str, str, str]]):
         """通用属性面板: fields = [(key, type, suffix), ...]"""
@@ -490,4 +559,7 @@ class PropertyPanel(QWidget):
 
     def clear(self):
         self._node = None
+        self._var_bound_id = None
+        self._var_value_widget = None
+        self._var_value_type = None
         self._show_placeholder()

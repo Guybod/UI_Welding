@@ -17,7 +17,7 @@ _STRINGS = {
     "tab_home":     {"zh": "首页",   "en": "Home"},
     "tab_welding":  {"zh": "焊接",   "en": "Welding"},
     "tab_writing":  {"zh": "绘图",   "en": "Drawing"},
-    "tab_motion":   {"zh": "运动",   "en": "Motion"},
+    "tab_motion":   {"zh": "运动 Beta",   "en": "Motion Beta"},
     "tab_io":       {"zh": "IO",     "en": "IO"},
     "tab_program":  {"zh": "程序",   "en": "Program"},
     "tab_upload":   {"zh": "上传",   "en": "Upload"},
@@ -49,6 +49,7 @@ _STRINGS = {
     "node_log_title":       {"zh": "执行日志",   "en": "Execution Log"},
     "node_project_label":   {"zh": "工程:",      "en": "Project:"},
     "node_unnamed":         {"zh": "未命名",     "en": "Untitled"},
+    "node_btn_new":         {"zh": "新建",       "en": "New"},
     "node_btn_save":        {"zh": "保存",       "en": "Save"},
     "node_btn_load":        {"zh": "加载",       "en": "Load"},
     "node_btn_run":         {"zh": "▶ 运行",     "en": "▶ Run"},
@@ -58,6 +59,15 @@ _STRINGS = {
     "node_btn_apply":       {"zh": "应用",       "en": "Apply"},
     "node_btn_update_pos":  {"zh": "更新为当前位置", "en": "Update Current Pose"},
     "node_saved":           {"zh": "已保存:",    "en": "Saved:"},
+    "node_new_confirm": {
+        "zh": "将清空当前画布（变量与点位列表一并重置），未保存的修改会丢失。继续？",
+        "en": "Clear the canvas and reset variables/positions? Unsaved changes will be lost.",
+    },
+    "node_new_while_running": {
+        "zh": "节点图正在执行，请先停止再新建工程。",
+        "en": "Stop the running graph before creating a new project.",
+    },
+    "node_new_done":        {"zh": "已新建空白工程", "en": "New blank project created"},
     "node_loaded":          {"zh": "已加载:",    "en": "Loaded:"},
     "node_save_failed":     {"zh": "保存失败",   "en": "Save Failed"},
     "node_load_failed":     {"zh": "加载失败",   "en": "Load Failed"},
@@ -467,6 +477,10 @@ _STRINGS = {
     "draw_image_fit_contain": {"zh": "等比留白 (contain)", "en": "Contain (letterbox)"},
     "draw_image_fit_stretch": {"zh": "拉伸填满 (stretch)", "en": "Stretch"},
     "draw_image_margin": {"zh": "边距 mm", "en": "Margin mm"},
+    "draw_image_params_in_preview": {
+        "zh": "图像处理参数请在「预览处理结果」中调整；点确定后自动保存，再生成轨迹。",
+        "en": "Adjust image parameters in Preview Processing; OK saves them for Generate.",
+    },
     "draw_image_disclaimer": {
         "zh": "图片模式适合线稿、Logo、剪影、简单轮廓。随手拍照片需通过参数调成清晰线稿后再生成轨迹。复杂背景或照片级写实不保证效果。",
         "en": "Image mode suits line art, logos, silhouettes, and simple outlines. "
@@ -509,9 +523,194 @@ _STRINGS = {
     "draw_img_edge_canny": {"zh": "Canny 边缘", "en": "Canny edges"},
     "draw_img_canny_low": {"zh": "Canny 低阈值", "en": "Canny low"},
     "draw_img_canny_high": {"zh": "Canny 高阈值", "en": "Canny high"},
+    "draw_img_morph_mode": {"zh": "运算方式", "en": "Morph mode"},
+    "draw_img_morph_none": {"zh": "全关", "en": "Off"},
+    "draw_img_morph_close_only": {"zh": "仅闭运算", "en": "Close only"},
+    "draw_img_morph_open_only": {"zh": "仅开运算", "en": "Open only"},
+    "draw_img_morph_open_close": {"zh": "先开后闭", "en": "Open → close"},
+    "draw_img_morph_close_open": {"zh": "先闭后开", "en": "Close → open"},
     "draw_img_morph_close": {"zh": "闭运算核", "en": "Close kernel"},
     "draw_img_morph_open": {"zh": "开运算核", "en": "Open kernel"},
     "draw_img_keep_external": {"zh": "仅外轮廓", "en": "External contours only"},
+    "draw_img_contour_strategy": {"zh": "轮廓策略", "en": "Contour strategy"},
+    "draw_img_strategy_external": {
+        "zh": "外轮廓优先（推荐）",
+        "en": "External first (recommended)",
+    },
+    "draw_img_strategy_all": {"zh": "全部轮廓", "en": "All contours"},
+    "draw_img_strategy_centerline": {"zh": "中心线 [Beta]", "en": "Centerline [Beta]"},
+    "draw_img_strategy_external_hint": {
+        "zh": "外轮廓优先：适合 Logo、剪影、低精度图片，可减少双层边。",
+        "en": "External first: best for logos/silhouettes; reduces double edges.",
+    },
+    "draw_img_strategy_all_hint": {
+        "zh": "全部轮廓：保留内部细节，可能出现双层边。",
+        "en": "All contours: keeps inner detail; may show double edges.",
+    },
+    "draw_img_strategy_centerline_hint": {
+        "zh": "中心线 [Beta]：适合粗线稿转单线，当前实验功能。",
+        "en": "Centerline [Beta]: experimental single-line mode.",
+    },
+    "draw_img_fill_before": {"zh": "填充后提轮廓", "en": "Fill region before contours"},
+    "draw_img_fill_holes": {"zh": "填洞", "en": "Fill holes"},
+    "draw_img_contour_dedup": {"zh": "外轮廓去重（防双边）", "en": "Deduplicate outer contours"},
+    "draw_img_step_preprocess": {"zh": "① 预处理", "en": "① Preprocess"},
+    "draw_img_step_binarize": {"zh": "② 二值化", "en": "② Binarize"},
+    "draw_img_step_morphology": {"zh": "③ 形态学", "en": "③ Morphology"},
+    "draw_img_step_region_mask": {"zh": "④ 区域 Mask", "en": "④ Region mask"},
+    "draw_img_step_contour_extract": {"zh": "⑤ 轮廓提取", "en": "⑤ Extract contours"},
+    "draw_img_step_contour_filter": {"zh": "⑥ 轮廓筛选", "en": "⑥ Filter contours"},
+    "draw_img_step_mapping": {"zh": "⑦ 工作区映射", "en": "⑦ Workplane mapping"},
+    "draw_tip_preset": {
+        "zh": "一键套用线稿/剪影/照片等参数组合。取消下方步骤勾选后，预设不会自动帮你打开对应步骤。",
+        "en": "Apply a parameter bundle. Step checkboxes still control which pipeline stages run.",
+    },
+    "draw_tip_step_preprocess": {
+        "zh": "勾选：先做对比度、模糊、锐化等，再二值化。\n取消：直接用原图灰度，适合本身就很干净的图。",
+        "en": "When checked, run contrast/blur/sharpen before binarization.",
+    },
+    "draw_tip_step_binarize": {
+        "zh": "勾选：把灰度图变成黑白前景图（预览「二值」）。\n取消：无法继续，必须保留。",
+        "en": "Convert grayscale to black/white foreground. Required.",
+    },
+    "draw_tip_step_morphology": {
+        "zh": "勾选：按「运算方式」做形态学。\n全部轮廓：作用在二值图；外轮廓：作用在实心 Mask 上。\n核为 0 时不执行对应运算；细尾巴易被开运算吃掉。\n取消本步：不做任何形态学。",
+        "en": "Morphological ops per mode. Kernel 0 skips that op. Opening erodes thin tails.",
+    },
+    "draw_tip_morph_mode": {
+        "zh": "全关=本步内不做形态学；仅闭/仅开/先开后闭/先闭后开。\n闭：连断口；开：去毛刺（细线易消失）。",
+        "en": "Off, close only, open only, open→close, or close→open.",
+    },
+    "draw_tip_step_region_mask": {
+        "zh": "勾选：把细边环收成实心块（预览「区域 Mask」），外轮廓模式强烈建议开启。\n取消：轮廓沿二值细边走，易出现双线，细尾巴易保留。",
+        "en": "Build solid region mask; recommended for external mode.",
+    },
+    "draw_tip_step_contour_extract": {
+        "zh": "勾选：从 Mask/二值图提取轮廓线。\n取消：不生成轮廓。",
+        "en": "Run findContours and build strokes.",
+    },
+    "draw_tip_step_contour_filter": {
+        "zh": "勾选：按面积、数量、简化强度筛选轮廓点。\n取消：保留全部原始轮廓点（可能很密）。",
+        "en": "Filter by area, count, and simplify polygons.",
+    },
+    "draw_tip_step_mapping": {
+        "zh": "勾选：生成轨迹时把像素映射到工作平面（等比/拉伸、边距）。\n取消：仅影响生成轨迹，预览轮廓不受影响。",
+        "en": "Map pixels to workplane when generating trajectory.",
+    },
+    "draw_tip_contrast": {
+        "zh": "对比度：1=不变。\n调大：黑白更分明，主体更易被认成前景；过大可能丢灰边细节。\n调小：画面发灰，二值更难分清。",
+        "en": "Contrast scale. Higher = stronger black/white separation.",
+    },
+    "draw_tip_brightness": {
+        "zh": "亮度：0=不变。\n调大：整体变亮，暗部细节出来，白底图上的黑字可能变浅。\n调小：整体变暗，浅色细节可能被当成背景。",
+        "en": "Brightness offset. Positive = lighter image.",
+    },
+    "draw_tip_median": {
+        "zh": "中值滤波：去椒盐噪点。\n核越大：越平滑，细线/尾巴可能被抹掉。\n0=关闭。",
+        "en": "Median blur kernel. Larger removes more speckle.",
+    },
+    "draw_tip_blur": {
+        "zh": "高斯模糊：柔化边缘。\n核越大：边缘越糊，双线可能合并，细部也可能消失。\n0=关闭。",
+        "en": "Gaussian blur kernel before threshold.",
+    },
+    "draw_tip_gauss_sigma": {
+        "zh": "高斯 σ：控制模糊强度。\n越大：越糊；0=自动。",
+        "en": "Gaussian sigma. Higher = more blur.",
+    },
+    "draw_tip_sharpen": {
+        "zh": "锐化：让边缘更利。\n调大：线更利，噪点也可能被加强；0=关闭。",
+        "en": "Unsharp mask amount. Higher = sharper edges.",
+    },
+    "draw_tip_sharpen_sigma": {
+        "zh": "锐化范围 σ：越大影响周边越宽。",
+        "en": "Sharpen blur radius.",
+    },
+    "draw_tip_thresh_method": {
+        "zh": "二值化方式：\nfixed=固定阈值；adaptive=局部自适应（不均光照）；otsu=自动分黑白（剪影常用）。",
+        "en": "Threshold method: fixed, adaptive, or Otsu.",
+    },
+    "draw_tip_thresh_value": {
+        "zh": "固定阈值：0~255。\n调大：更多像素当背景（白），前景变少。\n调小：更多当前景（黑）。仅 fixed 模式有效。",
+        "en": "Fixed threshold 0-255. Only for fixed method.",
+    },
+    "draw_tip_adaptive_block": {
+        "zh": "自适应块大小（奇数）。\n越大：每块越大，越平滑，细节越少。\n越小：保留更多局部细节。",
+        "en": "Adaptive block size (odd). Larger = smoother.",
+    },
+    "draw_tip_adaptive_c": {
+        "zh": "自适应常数 C。\n调大：前景变少（更严）。\n调小：前景变多（更松）。",
+        "en": "Adaptive threshold constant C.",
+    },
+    "draw_tip_edge_mode": {
+        "zh": "none=常规二值化；canny=只保留边缘线（线很细，适合线稿，剪影慎用）。",
+        "en": "none=threshold; canny=edge lines only.",
+    },
+    "draw_tip_canny_low": {
+        "zh": "Canny 低阈值：越低越敏感，线条越多、越碎。",
+        "en": "Canny low threshold.",
+    },
+    "draw_tip_canny_high": {
+        "zh": "Canny 高阈值：越高只保留更强边缘，线条更少。",
+        "en": "Canny high threshold.",
+    },
+    "draw_tip_invert": {
+        "zh": "反色：黑白对调。主体反了时勾选（如黑底白字）。",
+        "en": "Invert foreground/background.",
+    },
+    "draw_tip_morph_close": {
+        "zh": "闭运算：连接断口、填小缝。\n核越大：细缝/双线越易合并，但细尾巴也可能被并进身体。",
+        "en": "Closing kernel size. Bridges gaps.",
+    },
+    "draw_tip_morph_open": {
+        "zh": "开运算：去掉小毛刺。\n核越大：去噪越强，细线、尾巴、尖角也更容易被削掉。\n0=关闭。",
+        "en": "Opening removes speckle. Larger kernel erodes thin lines/tails. 0=off.",
+    },
+    "draw_tip_fill_before": {
+        "zh": "在 Mask 上再做闭运算等，把破碎边缘收成一块。外轮廓模式建议开启。",
+        "en": "Morphology on mask before contours.",
+    },
+    "draw_tip_fill_holes": {
+        "zh": "填洞：把轮廓内部的孔填满（如 O 字内圈）。剪影建议开启；要保留内圈细节请关闭。",
+        "en": "Fill holes inside foreground regions.",
+    },
+    "draw_tip_contour_strategy": {
+        "zh": "外轮廓：单圈外边界，适合 Logo/猫剪影。\n全部轮廓：保留内部线条，适合花束线稿。",
+        "en": "External vs all contours strategy.",
+    },
+    "draw_tip_keep_external": {
+        "zh": "仅保留最外圈（全部轮廓模式下可选）。",
+        "en": "Keep only outer contours in all mode.",
+    },
+    "draw_tip_contour_dedup": {
+        "zh": "去掉两条几乎重合的外轮廓（防机器人画双线）。外轮廓模式建议开启。",
+        "en": "Remove duplicate parallel outer contours.",
+    },
+    "draw_tip_min_area": {
+        "zh": "最小轮廓面积（像素²）。\n调大：小噪点、细尾巴更易被扔掉。\n调小：保留更多碎线。",
+        "en": "Minimum contour area in px².",
+    },
+    "draw_tip_max_contours": {
+        "zh": "最多保留几条轮廓。复杂图可调大；只要主体可调小。",
+        "en": "Maximum number of contours kept.",
+    },
+    "draw_tip_simplify": {
+        "zh": "简化强度（越大点越少、线越直）。\n调大：轨迹更顺滑、点更少，细节变少。\n调小：更贴原锯齿边。",
+        "en": "approxPolyDP epsilon. Higher = fewer points.",
+    },
+    "draw_tip_max_points": {
+        "zh": "总点数上限，超过会报错。图很复杂时调大。",
+        "en": "Max total points across all strokes.",
+    },
+    "draw_tip_fit_mode": {
+        "zh": "contain=等比缩放进工作区；stretch=拉满（会变形）。",
+        "en": "contain or stretch mapping.",
+    },
+    "draw_tip_margin": {
+        "zh": "离工作区边缘留白（毫米）。越大图越小。",
+        "en": "Margin from workplane edge in mm.",
+    },
+    "draw_img_preview_tab_mask": {"zh": "区域 Mask", "en": "Region mask"},
+    "draw_img_preview_tab_external": {"zh": "外轮廓对照", "en": "External only"},
     "draw_img_auto": {"zh": "自动", "en": "Auto"},
     "draw_img_off": {"zh": "关闭", "en": "Off"},
     "draw_img_gen_btn": {"zh": "生成轨迹", "en": "Generate Trajectory"},
@@ -617,6 +816,10 @@ _STRINGS = {
     "log_online_start": {"zh": "[在线] 开始执行",         "en": "[Online] Started"},
     "log_finished":     {"zh": "[执行] 完成",             "en": "[Execute] Finished"},
     "log_stopped":      {"zh": "[执行] 已停止",           "en": "[Execute] Stopped"},
+    "node_not_connected": {
+        "zh": "未连接机器人，无法在线执行节点图。请先登录并连接。",
+        "en": "Robot not connected. Connect before online run.",
+    },
     "log_error":        {"zh": "[错误]",                  "en": "[Error]"},
     "log_end_reached":  {"zh": "  ⏹ 到达 End",           "en": "  ⏹ Reached End"},
     "log_position":     {"zh": "    点位:",               "en": "    Position:"},

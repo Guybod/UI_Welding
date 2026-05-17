@@ -209,11 +209,14 @@ class _PreviewWorker(QObject):
             points = sum(len(s.points_px) for s in result.strokes_px)
             self.finished.emit({
                 "binary": result.binary_image,
+                "mask": result.mask_image,
                 "contour": result.contour_preview_image,
+                "contour_external": result.contour_external_preview_image,
                 "original": result.original_image,
                 "stroke_count": len(result.strokes_px),
                 "total_points_px": points,
                 "warnings": list(result.warnings),
+                "stats": dict(result.stats),
             })
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -253,12 +256,22 @@ class ImagePreviewDialog(QDialog):
         self._tabs = QTabWidget()
         self._view_original = ZoomImageView()
         self._view_binary = ZoomImageView()
+        self._view_mask = ZoomImageView()
         self._view_contour = ZoomImageView()
-        for view in (self._view_original, self._view_binary, self._view_contour):
+        self._view_external = ZoomImageView()
+        for view in (
+            self._view_original,
+            self._view_binary,
+            self._view_mask,
+            self._view_contour,
+            self._view_external,
+        ):
             view.setMinimumHeight(340)
         self._tabs.addTab(self._view_original, tr("draw_img_preview_tab_original"))
         self._tabs.addTab(self._view_binary, tr("draw_img_preview_tab_binary"))
+        self._tabs.addTab(self._view_mask, tr("draw_img_preview_tab_mask"))
         self._tabs.addTab(self._view_contour, tr("draw_img_preview_tab_contours"))
+        self._tabs.addTab(self._view_external, tr("draw_img_preview_tab_external"))
         root.addWidget(self._tabs, stretch=3)
 
         self._status = QLabel()
@@ -341,16 +354,24 @@ class ImagePreviewDialog(QDialog):
         self.last_points_px = int(payload.get("total_points_px", 0))
         orig = payload.get("original")
         binary = payload.get("binary")
+        mask = payload.get("mask")
         contour = payload.get("contour")
+        contour_ext = payload.get("contour_external")
         if orig is not None:
             self._view_original.set_pixmap(_ndarray_to_pixmap(orig))
         if binary is not None:
             self._view_binary.set_pixmap(_ndarray_to_pixmap(binary))
+        if mask is not None:
+            self._view_mask.set_pixmap(_ndarray_to_pixmap(mask))
         if contour is not None:
             self._view_contour.set_pixmap(_ndarray_to_pixmap(contour))
+        if contour_ext is not None:
+            self._view_external.set_pixmap(_ndarray_to_pixmap(contour_ext))
+        stats = payload.get("stats") or {}
+        kept = stats.get("contour_count_kept", payload.get("stroke_count", 0))
         self._status.setText(
             tr("draw_img_preview_status").format(
-                contours=payload.get("stroke_count", 0),
+                contours=kept,
                 points=payload.get("total_points_px", 0),
             )
         )

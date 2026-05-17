@@ -59,17 +59,13 @@ class GraphScene(QGraphicsScene):
             ]
             spec = NodeSpec("SetVar", f"Set {var_name}", "变量", ports, color="#00BCD4")
         node = NodeItem("GetVar" if mode == "get" else "SetVar", override_spec=spec)
-        init_val = 0
+        from app.widgets.node_editor.var_value import parse_var_storage
+
+        init_val = parse_var_storage(0, var_type)
         if self._library:
             for v in self._library.variables():
                 if v.var_id == var_id:
-                    try:
-                        if var_type == "int": init_val = int(float(v.value))
-                        elif var_type == "float": init_val = float(v.value)
-                        elif var_type == "bool": init_val = v.value.lower() in ("true", "1", "yes")
-                        else: init_val = v.value
-                    except (ValueError, TypeError):
-                        pass
+                    init_val = parse_var_storage(v.value, var_type)
                     break
         node.set_node_data({
             "_ports": [(p.name, p.port_type, p.direction) for p in ports],
@@ -222,6 +218,105 @@ class GraphScene(QGraphicsScene):
     def _remove_edge(self, edge: EdgeItem):
         edge.detach()
         self.removeItem(edge)
+
+    def _linear_flow_ports(self, node: NodeItem) -> tuple[PortItem | None, PortItem | None]:
+        """主 flow 链路上的 in/out（名为 flow 的端口）。"""
+        flow_in = None
+        flow_out = None
+        for p in node.input_ports():
+            if p.port_type() == "flow" and p.port_name() == "flow":
+                flow_in = p
+                break
+        for p in node.output_ports():
+            if p.port_type() == "flow" and p.port_name() == "flow":
+                flow_out = p
+                break
+        return flow_in, flow_out
+
+    def _edge_at(
+        self,
+        scene_pos: QPointF,
+        *,
+        exclude_node: NodeItem | None = None,
+        max_dist: float = 15.0,
+    ) -> EdgeItem | None:
+        """在 scene_pos 附近查找最近的 flow 连线。"""
+        best = None
+        best_dist = max_dist
+        for item in self.items():
+            if not isinstance(item, EdgeItem):
+                continue
+            src = item.source()
+            tgt = item.target()
+            if not src or not tgt:
+                continue
+            if src.port_type() != "flow" or tgt.port_type() != "flow":
+                continue
+            if exclude_node is not None:
+                src_node = src.parentItem()
+                tgt_node = tgt.parentItem()
+                if src_node is exclude_node or tgt_node is exclude_node:
+                    continue
+            path = item.path()
+            length = path.length()
+            if length <= 0:
+                continue
+            step = max(length / 20, 1.0)
+            d = 0.0
+            while d <= length:
+                pt = path.pointAtPercent(d / length)
+                dist = (pt - scene_pos).manhattanLength()
+                if dist < best_dist:
+                    best_dist = dist
+                    best = item
+                d += step
+        return best
+
+    def _node_already_between_ports(
+        self,
+        node: NodeItem,
+        src_port: PortItem,
+        tgt_port: PortItem,
+    ) -> bool:
+        flow_in, flow_out = self._linear_flow_ports(node)
+        if flow_in is None or flow_out is None:
+            return False
+        has_in = any(e.source() is src_port for e in flow_in.connected_edges)
+        has_out = any(e.target() is tgt_port for e in flow_out.connected_edges)
+        return has_in and has_out
+
+    def try_insert_node_on_flow_edge(
+        self,
+        node: NodeItem,
+        scene_pos: QPointF,
+    ) -> bool:
+        """将已有/新建节点插入 flow 连线中间。成功返回 True。"""
+        flow_in, flow_out = self._linear_flow_ports(node)
+        if flow_in is None or flow_out is None:
+            return False
+
+        edge = self._edge_at(scene_pos, exclude_node=node)
+        if edge is None:
+            edge = self._edge_at(node.sceneBoundingRect().center(), exclude_node=node)
+        if edge is None:
+            return False
+
+        src_port = edge.source()
+        tgt_port = edge.target()
+        if not src_port or not tgt_port:
+            return False
+
+        if self._node_already_between_ports(node, src_port, tgt_port):
+            return True
+
+        for port in (flow_in, flow_out):
+            for old in list(port.connected_edges):
+                self._remove_edge(old)
+
+        self._remove_edge(edge)
+        self._add_edge(src_port, flow_in)
+        self._add_edge(flow_out, tgt_port)
+        return True
 
     # ── drag-to-connect ──
 

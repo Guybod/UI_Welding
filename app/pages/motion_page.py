@@ -13,3 +13,16 @@ class MotionPage(BasePage):
         layout.setContentsMargins(48, 0, 0, 0)
         self._editor = NodeEditorWidget(self)
         layout.addWidget(self._editor)
+
+    def on_enter(self):
+        if self.sp and self.sp.cm:
+            self._editor.set_connection_check(
+                lambda: bool(self.sp and self.sp.cm and self.sp.cm.is_connected),
+            )
+
+    def on_leave(self):
+        self._editor.stop_execution()
+
+    def on_connection_changed(self, connected: bool):
+        if not connected:
+            self._editor.stop_execution()

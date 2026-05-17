@@ -95,7 +95,7 @@ class _VarDialog(QDialog):
         self._init_array.hide()
         # 设置初始值
         init_val = var.value if var else "0"
-        if (var and var.var_type == "array") or (not var and False):
+        if var and var.var_type == "array":
             self._init_array.setPlainText(init_val)
         else:
             self._init_line.setText(init_val)

@@ -32,8 +32,9 @@ class PageRouter(QObject):
         if spec.key == self._current_key:
             return
 
-        # 旧页 on_leave
+        # 旧页 on_leave（切页时停止全局点动）
         if self._current_key and self._current_key in self._cache:
+            self.on_stop_jog_requested.emit()
             self._cache[self._current_key].on_leave()
 
         # 懒加载

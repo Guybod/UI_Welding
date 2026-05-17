@@ -49,14 +49,12 @@ def main():
     def cleanup():
         cri_svc.stop()
         cm.disconnect()
-        # 停止心跳 timer
-        for key in ("jog_cleanup", "moveto_cleanup"):
-            cb = binder_state.get(key)
-            if cb:
-                try:
-                    cb()
-                except Exception:
-                    pass
+        stop_motion = binder_state.get("motion_cleanup")
+        if stop_motion:
+            try:
+                stop_motion()
+            except Exception:
+                pass
 
     app.aboutToQuit.connect(cleanup)
 

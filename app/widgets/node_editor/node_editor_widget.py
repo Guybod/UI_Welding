@@ -122,6 +122,7 @@ class NodeEditorWidget(QWidget):
         QShortcut(QKeySequence.Save, self, self._on_save)
         QShortcut(QKeySequence.Open, self, self._on_load)
 
+        self._connection_check = None
         self._engine = ExecutionEngine(self)
         if NodeEditorWidget.send_tcp:
             self._engine.set_send_callback(NodeEditorWidget.send_tcp)
@@ -138,6 +139,7 @@ class NodeEditorWidget(QWidget):
         self._view.position_requested.connect(self._on_position_requested)
 
         self._scene.selectionChanged.connect(self._on_selection_changed)
+        self._property.variable_value_changed.connect(self._on_variable_value_changed)
         I18nManager.instance().language_changed.connect(self._on_language_changed)
 
     def _on_selection_changed(self):
@@ -157,6 +159,15 @@ class NodeEditorWidget(QWidget):
     def set_send_callback(self, cb):
         self._engine.set_send_callback(cb)
 
+    def set_connection_check(self, cb):
+        """在线执行前检查是否已连接机器人。cb() -> bool"""
+        self._connection_check = cb
+
+    def stop_execution(self):
+        """停止当前图执行（切页、断线、全局停止时调用）。"""
+        if self._engine:
+            self._engine.stop()
+
     def _set_running(self, running: bool):
         self._btn_run.setVisible(not running)
         self._btn_run.setEnabled(not running)
@@ -175,6 +186,7 @@ class NodeEditorWidget(QWidget):
 
     def _run_graph(self, online: bool):
         data = self._scene.to_graph_data()
+        data.variables = self._library.variables()
         v = GraphValidator()
         r = v.validate(data)
         if not r.ok:
@@ -186,6 +198,9 @@ class NodeEditorWidget(QWidget):
             return
         self._log._log.clear()
         if online:
+            if self._connection_check is not None and not self._connection_check():
+                self._log._log.appendPlainText(tr("node_not_connected"))
+                return
             self._engine.run_online(data)
         else:
             self._engine.run_dry(data)
@@ -231,7 +246,66 @@ class NodeEditorWidget(QWidget):
         self._scene.add_var_node(var_id, name, var_type, port_type, "set", view_center.x(), view_center.y())
 
     def _on_variables_changed(self, variables: list):
-        pass
+        self._sync_scene_variables_from_library()
+
+    def _on_variable_value_changed(self, var_id: str, value) -> None:
+        self._sync_variable_value(var_id, value)
+
+    def _sync_variable_value(self, var_id: str, value) -> None:
+        """同一 var_id 的库、所有 GetVar/SetVar 节点、属性面板保持同一值。"""
+        from app.widgets.node_editor.node_item import NodeItem
+        from app.widgets.node_editor.var_value import format_var_storage, parse_var_storage
+
+        if not var_id:
+            return
+
+        var_type = "int"
+        for v in self._library.variables():
+            if v.var_id == var_id:
+                var_type = v.var_type
+                normalized = parse_var_storage(value, var_type)
+                v.value = format_var_storage(normalized, var_type)
+                value = normalized
+                break
+
+        for item in self._scene.items():
+            if not isinstance(item, NodeItem):
+                continue
+            if item.node_type() not in ("GetVar", "SetVar"):
+                continue
+            data = dict(item.node_data())
+            if data.get("var_id") != var_id:
+                continue
+            node_type = data.get("var_type", var_type)
+            data["value"] = parse_var_storage(value, node_type)
+            item.set_node_data(data)
+
+        self._property.refresh_bound_variable_value(var_id, value)
+
+    def _sync_scene_variables_from_library(self) -> None:
+        """变量库变更后，刷新画布上所有变量节点缓存值。"""
+        from app.widgets.node_editor.node_item import NodeItem
+        from app.widgets.node_editor.var_value import parse_var_storage
+
+        lib_map = {v.var_id: v for v in self._library.variables()}
+        for item in self._scene.items():
+            if not isinstance(item, NodeItem):
+                continue
+            if item.node_type() not in ("GetVar", "SetVar"):
+                continue
+            data = dict(item.node_data())
+            vid = data.get("var_id", "")
+            if vid not in lib_map:
+                continue
+            var = lib_map[vid]
+            data["value"] = parse_var_storage(var.value, var.var_type)
+            item.set_node_data(data)
+
+        items = self._scene.selectedItems()
+        for item in items:
+            if isinstance(item, NodeItem) and item.node_type() in ("GetVar", "SetVar"):
+                self._property.set_node(item)
+                break
 
     def _on_position_requested(self, pos_id: str, name: str):
         view_center = self._view.mapToScene(self._view.viewport().rect().center())

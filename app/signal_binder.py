@@ -7,6 +7,7 @@
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 
+from core.logger import log
 from core.robot_model_config import get_model_config
 from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
 from services.robot_realtime_state import RobotRealtimeState
@@ -20,6 +21,9 @@ def _bind_login_flow(cm, login, main_win, stack, state):
         cm.connect_to_robot(config)
 
     def on_return_to_login():
+        stop = state.get("stop_all_motion")
+        if stop:
+            stop()
         main_win.reset_to_home(reason="logout")
         cm.disconnect()
         main_win._status_bar.set_connection_status("未连接")
@@ -44,6 +48,9 @@ def _bind_connection_state(cm, login, main_win, stack, state):
             main_win._command_bar.set_all_enabled(True)
             main_win._drawer.set_jog_enabled(True)
         else:
+            stop = state.get("stop_all_motion")
+            if stop:
+                stop()
             main_win._command_bar.set_all_enabled(False)
             main_win._drawer.set_jog_enabled(False)
 
@@ -101,9 +108,9 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
             on_response=lambda d: cm.send_call(
                 "Robot/setAutoMoveRate", 70,
                 on_response=lambda d2: None,
-                on_error=lambda e2: print(f"[UI] 设置自动速度失败: {e2}"),
+                on_error=lambda e2: log.info(f"[UI] 设置自动速度失败: {e2}"),
             ),
-            on_error=lambda e: print(f"[UI] 设置手动速度失败: {e}"),
+            on_error=lambda e: log.info(f"[UI] 设置手动速度失败: {e}"),
         ))
 
     def _on_robot_status(db: dict):
@@ -163,7 +170,7 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
                 lambda: cm.send_call(
                     "System/clearError", {},
                     on_response=lambda d: None,
-                    on_error=lambda e: print(f"[UI] 清错失败: {e}"),
+                    on_error=lambda e: log.info(f"[UI] 清错失败: {e}"),
                 )
             )
             _error_dialog_data[0].show()
@@ -178,7 +185,7 @@ def _bind_command_bar(cm, main_win, state):
     """全局命令栏按钮 → send_call"""
     def _simple_call(ty: str):
         cm.send_call(ty, {}, on_response=lambda d: None,
-                     on_error=lambda e: print(f"[UI] {ty} 失败: {e}"))
+                     on_error=lambda e: log.info(f"[UI] {ty} 失败: {e}"))
 
     main_win._command_bar.switch_on_toggled.connect(
         lambda on: _simple_call("Robot/switchOn" if on else "Robot/switchOff"))
@@ -193,7 +200,7 @@ def _bind_command_bar(cm, main_win, state):
     main_win._command_bar.project_start.connect(
         lambda: cm.send_call("project/runByIndex", 1,
                              on_response=lambda d: None,
-                             on_error=lambda e: print(f"[UI] 启动工程失败: {e}")))
+                             on_error=lambda e: log.info(f"[UI] 启动工程失败: {e}")))
     main_win._command_bar.project_stop.connect(lambda: _simple_call("project/stop"))
     main_win._command_bar.project_pause.connect(lambda: _simple_call("project/pause"))
     main_win._command_bar.project_resume.connect(lambda: _simple_call("project/resume"))
@@ -203,35 +210,48 @@ def _bind_jog(cm, main_win, state):
     """Jog 点动：按下开始 + 心跳，松开停止"""
     _jog_heartbeat_timer = QTimer()
     _jog_heartbeat_timer.setInterval(500)
+    _jog_active = [False]
 
     def _send_jog_heartbeat():
         cm.send_call("Robot/jogHeartbeat", {},
                      on_response=lambda d: None,
-                     on_error=lambda e: print(f"[UI] jogHeartbeat 失败: {e}"))
+                     on_error=lambda e: log.info(f"[UI] jogHeartbeat 失败: {e}"))
 
     _jog_heartbeat_timer.timeout.connect(_send_jog_heartbeat)
 
     def _on_jog_pressed(mode: int, index: int, sign: int):
+        _jog_active[0] = True
         speed = main_win._drawer.speed_rate() / 100.0
+
+        def _on_jog_ok(d):
+            if _jog_active[0]:
+                _jog_heartbeat_timer.start()
+
+        def _on_jog_fail(e):
+            _jog_active[0] = False
+            _jog_heartbeat_timer.stop()
+            log.info(f"[UI] jog 失败: {e}")
+
         cm.send_call(
             "Robot/jog",
             {"mode": mode, "speed": sign * speed, "index": index + 1,
              "coorType": 0, "coorId": 0},
-            on_response=lambda d: None,
-            on_error=lambda e: print(f"[UI] jog 失败: {e}"),
+            on_response=_on_jog_ok,
+            on_error=_on_jog_fail,
         )
-        _jog_heartbeat_timer.start()
 
-    def _on_jog_stop():
+    def _on_jog_stop(*, send_tcp: bool = True):
+        _jog_active[0] = False
         _jog_heartbeat_timer.stop()
-        cm.send_call("Robot/stopJog", {},
-                     on_response=lambda d: None,
-                     on_error=lambda e: print(f"[UI] stopJog 失败: {e}"))
+        if send_tcp:
+            cm.send_call("Robot/stopJog", {},
+                         on_response=lambda d: None,
+                         on_error=lambda e: log.info(f"[UI] stopJog 失败: {e}"))
 
     main_win._drawer.jog_pressed.connect(_on_jog_pressed)
     main_win._drawer.jog_released.connect(_on_jog_stop)
 
-    state["jog_cleanup"] = lambda: _jog_heartbeat_timer.stop()
+    state["stop_jog"] = _on_jog_stop
 
 
 def _bind_moveto(cm, main_win, state):
@@ -244,26 +264,36 @@ def _bind_moveto(cm, main_win, state):
     def _send_moveto_heartbeat():
         cm.send_call("Robot/moveToHeartbeat", {},
                      on_response=lambda d: None,
-                     on_error=lambda e: print(f"[UI] moveToHeartbeat 失败: {e}"))
+                     on_error=lambda e: log.info(f"[UI] moveToHeartbeat 失败: {e}"))
 
     _moveto_heartbeat_timer.timeout.connect(_send_moveto_heartbeat)
 
-    def _send_moveto_stop():
+    def _send_moveto_stop(*, send_tcp: bool = True):
         if not _moveto_active[0]:
             return
         _moveto_active[0] = False
         _moveto_generation[0] += 1
         _moveto_heartbeat_timer.stop()
-        print("[UI] moveTo released: stop type=-1")
-        cm.send_call("Robot/moveTo", {"type": -1},
-                     on_response=lambda d: None,
-                     on_error=lambda e: print(f"[UI] moveTo 停止失败: {e}"))
+        if send_tcp:
+            log.info("[UI] moveTo released: stop type=-1")
+            cm.send_call("Robot/moveTo", {"type": -1},
+                         on_response=lambda d: None,
+                         on_error=lambda e: log.info(f"[UI] moveTo 停止失败: {e}"))
+
+    def _force_moveto_stop(*, send_tcp: bool = True):
+        _moveto_active[0] = False
+        _moveto_generation[0] += 1
+        _moveto_heartbeat_timer.stop()
+        if send_tcp:
+            cm.send_call("Robot/moveTo", {"type": -1},
+                         on_response=lambda d: None,
+                         on_error=lambda e: log.info(f"[UI] moveTo 停止失败: {e}"))
 
     def _on_moveto_start_error(e):
         _moveto_active[0] = False
         _moveto_generation[0] += 1
         _moveto_heartbeat_timer.stop()
-        print(f"[UI] moveTo 启动失败: {e}")
+        log.info(f"[UI] moveTo 启动失败: {e}")
 
     def _on_moveto_pressed(move_type: int):
         if _moveto_active[0]:
@@ -271,7 +301,7 @@ def _bind_moveto(cm, main_win, state):
         _moveto_active[0] = True
         _moveto_generation[0] += 1
         current_generation = _moveto_generation[0]
-        print(f"[UI] moveTo pressed: type={move_type}")
+        log.info(f"[UI] moveTo pressed: type={move_type}")
         cm.send_call(
             "Robot/moveTo", {"type": move_type},
             on_response=lambda d, gen=current_generation: (
@@ -288,23 +318,21 @@ def _bind_moveto(cm, main_win, state):
     main_win._drawer.moveto_pressed.connect(_on_moveto_pressed)
     main_win._drawer.moveto_released.connect(_on_moveto_released)
 
-    # 停止运动按钮也强制停止 moveTo
-    main_win._command_bar.stop_move.connect(_send_moveto_stop)
-
-    state["moveto_cleanup"] = lambda: _moveto_heartbeat_timer.stop()
+    state["stop_moveto"] = _send_moveto_stop
+    state["force_stop_moveto"] = _force_moveto_stop
 
 
 def _bind_speed(cm, main_win, state):
     """速度条变化 → 同时设置手动速度和自动速度"""
     def _on_speed_changed(rate: int):
-        print(f"[UI] speed changed: {rate}%")
+        log.info(f"[UI] speed changed: {rate}%")
         cm.send_call("Robot/setManualMoveRate", rate,
                      on_response=lambda d: None,
-                     on_error=lambda e: print(f"[UI] 设置手动速度失败: {e}"))
+                     on_error=lambda e: log.info(f"[UI] 设置手动速度失败: {e}"))
         QTimer.singleShot(100, lambda: cm.send_call(
             "Robot/setAutoMoveRate", rate,
             on_response=lambda d: None,
-            on_error=lambda e: print(f"[UI] 设置自动速度失败: {e}"),
+            on_error=lambda e: log.info(f"[UI] 设置自动速度失败: {e}"),
         ))
 
     main_win._drawer.speed_rate_changed.connect(_on_speed_changed)
@@ -357,7 +385,34 @@ def bind_all(cm, cri_svc, login, main_win, stack):
     _bind_speed(cm, main_win, state)
     _bind_cri(cri_svc, main_win, state)
 
-    # 停止运动也停止 jog heartbeat
-    main_win._command_bar.stop_move.connect(state.get("jog_cleanup", lambda: None))
+    def _stop_motion_graph():
+        router = main_win._page_router
+        for page in router._cache.values():
+            editor = getattr(page, "_editor", None)
+            if editor is not None:
+                stop_fn = getattr(editor, "stop_execution", None)
+                if callable(stop_fn):
+                    stop_fn()
+
+    def stop_all_motion(*, send_tcp: bool = True):
+        _stop_motion_graph()
+        stop_jog = state.get("stop_jog")
+        force_moveto = state.get("force_stop_moveto")
+        if stop_jog:
+            stop_jog(send_tcp=send_tcp)
+        if force_moveto:
+            force_moveto(send_tcp=send_tcp)
+
+    state["stop_all_motion"] = stop_all_motion
+    state["motion_cleanup"] = lambda: stop_all_motion(send_tcp=False)
+
+    main_win._command_bar.stop_move.connect(stop_all_motion)
+
+    def _on_page_stop_jog():
+        stop_jog = state.get("stop_jog")
+        if stop_jog:
+            stop_jog(send_tcp=True)
+
+    main_win._page_router.on_stop_jog_requested.connect(_on_page_stop_jog)
 
     return state

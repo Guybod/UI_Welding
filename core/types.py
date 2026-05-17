@@ -267,15 +267,29 @@ class ImageProcessConfig:
     edge_mode: str = "none"              # none | canny
     canny_low: int = 50
     canny_high: int = 150
-    morph_kernel_size: int = 2           # 闭运算核；<2 关闭
-    morph_open_size: int = 2             # 开运算核；<2 跳过
+    morph_kernel_size: int = 2           # 闭运算核；<2 不执行闭运算
+    morph_open_size: int = 2             # 开运算核；<2 不执行开运算
+    morph_mode: str = "close_open"       # none|close|open|open_close|close_open
     invert: bool = False
     min_contour_area: float = 100.0
     max_contours: int = 50
     simplification_epsilon: float = 1.5  # approxPolyDP 像素 epsilon
-    keep_external_only: bool = False
+    contour_strategy: str = "external"   # external | all | centerline_beta
+    fill_before_contour: bool = True     # 区域 mask 后再提轮廓，减少双层边
+    fill_holes: bool = True              # 对前景 mask 填洞（Logo/剪影）
+    keep_external_only: bool = True      # 与 contour_strategy 联动；external 时强制 True
+    remove_border_contour: bool = False  # 过滤贴边超大轮廓（保守，默认关）
     fit_mode: str = "contain"            # contain | stretch
     max_total_points: int = 20000
+    # 流程步骤开关（UI 分组复选框，默认全开）
+    step_preprocess: bool = True
+    step_binarize: bool = True
+    step_morphology: bool = True
+    step_region_mask: bool = True
+    step_contour_extract: bool = True
+    step_contour_dedup: bool = True
+    step_contour_filter: bool = True
+    step_mapping: bool = True
 
     def __post_init__(self) -> None:
         if self.fit_mode not in ("contain", "stretch"):
@@ -289,6 +303,16 @@ class ImageProcessConfig:
         if self.edge_mode not in ("none", "canny"):
             raise ValueError(
                 f"edge_mode must be 'none' or 'canny', got {self.edge_mode!r}"
+            )
+        if self.contour_strategy not in ("external", "all", "centerline_beta"):
+            raise ValueError(
+                "contour_strategy must be external, all, or centerline_beta, "
+                f"got {self.contour_strategy!r}"
+            )
+        if self.morph_mode not in ("none", "close", "open", "open_close", "close_open"):
+            raise ValueError(
+                "morph_mode must be none, close, open, open_close, or close_open, "
+                f"got {self.morph_mode!r}"
             )
 
 

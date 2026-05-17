@@ -57,7 +57,8 @@ class ExecutionEngine(QObject):
         self._active_node: NodeData | None = None
         self._active_target: dict | None = None
         self._run_token: int = 0
-        self._return_stack: list[tuple[str, float, float, float]] = []  # (for_node_id, current_i, end, step)
+        self._return_stack: list = []  # For: (id,i,end,step) | While: ("while", id)
+        self._runtime_vars: dict[str, object] = {}
 
     # ───────────────────────── public ─────────────────────────
 
@@ -123,6 +124,10 @@ class ExecutionEngine(QObject):
         self._path_queue = []
         self._path_node = None
         self._path_index = 0
+        self._value_cache = {}
+        self._loop_counters = {}
+        self._while_iter_counts: dict[str, int] = {}
+        self._runtime_vars = self._init_runtime_vars()
 
         mode = "[在线]" if online else "[DryRun]"
         self.graph_started.emit()
@@ -142,8 +147,11 @@ class ExecutionEngine(QObject):
         if not self._current_node_id:
             if self._return_stack:
                 ret = self._return_stack.pop()
-                for_node_id, i, end, step = ret
-                self._current_node_id = for_node_id
+                if len(ret) == 2 and ret[0] == "while":
+                    self._current_node_id = ret[1]
+                else:
+                    for_node_id, _i, _end, _step = ret
+                    self._current_node_id = for_node_id
                 QTimer.singleShot(50, lambda: self._step())
                 return
             self._finish_graph()
@@ -164,6 +172,15 @@ class ExecutionEngine(QObject):
         self._log(f"  ▶ {node.title} ({nt})")
 
         if nt == "End":
+            if (
+                self._return_stack
+                and len(self._return_stack[-1]) == 2
+                and self._return_stack[-1][0] == "while"
+            ):
+                _tag, while_id = self._return_stack.pop()
+                self._current_node_id = while_id
+                QTimer.singleShot(50, self._step)
+                return
             self._log(tr("log_end_reached"))
             self._finish_graph()
             return
@@ -191,6 +208,10 @@ class ExecutionEngine(QObject):
             else:
                 self._execute_dry(node)
                 self._advance_to(self._flow_target(node, "flow"), 150)
+            return
+
+        if nt == "SetVar":
+            self._exec_set_var(node)
             return
 
         if nt in ("If", "For", "While"):
@@ -489,8 +510,9 @@ class ExecutionEngine(QObject):
     def _exec_control_flow(self, node: NodeData):
         nt = node.node_type
         if nt == "If":
-            cond = bool(self._resolve_input_raw(node, "condition"))
-            self._log(f"    ? Condition: {'True' if cond else 'False'}")
+            cond_raw = self._resolve_input_raw(node, "condition")
+            cond = bool(cond_raw)
+            self._log(f"    ? Condition: {'True' if cond else 'False'} (={cond_raw!r})")
             branch = "true" if cond else "false"
             target = self._flow_target(node, branch)
             if target:
@@ -531,20 +553,70 @@ class ExecutionEngine(QObject):
                     return
             self._advance_to(None, 50)
         elif nt == "While":
-            cond = bool(self._resolve_input_raw(node, "condition"))
+            wc = self._while_iter_counts.get(node.node_id, 0) + 1
+            self._while_iter_counts[node.node_id] = wc
+            if wc > 10_000:
+                self._fail_node(node, "While 超过最大迭代次数 (10000)，请检查条件或自增逻辑")
+                return
+            self._value_cache.clear()
+            cond_raw = self._resolve_input_raw(node, "condition")
+            cond = bool(cond_raw)
             if cond:
-                self._log(tr("log_while_true"))
+                self._log(f"    {tr('log_while_true')} (条件={cond_raw!r}, 第{wc}轮)")
+                self._return_stack.append(("while", node.node_id))
                 target = self._flow_target(node, "body")
                 if target:
                     self._advance_to(target, 50)
                     return
             else:
-                self._log(tr("log_while_false"))
+                self._log(f"    {tr('log_while_false')} (条件={cond_raw!r})")
                 target = self._flow_target(node, "done")
                 if target:
                     self._advance_to(target, 50)
                     return
             self._advance_to(None, 50)
+
+    def _exec_set_var(self, node: NodeData):
+        data = node.data or {}
+        var_id = data.get("var_id", "")
+        val = self._resolve_input_raw(node, "value")
+        from app.widgets.node_editor.var_value import format_var_storage, parse_var_storage
+
+        var_type = data.get("var_type", "int")
+        if var_type == "int":
+            val = int(self._num(val, 0))
+        elif var_type == "float":
+            val = float(self._num(val, 0))
+        elif var_type == "bool":
+            val = bool(val)
+        elif var_type == "string":
+            val = "" if val is None else str(val)
+        else:
+            val = parse_var_storage(val, var_type)
+        if var_id:
+            self._runtime_vars[var_id] = val
+            self._sync_var_to_library(var_id, val)
+            self._sync_var_nodes(var_id, val)
+        data["value"] = val
+        self._value_cache.clear()
+        name = data.get("var_name", var_id or node.title)
+        self._log(f"    SetVar {name} = {val}")
+        self._advance_to(self._flow_target(node, "flow"), 50)
+
+    def _sync_var_to_library(self, var_id: str, val: object) -> None:
+        from app.widgets.node_editor.var_value import format_var_storage
+
+        for v in getattr(self._graph, "variables", []) or []:
+            if v.var_id == var_id:
+                v.value = format_var_storage(val, v.var_type)
+
+    def _sync_var_nodes(self, var_id: str, val: object) -> None:
+        for node in self._node_idx.values():
+            if node.node_type not in ("GetVar", "SetVar"):
+                continue
+            nd = node.data or {}
+            if nd.get("var_id") == var_id:
+                nd["value"] = val
 
     # ───────────────────────── wait / IO / register ─────────────────────────
 
@@ -820,14 +892,17 @@ class ExecutionEngine(QObject):
             return data.get(port_name, default)
 
         result = self._compute_node(nt, resolve, data)
-        # 不要缓存依赖可变数据源的节点（ArrayGet/ArrayLen 依赖 Array，可能被 ArraySet 修改）
-        if nt not in ("ArrayGet", "ArrayLen"):
+        # 只缓存字面量常量；Add/GetVar/Gt 等依赖变量的节点每次重新求值
+        if nt in ("Int", "Float", "Bool", "String", "Array", "Position"):
             self._value_cache[node_id] = result
         return result
 
     def _compute_node(self, nt: str, resolve, data: dict):
         """根据节点类型计算结果值"""
         if nt == "GetVar":
+            var_id = data.get("var_id", "")
+            if var_id and var_id in self._runtime_vars:
+                return self._runtime_vars[var_id]
             return data.get("value", 0)
         if nt == "Int":
             return int(self._num(data.get("value", 0)))
@@ -974,6 +1049,23 @@ class ExecutionEngine(QObject):
     @staticmethod
     def _now_ms() -> float:
         return time.monotonic() * 1000.0
+
+    def _init_runtime_vars(self) -> dict[str, object]:
+        out: dict[str, object] = {}
+        if not self._graph:
+            return out
+        for v in getattr(self._graph, "variables", []) or []:
+            if v.var_id:
+                out[v.var_id] = self._coerce_var_value(v)
+        return out
+
+    @staticmethod
+    def _coerce_var_value(var_def) -> object:
+        from app.widgets.node_editor.var_value import parse_var_storage
+
+        t = getattr(var_def, "var_type", "int")
+        raw = getattr(var_def, "value", "0")
+        return parse_var_storage(raw, t)
 
     @staticmethod
     def _num(value, default=0.0) -> float:

@@ -1,0 +1,351 @@
+{
+  "graph_version": "1.0.0",
+  "updated_at": "2026-05-17 13:36:43",
+  "nodes": [
+    {
+      "node_id": "de218273",
+      "node_type": "While",
+      "title": "While",
+      "x": -658.8223062381852,
+      "y": -508.2967863894139,
+      "data": {}
+    },
+    {
+      "node_id": "db0a67da",
+      "node_type": "Position",
+      "title": "zero",
+      "x": -379.8275992438564,
+      "y": -384.83846880907373,
+      "data": {
+        "name": "zero",
+        "jp": [
+          0.0,
+          0.0,
+          90.0,
+          0.0,
+          90.0,
+          0.0
+        ],
+        "cp": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "a": 0.0,
+          "b": 0.0,
+          "c": 0.0
+        },
+        "ep": [],
+        "jp_enabled": true,
+        "cp_enabled": false,
+        "optional": {
+          "speed": 200.0,
+          "acc": 500.0,
+          "blend": 0.0,
+          "relativeBlend": 0.0
+        }
+      }
+    },
+    {
+      "node_id": "27a32fd1",
+      "node_type": "MoveJ",
+      "title": "MoveJ",
+      "x": -174.85850661625705,
+      "y": -534.4278827977316,
+      "data": {}
+    },
+    {
+      "node_id": "0f04f182",
+      "node_type": "MoveJ",
+      "title": "MoveJ",
+      "x": -424.9769376181475,
+      "y": -517.6172967863894,
+      "data": {}
+    },
+    {
+      "node_id": "f8d0df6c",
+      "node_type": "End",
+      "title": "End",
+      "x": 395.71304347826083,
+      "y": -351.7326086956522,
+      "data": {}
+    },
+    {
+      "node_id": "0af7b6e5",
+      "node_type": "Start",
+      "title": "Start",
+      "x": -917.6971644612479,
+      "y": -504.19196597353505,
+      "data": {}
+    },
+    {
+      "node_id": "b0f38998",
+      "node_type": "Position",
+      "title": "zero",
+      "x": -583.4854442344047,
+      "y": -371.00860113421544,
+      "data": {
+        "pos_id": "a69460ec",
+        "name": "zero",
+        "jp": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "cp": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "a": 0,
+          "b": 0,
+          "c": 0
+        },
+        "ep": [],
+        "optional": {
+          "speed": 200,
+          "acc": 500,
+          "blend": 0,
+          "relativeBlend": 0
+        }
+      }
+    },
+    {
+      "node_id": "a68907f8",
+      "node_type": "Gt",
+      "title": "A > B",
+      "x": -943.6672967863892,
+      "y": -427.9773156899813,
+      "data": {}
+    },
+    {
+      "node_id": "f36c581e",
+      "node_type": "Int",
+      "title": "10",
+      "x": -1164.0718336483937,
+      "y": -454.8506616257089,
+      "data": {
+        "value": 10
+      }
+    },
+    {
+      "node_id": "777dd7d3",
+      "node_type": "GetVar",
+      "title": "Get index",
+      "x": -1165.9489603024576,
+      "y": -394.68809073724015,
+      "data": {
+        "_ports": [
+          [
+            "value",
+            "number",
+            "output"
+          ]
+        ],
+        "var_id": "1eb45748",
+        "var_name": "index",
+        "var_type": "int",
+        "value": 0
+      }
+    },
+    {
+      "node_id": "53e84edc",
+      "node_type": "SetVar",
+      "title": "Set index",
+      "x": 41.17202268431002,
+      "y": -486.61625708884696,
+      "data": {
+        "_ports": [
+          [
+            "flow",
+            "flow",
+            "input"
+          ],
+          [
+            "flow",
+            "flow",
+            "output"
+          ],
+          [
+            "value",
+            "number",
+            "input"
+          ]
+        ],
+        "var_id": "1eb45748",
+        "var_name": "index",
+        "var_type": "int",
+        "value": 0
+      }
+    },
+    {
+      "node_id": "9b829373",
+      "node_type": "Add",
+      "title": "A + B",
+      "x": -103.47826086956522,
+      "y": -303.4782608695652,
+      "data": {}
+    },
+    {
+      "node_id": "1bf64267",
+      "node_type": "GetVar",
+      "title": "Get index",
+      "x": -411.304347826087,
+      "y": -285.21739130434787,
+      "data": {
+        "_ports": [
+          [
+            "value",
+            "number",
+            "output"
+          ]
+        ],
+        "var_id": "1eb45748",
+        "var_name": "index",
+        "var_type": "int",
+        "value": 0
+      }
+    },
+    {
+      "node_id": "0594e63a",
+      "node_type": "Int",
+      "title": "1",
+      "x": -357.3913043478261,
+      "y": -186.08695652173915,
+      "data": {
+        "value": 1
+      }
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "e1",
+      "source_node_id": "777dd7d3",
+      "source_port_name": "value",
+      "target_node_id": "a68907f8",
+      "target_port_name": "b"
+    },
+    {
+      "edge_id": "e2",
+      "source_node_id": "f36c581e",
+      "source_port_name": "value",
+      "target_node_id": "a68907f8",
+      "target_port_name": "a"
+    },
+    {
+      "edge_id": "e3",
+      "source_node_id": "db0a67da",
+      "source_port_name": "pose",
+      "target_node_id": "27a32fd1",
+      "target_port_name": "target"
+    },
+    {
+      "edge_id": "e4",
+      "source_node_id": "0f04f182",
+      "source_port_name": "flow",
+      "target_node_id": "27a32fd1",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e5",
+      "source_node_id": "b0f38998",
+      "source_port_name": "pose",
+      "target_node_id": "0f04f182",
+      "target_port_name": "target"
+    },
+    {
+      "edge_id": "e6",
+      "source_node_id": "0af7b6e5",
+      "source_port_name": "flow",
+      "target_node_id": "de218273",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e7",
+      "source_node_id": "de218273",
+      "source_port_name": "body",
+      "target_node_id": "0f04f182",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e8",
+      "source_node_id": "a68907f8",
+      "source_port_name": "result",
+      "target_node_id": "de218273",
+      "target_port_name": "condition"
+    },
+    {
+      "edge_id": "e9",
+      "source_node_id": "27a32fd1",
+      "source_port_name": "flow",
+      "target_node_id": "53e84edc",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e10",
+      "source_node_id": "53e84edc",
+      "source_port_name": "flow",
+      "target_node_id": "f8d0df6c",
+      "target_port_name": "flow"
+    },
+    {
+      "edge_id": "e11",
+      "source_node_id": "9b829373",
+      "source_port_name": "result",
+      "target_node_id": "53e84edc",
+      "target_port_name": "value"
+    },
+    {
+      "edge_id": "e12",
+      "source_node_id": "1bf64267",
+      "source_port_name": "value",
+      "target_node_id": "9b829373",
+      "target_port_name": "a"
+    },
+    {
+      "edge_id": "e13",
+      "source_node_id": "0594e63a",
+      "source_port_name": "value",
+      "target_node_id": "9b829373",
+      "target_port_name": "b"
+    }
+  ],
+  "positions": [
+    {
+      "pos_id": "a69460ec",
+      "name": "zero",
+      "jp": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cp": {
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "a": 0,
+        "b": 0,
+        "c": 0
+      },
+      "ep": [],
+      "optional": {
+        "speed": 200,
+        "acc": 500,
+        "blend": 0,
+        "relativeBlend": 0
+      }
+    }
+  ],
+  "variables": [
+    {
+      "var_id": "1eb45748",
+      "name": "index",
+      "var_type": "int",
+      "value": "0"
+    }
+  ]
+}

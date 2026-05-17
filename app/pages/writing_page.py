@@ -49,6 +49,7 @@ from core.platform_utils import open_path as _open_path
 from core.types import ImageDrawingConfig, ImageProcessConfig, RobotPoint
 from pipeline.mapping.workplane import WorkPlane
 from pipeline.vision import image_presets
+from pipeline.vision.image_preprocessor import contour_strategy_log_messages
 from app.widgets.image_params_widget import ImageParamsWidget
 from app.widgets.image_preview_dialog import ImagePreviewDialog
 from services.image_drawing_service import ImageDrawingService
@@ -422,10 +423,14 @@ class WritingPage(BasePage):
             conn and has_traj and self._at_start_ready and not busy
         )
         self._btn_stop.setEnabled(busy_exec or busy_gen)
-        self._btn_preview.setEnabled(
-            bool(self._last_preview_path or self._last_image_contour_preview)
-            and not busy_img
-        )
+        if self._is_image_mode():
+            can_preview = bool(
+                (self._last_preview_path and os.path.isfile(self._last_preview_path))
+                or (self._last_traj_path and os.path.isfile(self._last_traj_path))
+            )
+        else:
+            can_preview = bool(self._last_preview_path)
+        self._btn_preview.setEnabled(can_preview and not busy)
 
     def _ensure_writing_service(self):
         if self._writing_service is not None:
@@ -543,13 +548,14 @@ class WritingPage(BasePage):
 
     def _on_preview(self):
         if self._is_image_mode():
-            path = self._last_image_contour_preview
-            if path and os.path.isfile(path):
-                _open_path(path)
+            if self._last_preview_path and os.path.isfile(self._last_preview_path):
+                _open_path(self._last_preview_path)
+            elif self._last_traj_path and os.path.isfile(self._last_traj_path):
+                _open_path(os.path.dirname(self._last_traj_path))
             elif self._last_image_preview_dir and os.path.isdir(self._last_image_preview_dir):
                 _open_path(self._last_image_preview_dir)
             else:
-                self._append_log(tr("draw_img_need_path"))
+                self._append_log(tr("draw_need_traj"))
             return
         if self._last_preview_path and os.path.isfile(self._last_preview_path):
             _open_path(self._last_preview_path)
@@ -697,13 +703,15 @@ class WritingPage(BasePage):
         path_row.addWidget(pick_btn)
         layout.addLayout(path_row)
 
-        img_scroll = QScrollArea()
-        img_scroll.setWidgetResizable(True)
-        img_scroll.setMaximumHeight(420)
-        self._img_params = ImageParamsWidget(show_mapping=True)
+        params_hint = QLabel(tr("draw_image_params_in_preview"))
+        params_hint.setWordWrap(True)
+        params_hint.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(params_hint)
+
+        # 参数仅在「预览处理结果」对话框中编辑；此处隐藏容器用于保存/同步配置
+        self._img_params = ImageParamsWidget(parent=group, show_mapping=True)
+        self._img_params.setVisible(False)
         self._img_params.preset_selected.connect(self._on_image_preset_log)
-        img_scroll.setWidget(self._img_params)
-        layout.addWidget(img_scroll)
         return group
 
     def _on_draw_mode_changed(self):
@@ -772,10 +780,15 @@ class WritingPage(BasePage):
         p = _IMAGE_SETTINGS_PREFIX
         self._settings.setValue(p + "image_path", self._image_path_edit.text())
         self._settings.setValue(p + "preset", self._img_params.preset_id)
+        cfg = self._img_params.config()
         self._settings.setValue(
             p + "config_json",
-            json.dumps(dataclasses.asdict(self._img_params.config())),
+            json.dumps(dataclasses.asdict(cfg)),
         )
+        self._settings.setValue(p + "contour_strategy", cfg.contour_strategy)
+        self._settings.setValue(p + "fill_before_contour", cfg.fill_before_contour)
+        self._settings.setValue(p + "keep_external_only", cfg.keep_external_only)
+        self._settings.setValue(p + "fill_holes", cfg.fill_holes)
         self._settings.setValue(p + "margin_mm", self._img_params.margin_mm())
 
     def _restore_image_settings(self) -> None:
@@ -810,6 +823,18 @@ class WritingPage(BasePage):
                 ),
                 max_total_points=_qsettings_int(self._settings.value(p + "max_total_points"), 20000),
                 fit_mode=str(self._settings.value(p + "fit_mode", "contain")),
+                contour_strategy=str(
+                    self._settings.value(p + "contour_strategy", "external"),
+                ),
+                fill_before_contour=str(
+                    self._settings.value(p + "fill_before_contour", "true"),
+                ).lower() in ("1", "true", "yes"),
+                keep_external_only=str(
+                    self._settings.value(p + "keep_external_only", "true"),
+                ).lower() in ("1", "true", "yes"),
+                fill_holes=str(
+                    self._settings.value(p + "fill_holes", "true"),
+                ).lower() in ("1", "true", "yes"),
             )
         self._img_params.set_config(cfg, preset_id=preset, block_signals=True)
         self._img_params.set_margin_mm(margin)
@@ -838,6 +863,8 @@ class WritingPage(BasePage):
             )
             self._append_log(tr("draw_img_hint_fragmented"))
             self._append_log(tr("draw_img_hint_invert"))
+            for msg in contour_strategy_log_messages(self._img_params.config()):
+                self._append_log(msg)
             hint = image_presets.preset_beta_hint(self._img_params.preset_id)
             if hint:
                 self._append_log(hint)
@@ -880,6 +907,9 @@ class WritingPage(BasePage):
         preview = files.get("preview_execution.png", "")
         self._last_traj_path = traj
         self._last_preview_path = preview
+        self._last_image_preview_dir = str(payload.get("output_dir", "") or "")
+        contour_png = files.get("preview_image_contours.png", "")
+        self._last_image_contour_preview = contour_png if contour_png else ""
         self._at_start_ready = False
         self._append_log(tr("draw_img_gen_done"))
         self._append_log(tr("draw_prepare_reset"))

@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QGraphicsItem, QStyle, QGraphicsSimpleTextItem, QInputDialog
 from PySide6.QtGui import QPen, QBrush, QColor, QFont, QPainter, QPainterPath
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtCore import Qt, QRectF, QPointF
 
 from app.widgets.node_editor.models import NodeSpec, NODE_SPECS
 from app.widgets.node_editor.port_item import PortItem, PORT_SIZE
@@ -10,6 +10,7 @@ PORT_SPACING = 20
 H_PADDING = 8
 V_PADDING_BOTTOM = 6
 NODE_WIDTH = 160
+_DRAG_INSERT_THRESHOLD = 4.0
 BODY_COLOR = QColor(45, 45, 48)
 BORDER_COLOR = QColor(80, 80, 85)
 BORDER_SELECTED = QColor(100, 140, 220)
@@ -28,6 +29,7 @@ class NodeItem(QGraphicsItem):
         self._ports: list[PortItem] = []
         self._data: dict = {}
         self._highlighted: bool = False
+        self._left_press_scene_pos: QPointF | None = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
@@ -192,6 +194,23 @@ class NodeItem(QGraphicsItem):
             for port in self._ports:
                 port.update_edges()
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._left_press_scene_pos = event.scenePos()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if event.button() != Qt.LeftButton or self._left_press_scene_pos is None:
+            return
+        moved = (event.scenePos() - self._left_press_scene_pos).manhattanLength()
+        self._left_press_scene_pos = None
+        if moved < _DRAG_INSERT_THRESHOLD:
+            return
+        scene = self.scene()
+        if scene is not None and hasattr(scene, "try_insert_node_on_flow_edge"):
+            scene.try_insert_node_on_flow_edge(self, event.scenePos())
 
     def mouseDoubleClickEvent(self, event):
         if event.pos().y() <= TITLE_HEIGHT:

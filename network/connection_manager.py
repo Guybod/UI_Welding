@@ -130,6 +130,7 @@ class ConnectionManager(QObject):
         if hasattr(self, '_connect_timeout'):
             self._connect_timeout.stop()
         self._reconnect_timer.stop()
+        self._subscribe_callbacks.clear()
         self._drain_pending(NetworkDisconnectedError("连接断开"))
         if self._adapter:
             # 断开业务信号（不参与 shutdown 流程）

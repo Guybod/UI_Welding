@@ -160,7 +160,6 @@ class GraphView(QGraphicsView):
 
     def dropEvent(self, event):
         from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION as MP
-        from app.widgets.node_editor.models import NODE_SPECS
         scene_pos = self.mapToScene(event.position().toPoint())
         s = self.scene()
         md = event.mimeData()
@@ -202,48 +201,11 @@ class GraphView(QGraphicsView):
             event.acceptProposedAction()
             return
 
-        # regular node drop — try insert onto flow edge
+        # regular node drop — add then try insert onto flow edge
         if md.hasFormat(MIME_NODE_TYPE):
             node_type = md.data(MIME_NODE_TYPE).data().decode()
-            spec = NODE_SPECS.get(node_type)
-            has_flow_io = (spec and
-                any(p.port_type == "flow" and p.direction == "input" for p in spec.ports) and
-                any(p.port_type == "flow" and p.direction == "output" for p in spec.ports))
-            # check if dropped on a flow edge
-            edge_at = self._edge_at(scene_pos)
-            if has_flow_io and edge_at and hasattr(s, "add_node"):
-                src_port = edge_at.source()
-                tgt_port = edge_at.target()
-                if src_port and tgt_port:
-                    s._remove_edge(edge_at)
-                    node = s.add_node(node_type, scene_pos.x(), scene_pos.y())
-                    s._add_edge(src_port, node.input_ports()[0])
-                    s._add_edge(node.output_ports()[0], tgt_port)
-                    event.acceptProposedAction()
-                    return
-            # normal add
             if hasattr(s, "add_node"):
-                s.add_node(node_type, scene_pos.x(), scene_pos.y())
+                node = s.add_node(node_type, scene_pos.x(), scene_pos.y())
+                if hasattr(s, "try_insert_node_on_flow_edge"):
+                    s.try_insert_node_on_flow_edge(node, scene_pos)
             event.acceptProposedAction()
-
-    def _edge_at(self, scene_pos):
-        """在 scene_pos 15px 范围内查找最近的 EdgeItem"""
-        from app.widgets.node_editor.edge_item import EdgeItem
-        s = self.scene()
-        best = None
-        best_dist = 15.0
-        for item in s.items():
-            if isinstance(item, EdgeItem):
-                # sample points along the path to find closest distance
-                path = item.path()
-                length = path.length()
-                step = max(length / 20, 1.0)
-                d = 0.0
-                while d <= length:
-                    pt = path.pointAtPercent(d / length if length > 0 else 0)
-                    dist = (pt - scene_pos).manhattanLength()
-                    if dist < best_dist:
-                        best_dist = dist
-                        best = item
-                    d += step
-        return best
