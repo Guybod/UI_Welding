@@ -1,4 +1,4 @@
-"""Contour 多行排版 — 按行渲染、自上而下、行内从左到右。"""
+"""文字多行排版 — 光栅化后按模式调用 text_stroke_extract（轮廓/骨架分离）。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,10 @@ import uuid
 from typing import Any
 
 from core.types import PixelPoint, Stroke
+from pipeline.text_stroke_extract import (
+    normalize_weld_text_mode,
+    extract_glyph_strokes,
+)
 
 
 def split_text_lines(text: str) -> list[str]:
@@ -30,7 +34,6 @@ def estimate_layout_size_mm(
     if n == 0:
         return 0.0, 0.0
     w = max(line_widths_mm) if line_widths_mm else 0.0
-    step = line_step_mm(char_height_mm, line_spacing_mm)
     h = n * max(0.0, char_height_mm) + max(0, n - 1) * max(0.0, line_spacing_mm)
     return w, h
 
@@ -44,9 +47,57 @@ def layout_contour_multiline(
     char_height_mm: float,
     line_spacing_mm: float,
     px_per_mm: float,
-    contour_extractor_cls,
+    contour_extractor_cls=None,
 ) -> tuple[list[Stroke], dict[str, Any]]:
-    """多行 contour：每行独立 linebox 渲染，Y = line_index × line_step_px。"""
+    """多行轮廓字 — 仅 ContourExtractor（contour_extractor_cls 已弃用，保留参数兼容）。"""
+    del contour_extractor_cls
+    return _layout_multiline(
+        lines,
+        mode="contour",
+        rasterizer=rasterizer,
+        path_config=path_config,
+        char_spacing_mm=char_spacing_mm,
+        char_height_mm=char_height_mm,
+        line_spacing_mm=line_spacing_mm,
+        px_per_mm=px_per_mm,
+    )
+
+
+def layout_skeleton_multiline(
+    lines: list[str],
+    *,
+    rasterizer,
+    path_config,
+    char_spacing_mm: float,
+    char_height_mm: float,
+    line_spacing_mm: float,
+    px_per_mm: float,
+) -> tuple[list[Stroke], dict[str, Any]]:
+    """多行骨架字 — 仅 SkeletonExtractor。"""
+    return _layout_multiline(
+        lines,
+        mode="skeleton",
+        rasterizer=rasterizer,
+        path_config=path_config,
+        char_spacing_mm=char_spacing_mm,
+        char_height_mm=char_height_mm,
+        line_spacing_mm=line_spacing_mm,
+        px_per_mm=px_per_mm,
+    )
+
+
+def _layout_multiline(
+    lines: list[str],
+    *,
+    mode: str,
+    rasterizer,
+    path_config,
+    char_spacing_mm: float,
+    char_height_mm: float,
+    line_spacing_mm: float,
+    px_per_mm: float,
+) -> tuple[list[Stroke], dict[str, Any]]:
+    mode_n = normalize_weld_text_mode(mode)
     spacing_px = char_spacing_mm * px_per_mm
     step_px = line_step_mm(char_height_mm, line_spacing_mm) * px_per_mm
 
@@ -55,6 +106,11 @@ def layout_contour_multiline(
     char_baseline_info: dict[str, dict] = {}
     line_widths_px: list[float] = []
     line_stroke_counts: list[int] = []
+    cleanup_agg = {
+        "skeleton_strokes_deduped": 0,
+        "skeleton_strokes_spur_dropped": 0,
+        "skeleton_phantom_loops_opened": 0,
+    }
 
     linebox_h = 0
     baseline_px = 0
@@ -77,8 +133,9 @@ def layout_contour_multiline(
             x_cursor_px = 0.0
             for ch, glyph in zip(line, glyphs):
                 binary = glyph.image
-                ext = contour_extractor_cls()
-                strokes = ext.extract(binary, config=path_config)
+                strokes, gmeta = extract_glyph_strokes(binary, mode_n, path_config)
+                for k in cleanup_agg:
+                    cleanup_agg[k] += int(gmeta.get(k, 0) or 0)
                 if x_cursor_px > 0 or y_off > 0:
                     for s in strokes:
                         s.points_px = [
@@ -93,11 +150,16 @@ def layout_contour_multiline(
 
                 char_w_px = float(binary.shape[1]) if binary.size else float(glyph.width_px)
                 for s in strokes:
-                    s.metadata = {
+                    meta = {
                         **s.metadata,
                         "layout_line_index": line_idx,
                         "layout_line_text": line,
+                        "extract_algorithm": mode_n,
                     }
+                    if mode_n == "skeleton":
+                        meta["weld_char_index"] = line_idx * 1000 + lines[line_idx].index(ch)
+                        meta["weld_char"] = ch
+                    s.metadata = meta
                     if not s.id:
                         s.id = str(uuid.uuid4())
                 strokes_raw.extend(strokes)
@@ -141,6 +203,7 @@ def layout_contour_multiline(
     )
 
     stats: dict[str, Any] = {
+        "extract_algorithm": mode_n,
         "multiline_enabled": len(lines) > 1,
         "line_count": len(lines),
         "lines": lines,
@@ -158,6 +221,7 @@ def layout_contour_multiline(
         "descent_px": descent,
         "per_char": ch_counts,
         "char_baseline": char_baseline_info,
+        **cleanup_agg,
     }
     return strokes_raw, stats
 
@@ -170,11 +234,12 @@ def layout_legacy_single_string(
     char_spacing_mm: float,
     px_per_mm: float,
     mode: str,
-    contour_extractor_cls,
-    skeleton_extractor_mod,
+    contour_extractor_cls=None,
+    skeleton_extractor_mod=None,
 ) -> tuple[list[Stroke], dict[str, Any]]:
-    """旧版整串排版（skeleton 或多行 skeleton Beta 仍走此路径）。"""
-    from pipeline.vision import SkeletonExtractor
+    """单行/整串排版（无换行分行）；轮廓与骨架经 extract_glyph_strokes 分流。"""
+    del contour_extractor_cls, skeleton_extractor_mod
+    mode_n = normalize_weld_text_mode(mode)
 
     glyphs = rasterizer.render_text_linebox(text)
     linebox_h = glyphs[0].linebox_height if glyphs else 0
@@ -185,21 +250,28 @@ def layout_legacy_single_string(
     strokes_raw: list[Stroke] = []
     ch_counts: dict[str, int] = {}
     x_cursor_px = 0.0
-    total_glyph_w_px = 0.0
+    cleanup_agg = {
+        "skeleton_strokes_deduped": 0,
+        "skeleton_strokes_spur_dropped": 0,
+        "skeleton_phantom_loops_opened": 0,
+    }
 
-    for ch, glyph in zip(text, glyphs):
+    for char_idx, (ch, glyph) in enumerate(zip(text, glyphs)):
         binary = glyph.image
-        if mode == "contour":
-            strokes = contour_extractor_cls().extract(binary, config=path_config)
-        else:
-            strokes, _ = SkeletonExtractor.extract(
-                binary, config=path_config, backend="auto")
+        strokes, gmeta = extract_glyph_strokes(binary, mode_n, path_config)
+        for k in cleanup_agg:
+            cleanup_agg[k] += int(gmeta.get(k, 0) or 0)
         if x_cursor_px > 0:
             for s in strokes:
                 s.points_px = [PixelPoint(x=p.x + x_cursor_px, y=p.y) for p in s.points_px]
+        for s in strokes:
+            meta = {**s.metadata, "extract_algorithm": mode_n}
+            if mode_n == "skeleton":
+                meta["weld_char_index"] = char_idx
+                meta["weld_char"] = ch
+            s.metadata = meta
         char_w_px = binary.shape[1] if binary.size else max(glyph.width_px, 1)
         spacing_px = char_spacing_mm * px_per_mm
-        total_glyph_w_px += char_w_px
         x_cursor_px += char_w_px + spacing_px
         strokes_raw.extend(strokes)
         ch_counts[ch] = len(strokes)
@@ -225,6 +297,7 @@ def layout_legacy_single_string(
         req_h = (max(all_y) - min(all_y)) / px_per_mm
 
     return strokes_raw, {
+        "extract_algorithm": mode_n,
         "multiline_enabled": len(lines) > 1,
         "line_count": len(lines),
         "lines": lines,
@@ -242,5 +315,6 @@ def layout_legacy_single_string(
         "line_widths_mm": line_widths_mm,
         "required_width_mm": round(req_w, 3),
         "required_height_mm": round(req_h, 3),
+        **cleanup_agg,
         "legacy_string_layout": True,
     }

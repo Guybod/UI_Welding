@@ -9,7 +9,18 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QSlider,
 )
-from PySide6.QtCore import QSettings, Signal, Qt, QPropertyAnimation, QEasingCurve, QRect, QSize
+from PySide6.QtCore import (
+    Property,
+    QSettings,
+    Signal,
+    Qt,
+    QPropertyAnimation,
+    QEasingCurve,
+    QSize,
+)
+
+from view3d.model_resolver import resolve_glb_name
+from view3d.preview_frame import RobotPreviewFrame
 
 
 COLLAPSED_WIDTH = 48
@@ -48,10 +59,13 @@ class RobotControlDrawer(QWidget):
         self._collapsed_width = COLLAPSED_WIDTH
         self._expanded_width = EXPANDED_WIDTH
         self._hide_content_connected = False
+        self._drawer_width = self._collapsed_width
 
-        self.setGeometry(0, 0, self._collapsed_width, 600)
-        self.setMinimumWidth(self._collapsed_width)
-        self.setMaximumWidth(self._expanded_width)
+        self.setFixedWidth(self._collapsed_width)
+        self.setSizePolicy(
+            self.sizePolicy().horizontalPolicy(),
+            self.sizePolicy().verticalPolicy(),
+        )
 
         self.setStyleSheet("""
             #robotControlDrawer {
@@ -59,7 +73,7 @@ class RobotControlDrawer(QWidget):
             }
         """)
 
-        self._anim = QPropertyAnimation(self, b"geometry", self)
+        self._anim = QPropertyAnimation(self, b"drawer_width", self)
         self._anim.setDuration(200)
         self._anim.setEasingCurve(QEasingCurve.OutCubic)
 
@@ -74,6 +88,19 @@ class RobotControlDrawer(QWidget):
         root.addWidget(self._content)
 
         self._content.setVisible(False)
+
+    def get_drawer_width(self) -> int:
+        return self._drawer_width
+
+    def set_drawer_width(self, width: int) -> None:
+        width = int(width)
+        if width == self._drawer_width:
+            return
+        self._drawer_width = width
+        self.setFixedWidth(width)
+        self.updateGeometry()
+
+    drawer_width = Property(int, get_drawer_width, set_drawer_width)
 
     # ════════════════ UI 构建 ════════════════
 
@@ -245,34 +272,10 @@ class RobotControlDrawer(QWidget):
         coord_info_row.addWidget(self._tool_coord_label)
         layout.addLayout(coord_info_row)
 
-        # 3D 模型占位窗口
-        self._model_view = QFrame()
-        self._model_view.setObjectName("modelViewPlaceholder")
-        self._model_view.setFixedHeight(138)
-        self._model_view.setStyleSheet("""
-            #modelViewPlaceholder {
-                background-color: #11182d;
-                border: 1px solid #2c3a64;
-                border-radius: 4px;
-            }
-        """)
-
-        model_layout = QVBoxLayout(self._model_view)
-        model_layout.setContentsMargins(0, 0, 0, 0)
-        model_layout.setSpacing(0)
-
-        self._model_placeholder_label = QLabel("3D 模型显示区域")
-        self._model_placeholder_label.setAlignment(Qt.AlignCenter)
-        self._model_placeholder_label.setStyleSheet("""
-            QLabel {
-                color: #5f6f99;
-                font-size: 13px;
-                font-weight: bold;
-            }
-        """)
-        model_layout.addWidget(self._model_placeholder_label)
-
-        layout.addWidget(self._model_view)
+        self._model_view = RobotPreviewFrame(min_height=138)
+        self._gl_view = self._model_view.preview
+        self._model_view.load_default_preview()
+        layout.addWidget(self._model_view, stretch=1)
 
         # 点动模式切换
         self._mode_bar = QFrame()
@@ -662,14 +665,9 @@ class RobotControlDrawer(QWidget):
         self.raise_()
 
     def reposition(self):
-        """
-        兼容旧调用。
-        不主动把自己移动到 0,0，避免破坏 MainWindow 按 page_stack 计算出来的位置。
-        """
-        g = self.geometry()
-        width = self._expanded_width if self._expanded else self._collapsed_width
-        self.setGeometry(g.x(), g.y(), width, max(1, g.height()))
-        self.raise_()
+        """兼容旧调用：仅校正宽度。"""
+        target = self._expanded_width if self._expanded else self._collapsed_width
+        self.set_drawer_width(target)
 
     # ════════════════ 展开 / 收起动画 ════════════════
 
@@ -686,23 +684,12 @@ class RobotControlDrawer(QWidget):
         self._expanded = True
         self._btn_toggle.setText("收起")
         self._content.setVisible(True)
-
-        g = self.geometry()
-        start_rect = g
-        end_rect = QRect(
-            g.x(),
-            g.y(),
-            self._expanded_width,
-            max(1, g.height()),
-        )
-
-        self.show()
-        self.raise_()
+        self._model_view.refresh()
 
         self._disconnect_anim_finished()
         self._anim.stop()
-        self._anim.setStartValue(start_rect)
-        self._anim.setEndValue(end_rect)
+        self._anim.setStartValue(self._drawer_width)
+        self._anim.setEndValue(self._expanded_width)
         self._anim.start()
 
     def collapse(self):
@@ -712,22 +699,13 @@ class RobotControlDrawer(QWidget):
         self._expanded = False
         self._btn_toggle.setText("运动")
 
-        g = self.geometry()
-        start_rect = g
-        end_rect = QRect(
-            g.x(),
-            g.y(),
-            self._collapsed_width,
-            max(1, g.height()),
-        )
-
         self._disconnect_anim_finished()
         self._anim.finished.connect(self._hide_content_after_collapse)
         self._hide_content_connected = True
 
         self._anim.stop()
-        self._anim.setStartValue(start_rect)
-        self._anim.setEndValue(end_rect)
+        self._anim.setStartValue(self._drawer_width)
+        self._anim.setEndValue(self._collapsed_width)
         self._anim.start()
 
     def _hide_content_after_collapse(self):
@@ -749,8 +727,18 @@ class RobotControlDrawer(QWidget):
 
     # ════════════════ 对外显示更新接口 ════════════════
 
-    def set_robot_model(self, text: str):
-        self._model_label.setText(f"型号: {text}")
+    def set_robot_model(self, text: str, robot_type: str = ""):
+        glb = resolve_glb_name(robot_type) if robot_type else ""
+        if glb:
+            self._model_label.setText(f"型号: {text} · {glb}")
+        else:
+            self._model_label.setText(f"型号: {text}")
+        if robot_type:
+            self.load_robot_model(robot_type)
+
+    def load_robot_model(self, robot_type: str | None) -> None:
+        """根据 RobotStatus.type 加载 models/ 下对应 GLB。"""
+        self._model_view.load_robot_type(robot_type)
 
     def set_world_coordinate(self, text: str):
         self._world_coord_label.setText(f"世界坐标系：{text}")
@@ -758,13 +746,21 @@ class RobotControlDrawer(QWidget):
     def set_tool_coordinate(self, text: str):
         self._tool_coord_label.setText(f"工具坐标系：{text}")
 
-    def update_joint_display(self, joint_deg: list):
+    def update_joint_display(
+        self,
+        joint_deg: list,
+        joint_rad: list | None = None,
+        *,
+        drive_model: bool = True,
+    ):
         for i, lbl in enumerate(self._joint_value_labels):
             if i < len(joint_deg):
                 try:
                     lbl.setText(f"{float(joint_deg[i]):.1f} deg")
                 except (TypeError, ValueError):
                     lbl.setText("-- deg")
+        if drive_model and joint_rad:
+            self._model_view.update_joint_angles(joint_rad)
 
     def update_tcp_display(self, x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg):
         try:

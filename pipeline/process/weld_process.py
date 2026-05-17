@@ -36,6 +36,8 @@ class WeldingProcessPlanner:
         process_cfg: WeldingProcessConfig,
         workplane: object | None = None,
         workspace_cfg: WorkspaceConfig | None = None,
+        *,
+        mode: str = "contour",
     ) -> tuple[list[ProcessSegment], dict]:
         """主入口：Stroke 列表 → ProcessSegment 序列。
 
@@ -77,35 +79,48 @@ class WeldingProcessPlanner:
         weld_pts_after = 0
         resample_warnings = 0
 
+        prepared: list[tuple[Stroke, list[RobotPoint]]] = []
         for s in strokes:
             robot_pts = _get_robot_points(s)
             pts_before = len(robot_pts)
-
-            # 对 weld 主路径做等距重采样
             robot_pts = _resample_robot_points(
                 robot_pts, process_cfg.weld_point_spacing_mm, closed=s.closed)
             pts_after = len(robot_pts)
             weld_pts_before += pts_before
             weld_pts_after += pts_after
-
-            # 检查重采样后步长
             step_s = _compute_step_stats(robot_pts)
             if step_s["max"] > 0.75:
                 resample_warnings += 1
                 warnings_list.append(
                     f"stroke {s.id[:6]}: max weld step {step_s['max']}mm "
                     f"> 0.75mm (mean={step_s['mean']}mm, p95={step_s['p95']}mm)")
+            prepared.append((s, robot_pts))
 
-            segs = WeldingProcessPlanner._plan_stroke(
-                s, robot_pts, process_cfg,
-                workplane, z_work, z_safe, weld_params, warnings_list,
+        continuous_merged = 0
+        use_continuous = (
+            mode == "skeleton"
+            and process_cfg.skeleton_continuous_junctions
+        )
+        sk_extra: dict = {}
+        if use_continuous:
+            all_segments, continuous_merged, sk_extra = (
+                WeldingProcessPlanner._plan_skeleton_continuous(
+                    prepared, process_cfg, z_work, z_safe, weld_params, warnings_list,
+                )
             )
-            all_segments.extend(segs)
-            for seg in segs:
-                stats_counts[seg.type] = stats_counts.get(seg.type, 0) + 1
-                total_points += len(seg.points)
-                if seg.metadata.get("weld_params"):
-                    weld_param_segments += 1
+        else:
+            for s, robot_pts in prepared:
+                segs = WeldingProcessPlanner._plan_stroke(
+                    s, robot_pts, process_cfg,
+                    None, z_work, z_safe, weld_params, warnings_list,
+                )
+                all_segments.extend(segs)
+
+        for seg in all_segments:
+            stats_counts[seg.type] = stats_counts.get(seg.type, 0) + 1
+            total_points += len(seg.points)
+            if seg.metadata.get("weld_params"):
+                weld_param_segments += 1
 
         stats = {
             "phase": "6.2",
@@ -133,6 +148,21 @@ class WeldingProcessPlanner:
             "weld_points_before_resample": weld_pts_before,
             "weld_points_after_resample": weld_pts_after,
             "resample_warning_count": resample_warnings,
+            "skeleton_continuous_junctions": use_continuous,
+            "junction_merge_mm": (
+                process_cfg.skeleton_junction_merge_mm if use_continuous else 0.0
+            ),
+            "continuous_junctions_enabled": use_continuous,
+            "continuous_junctions_merged_count": continuous_merged,
+            "stroke_reversed_count": sk_extra.get("stroke_reversed_count", 0),
+            "intra_char_travel_count": sk_extra.get("intra_char_travel_count", 0),
+            "intra_char_travel_length_mm": sk_extra.get(
+                "intra_char_travel_length_mm", 0.0,
+            ),
+            "inter_char_travel_count": sk_extra.get("inter_char_travel_count", 0),
+            "inter_char_travel_length_mm": sk_extra.get(
+                "inter_char_travel_length_mm", 0.0,
+            ),
             "warnings": warnings_list,
         }
 
@@ -159,6 +189,205 @@ class WeldingProcessPlanner:
     # ---- 内部 ----
 
     @staticmethod
+    def _group_strokes_by_char(
+        prepared: list[tuple[Stroke, list[RobotPoint]]],
+    ) -> list[list[tuple[Stroke, list[RobotPoint]]]]:
+        """按 weld_char_index 分组；无 metadata 时每 stroke 单独成组。"""
+        if not prepared:
+            return []
+        groups: list[list[tuple[Stroke, list[RobotPoint]]]] = []
+        current_key: int | str | None = None
+        bucket: list[tuple[Stroke, list[RobotPoint]]] = []
+        for stroke, pts in prepared:
+            key = stroke.metadata.get("weld_char_index", stroke.id)
+            if current_key is None:
+                current_key = key
+            if key != current_key and bucket:
+                groups.append(bucket)
+                bucket = []
+            current_key = key
+            bucket.append((stroke, pts))
+        if bucket:
+            groups.append(bucket)
+        return groups
+
+    @staticmethod
+    def _plan_skeleton_continuous(
+        prepared: list[tuple[Stroke, list[RobotPoint]]],
+        cfg: WeldingProcessConfig,
+        z_work: float,
+        z_safe: float,
+        weld_params: dict,
+        warnings_list: list[str],
+    ) -> tuple[list[ProcessSegment], int, dict]:
+        """W1-b 骨架连续焊：按调度后顺序走字，近端连续则省 lead。"""
+        merge_mm = max(0.0, float(cfg.skeleton_junction_merge_mm))
+        all_segments: list[ProcessSegment] = []
+        merged_pairs = 0
+        char_groups = WeldingProcessPlanner._group_strokes_by_char(prepared)
+        intra_travel_len = 0.0
+        inter_travel_len = 0.0
+        intra_travel_count = 0
+        inter_travel_count = 0
+        stroke_reversed_count = sum(
+            1 for s, _ in prepared
+            if s.metadata.get("scheduler_reversed")
+            or s.metadata.get("scheduler_rotated")
+        )
+
+        for gi, group in enumerate(char_groups):
+            n = len(group)
+            for i, (stroke, pts) in enumerate(group):
+                prev_stroke_pts = group[i - 1] if i > 0 else None
+                next_stroke_pts = group[i + 1] if i < n - 1 else None
+                continuous_prev = False
+                continuous_next = False
+                if prev_stroke_pts:
+                    ps, pp = prev_stroke_pts
+                    continuous_prev = (
+                        _skeleton_stroke_gap_mm(ps, pp, stroke, pts) <= merge_mm
+                    )
+                if next_stroke_pts:
+                    ns, np = next_stroke_pts
+                    continuous_next = (
+                        _skeleton_stroke_gap_mm(stroke, pts, ns, np) <= merge_mm
+                    )
+
+                if stroke.closed:
+                    skip_entry_travel = False
+                    if gi > 0 and i == 0:
+                        ps, pp = char_groups[gi - 1][-1]
+                        prev_end = pp[0] if ps.closed else pp[-1]
+                        gap = _endpoint_gap_mm([prev_end], pts[:1])
+                        if gap > 0.05:
+                            inter_travel_len += gap
+                            inter_travel_count += 1
+                            all_segments.append(_make_segment(
+                                "travel", stroke.id,
+                                _with_z([prev_end, pts[0]], z_safe),
+                                cfg.travel_speed_mm_s, False,
+                            ))
+                        skip_entry_travel = True
+                    elif continuous_prev and prev_stroke_pts:
+                        ps, pp = prev_stroke_pts
+                        prev_end = pp[0] if ps.closed else pp[-1]
+                        gap = _endpoint_gap_mm([prev_end], pts[:1])
+                        if gap > 0.05:
+                            intra_travel_len += gap
+                            intra_travel_count += 1
+                            all_segments.append(_make_segment(
+                                "travel", stroke.id,
+                                _with_z([prev_end, pts[0]], z_safe),
+                                cfg.travel_speed_mm_s, False,
+                            ))
+                        skip_entry_travel = True
+                    segs = WeldingProcessPlanner._plan_closed_skeleton(
+                        stroke, pts, cfg, z_work, z_safe, weld_params,
+                        warnings_list,
+                        skip_entry_travel=skip_entry_travel,
+                        skip_lead_in=continuous_prev,
+                        skip_lead_out_retreat=continuous_next and i < n - 1,
+                    )
+                    all_segments.extend(segs)
+                    if continuous_next and i < n - 1:
+                        merged_pairs += 1
+                    continue
+
+                if len(pts) < 2:
+                    warnings_list.append(
+                        f"stroke {stroke.id[:6]}: <2 robot_points, skipped")
+                    continue
+                is_first = i == 0
+                is_last = i == n - 1
+
+                travel_from: RobotPoint | None = None
+                if gi == 0 and is_first:
+                    travel_from = pts[0]
+                elif is_first and gi > 0:
+                    prev_stroke, prev_pts = char_groups[gi - 1][-1]
+                    travel_from = (
+                        prev_pts[0] if prev_stroke.closed else prev_pts[-1]
+                    )
+                elif not continuous_prev:
+                    travel_from = group[i - 1][1][-1]
+
+                if travel_from is not None:
+                    gap = _endpoint_gap_mm([travel_from], pts[:1])
+                    if gap > 0.05:
+                        if is_first and gi > 0:
+                            inter_travel_len += gap
+                            inter_travel_count += 1
+                        elif not is_first:
+                            intra_travel_len += gap
+                            intra_travel_count += 1
+                        all_segments.append(_make_segment(
+                            "travel", stroke.id,
+                            _with_z([travel_from, pts[0]], z_safe),
+                            cfg.travel_speed_mm_s, False,
+                        ))
+
+                need_lead_in = (
+                    (is_first and gi == 0)
+                    or (is_first and gi > 0)
+                    or (not continuous_prev)
+                )
+                if need_lead_in:
+                    li_pts = _tangent_extend(
+                        pts, forward=False, length_mm=cfg.lead_in_length_mm,
+                        spacing_mm=cfg.weld_point_spacing_mm,
+                    )
+                    if len(li_pts) >= 2:
+                        all_segments.append(_make_segment(
+                            "lead_in", stroke.id, _with_z(li_pts, z_work),
+                            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                        ))
+
+                all_segments.append(_make_segment(
+                    "weld", stroke.id, _with_z(list(pts), z_work),
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                ))
+
+                if is_last:
+                    lo_pts = _tangent_extend(
+                        pts, forward=True, length_mm=cfg.lead_out_length_mm,
+                        spacing_mm=cfg.weld_point_spacing_mm,
+                    )
+                    if len(lo_pts) >= 2:
+                        all_segments.append(_make_segment(
+                            "lead_out", stroke.id, _with_z(lo_pts, z_work),
+                            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                        ))
+                    all_segments.append(_make_segment(
+                        "retreat", stroke.id,
+                        _with_z([pts[-1], pts[-1]], z_safe),
+                        cfg.travel_speed_mm_s, False,
+                    ))
+                elif continuous_next:
+                    merged_pairs += 1
+                else:
+                    lo_pts = _tangent_extend(
+                        pts, forward=True, length_mm=cfg.lead_out_length_mm,
+                        spacing_mm=cfg.weld_point_spacing_mm,
+                    )
+                    if len(lo_pts) >= 2:
+                        all_segments.append(_make_segment(
+                            "lead_out", stroke.id, _with_z(lo_pts, z_work),
+                            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                        ))
+                    all_segments.append(_make_segment(
+                        "retreat", stroke.id,
+                        _with_z([pts[-1], pts[-1]], z_safe),
+                        cfg.travel_speed_mm_s, False,
+                    ))
+
+        return all_segments, merged_pairs, {
+            "stroke_reversed_count": stroke_reversed_count,
+            "intra_char_travel_count": intra_travel_count,
+            "intra_char_travel_length_mm": round(intra_travel_len, 2),
+            "inter_char_travel_count": inter_travel_count,
+            "inter_char_travel_length_mm": round(inter_travel_len, 2),
+        }
+
     @staticmethod
     def _plan_stroke(
         stroke: Stroke,
@@ -212,6 +441,69 @@ class WeldingProcessPlanner:
         segments.append(_make_segment(
             "retreat", stroke.id, _with_z([pts[-1], pts[-1]], z_safe),
             cfg.travel_speed_mm_s, False))
+        return segments
+
+    @staticmethod
+    def _plan_closed_skeleton(
+        stroke: Stroke,
+        pts: list[RobotPoint],
+        cfg: WeldingProcessConfig,
+        z_work: float,
+        z_safe: float,
+        weld_params: dict,
+        warnings_list: list[str],
+        *,
+        skip_entry_travel: bool = False,
+        skip_lead_in: bool = False,
+        skip_lead_out_retreat: bool = False,
+    ) -> list[ProcessSegment]:
+        """骨架闭合 stroke：可跳过入口 travel / 连续分叉 lead。"""
+        segments: list[ProcessSegment] = []
+        if len(pts) < 3:
+            warnings_list.append(f"stroke {stroke.id[:6]}: <3 robot_points, skipped")
+            return segments
+        if not skip_entry_travel:
+            segments.append(_make_segment(
+                "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+                cfg.travel_speed_mm_s, False,
+            ))
+        if not skip_lead_in:
+            li_pts = _tangent_extend(
+                pts, forward=False, length_mm=cfg.lead_in_length_mm,
+                spacing_mm=cfg.weld_point_spacing_mm,
+            )
+            if len(li_pts) >= 2:
+                segments.append(_make_segment(
+                    "lead_in", stroke.id, _with_z(li_pts, z_work),
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                ))
+        segments.append(_make_segment(
+            "weld", stroke.id, _with_z(list(pts), z_work),
+            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+        ))
+        path_len = _path_length(pts)
+        effective_overlap = min(cfg.overlap_length_mm, path_len * 0.5)
+        if effective_overlap > 0.01:
+            ol_pts = _copy_path_head(pts, effective_overlap)
+            if len(ol_pts) >= 2:
+                segments.append(_make_segment(
+                    "overlap", stroke.id, _with_z(ol_pts, z_work),
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                ))
+        if not skip_lead_out_retreat:
+            lo_pts = _tangent_extend(
+                pts, forward=True, length_mm=cfg.lead_out_length_mm,
+                spacing_mm=cfg.weld_point_spacing_mm,
+            )
+            if len(lo_pts) >= 2:
+                segments.append(_make_segment(
+                    "lead_out", stroke.id, _with_z(lo_pts, z_work),
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                ))
+            segments.append(_make_segment(
+                "retreat", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+                cfg.travel_speed_mm_s, False,
+            ))
         return segments
 
     @staticmethod
@@ -481,6 +773,138 @@ def _resample_robot_points(
 
 def _pts_eq(a: RobotPoint, b: RobotPoint, tol: float = 0.01) -> bool:
     return abs(a.x - b.x) < tol and abs(a.y - b.y) < tol and abs(a.z - b.z) < tol
+
+
+def _reverse_prepared_stroke(
+    stroke: Stroke, pts: list[RobotPoint],
+) -> tuple[Stroke, list[RobotPoint]]:
+    stroke.points_px = list(reversed(stroke.points_px))
+    pts = list(reversed(pts))
+    stroke.metadata = {**stroke.metadata, "skeleton_chain_reversed": True}
+    return stroke, pts
+
+
+def _split_prepared_by_connectivity(
+    group: list[tuple[Stroke, list[RobotPoint]]],
+    merge_mm: float,
+) -> list[list[tuple[Stroke, list[RobotPoint]]]]:
+    """按端点邻接（≤ merge_mm）拆成连通子组（如 6 的上钩与下环）。"""
+    n = len(group)
+    if n <= 1:
+        return [group] if group else []
+
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        _, pts_i = group[i]
+        if len(pts_i) < 1:
+            continue
+        ends_i = (pts_i[0], pts_i[-1])
+        for j in range(i + 1, n):
+            _, pts_j = group[j]
+            if len(pts_j) < 1:
+                continue
+            ends_j = (pts_j[0], pts_j[-1])
+            min_gap = min(
+                math.hypot(ei.x - ej.x, ei.y - ej.y, ei.z - ej.z)
+                for ei in ends_i for ej in ends_j
+            )
+            if min_gap <= merge_mm:
+                union(i, j)
+
+    buckets: dict[int, list[tuple[Stroke, list[RobotPoint]]]] = {}
+    for i in range(n):
+        root = find(i)
+        buckets.setdefault(root, []).append(group[i])
+    return list(buckets.values())
+
+
+def _reorder_prepared_by_endpoint_chain(
+    group: list[tuple[Stroke, list[RobotPoint]]],
+    merge_mm: float,
+) -> list[tuple[Stroke, list[RobotPoint]]]:
+    """组内按端点邻接重排，使分叉 stroke 在列表中相邻，便于连续焊。"""
+    if len(group) <= 1:
+        return group
+
+    open_items: list[tuple[Stroke, list[RobotPoint]]] = []
+    closed_items: list[tuple[Stroke, list[RobotPoint]]] = []
+    for stroke, pts in group:
+        if stroke.closed:
+            closed_items.append((stroke, pts))
+        else:
+            open_items.append((stroke, pts))
+
+    if not open_items:
+        return group
+
+    remaining = list(open_items)
+    seed_i = min(
+        range(len(remaining)),
+        key=lambda i: remaining[i][1][0].x if remaining[i][1] else 0.0,
+    )
+    ordered: list[tuple[Stroke, list[RobotPoint]]] = [remaining.pop(seed_i)]
+
+    while remaining:
+        _, last_pts = ordered[-1]
+        best_j = -1
+        best_rev = False
+        best_gap = merge_mm + 1.0
+        for j, (stroke, pts) in enumerate(remaining):
+            for rev in (False, True):
+                if rev:
+                    start = pts[-1]
+                else:
+                    start = pts[0]
+                g = _endpoint_gap_mm(last_pts, [start])
+                if g < best_gap:
+                    best_gap = g
+                    best_j = j
+                    best_rev = rev
+        if best_j < 0 or best_gap > merge_mm:
+            ordered.extend(remaining)
+            break
+        stroke, pts = remaining.pop(best_j)
+        if best_rev:
+            stroke, pts = _reverse_prepared_stroke(stroke, pts)
+        ordered.append((stroke, pts))
+
+    ordered.extend(closed_items)
+    return ordered
+
+
+def _skeleton_stroke_gap_mm(
+    stroke_a: Stroke,
+    pts_a: list[RobotPoint],
+    stroke_b: Stroke,
+    pts_b: list[RobotPoint],
+) -> float:
+    """骨架连续焊：上一 stroke 出口 → 下一 stroke 入口（闭合出口=起点）。"""
+    if not pts_a or not pts_b:
+        return float("inf")
+    exit_a = pts_a[0] if stroke_a.closed else pts_a[-1]
+    return _endpoint_gap_mm([exit_a], pts_b)
+
+
+def _endpoint_gap_mm(
+    pts_a: list[RobotPoint],
+    pts_b: list[RobotPoint],
+) -> float:
+    if not pts_a or not pts_b:
+        return float("inf")
+    a, b = pts_a[-1], pts_b[0]
+    return math.hypot(b.x - a.x, b.y - a.y, b.z - a.z)
 
 
 def _compute_step_stats(pts: list[RobotPoint]) -> dict:

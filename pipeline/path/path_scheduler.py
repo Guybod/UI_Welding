@@ -133,6 +133,315 @@ class PathScheduler:
         }
         return ordered, stats
 
+    @staticmethod
+    def schedule_by_char_groups(
+        strokes: list[Stroke],
+        *,
+        char_key: str = "weld_char_index",
+        strategy: str = "nearest",
+        allow_reverse: bool = True,
+    ) -> tuple[list[Stroke], dict]:
+        """骨架/按字模式：按字符分组，组内 nearest，组间按字符索引顺序。"""
+        if not strokes:
+            return [], _empty_stats("by_char_groups")
+
+        groups: dict[int, list[Stroke]] = {}
+        for s in strokes:
+            raw = s.metadata.get(char_key, 0)
+            try:
+                idx = int(raw)
+            except (TypeError, ValueError):
+                idx = 0
+            groups.setdefault(idx, []).append(s)
+
+        ordered: list[Stroke] = []
+        char_stats: list[dict] = []
+        total_in = len(strokes)
+        for char_idx in sorted(groups.keys()):
+            grp = groups[char_idx]
+            sched, st = PathScheduler.schedule(
+                grp, strategy=strategy, allow_reverse=allow_reverse,
+            )
+            ordered.extend(sched)
+            char_stats.append({
+                "char_index": char_idx,
+                "stroke_count": len(grp),
+                **st,
+            })
+
+        stats = {
+            "phase": "4.3",
+            "strategy": "by_char_groups",
+            "inner_strategy": strategy,
+            "input_stroke_count": total_in,
+            "output_stroke_count": len(ordered),
+            "char_group_count": len(groups),
+            "char_stats": char_stats,
+            "warnings": [],
+        }
+        return ordered, stats
+
+    @staticmethod
+    def schedule_char_order_nearest_endpoint(
+        strokes: list[Stroke],
+        *,
+        char_key: str = "weld_char_index",
+        allow_reverse: bool = True,
+    ) -> tuple[list[Stroke], dict]:
+        """W1-b：字符顺序固定，字内从上一出口最近端点贪心 + 可反转/旋转闭合环。"""
+        if not strokes:
+            return [], _empty_stats("char_order_nearest_endpoint")
+
+        groups: dict[int, list[Stroke]] = {}
+        for s in strokes:
+            try:
+                idx = int(s.metadata.get(char_key, 0))
+            except (TypeError, ValueError):
+                idx = 0
+            groups.setdefault(idx, []).append(s)
+
+        ordered: list[Stroke] = []
+        char_stats: list[dict] = []
+        current_pos: PixelPoint | None = None
+        intra_px = 0.0
+        inter_px = 0.0
+        intra_n = 0
+        inter_n = 0
+        rev_total = 0
+        rot_total = 0
+
+        for char_idx in sorted(groups.keys()):
+            grp = list(groups[char_idx])
+            next_hint = PathScheduler._char_group_hint(groups, char_idx)
+            char_ordered, c_intra, c_intra_n, c_rev, c_rot = (
+                PathScheduler._nearest_neighbor_from_position(
+                    grp, current_pos, allow_reverse=allow_reverse,
+                    next_hint=next_hint,
+                )
+            )
+            if current_pos is not None and char_ordered:
+                entry = PathScheduler.get_start_point(char_ordered[0])
+                gap = dist(current_pos, entry)
+                if gap > 1e-6:
+                    inter_px += gap
+                    inter_n += 1
+            intra_px += c_intra
+            intra_n += c_intra_n
+            rev_total += c_rev
+            rot_total += c_rot
+            if char_ordered:
+                ordered.extend(char_ordered)
+                current_pos = PathScheduler._stroke_exit_point(char_ordered[-1])
+            char_stats.append({
+                "char_index": char_idx,
+                "stroke_count": len(grp),
+                "reversed_count": c_rev,
+                "rotated_count": c_rot,
+            })
+
+        return ordered, {
+            "phase": "4.3",
+            "strategy": "char_order_nearest_endpoint",
+            "skeleton_scheduler": "char_order_nearest_endpoint",
+            "input_stroke_count": len(strokes),
+            "output_stroke_count": len(ordered),
+            "char_group_count": len(groups),
+            "reversed_count": rev_total,
+            "stroke_reversed_count": rev_total + rot_total,
+            "stroke_oriented_count": rev_total + rot_total,
+            "rotated_count": rot_total,
+            "intra_char_travel_px": round(intra_px, 2),
+            "intra_char_travel_count": intra_n,
+            "inter_char_travel_px": round(inter_px, 2),
+            "inter_char_travel_count": inter_n,
+            "char_stats": char_stats,
+            "allow_reverse": allow_reverse,
+            "warnings": [],
+        }
+
+    @staticmethod
+    def _stroke_exit_point(stroke: Stroke) -> PixelPoint:
+        """焊接后离开点：闭合回到起点，开放为终点。"""
+        if stroke.closed:
+            return PathScheduler.get_start_point(stroke)
+        return PathScheduler.get_end_point(stroke)
+
+    @staticmethod
+    def _char_group_hint(groups: dict[int, list[Stroke]], char_idx: int) -> PixelPoint | None:
+        """下一字符 bbox 中心，用于闭合环双向启发式旋转。"""
+        nxt = groups.get(char_idx + 1)
+        if not nxt:
+            return None
+        xs = [p.x for s in nxt for p in s.points_px]
+        ys = [p.y for s in nxt for p in s.points_px]
+        if not xs:
+            return None
+        return PixelPoint((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+
+    @staticmethod
+    def _closed_vertex_cost(
+        stroke: Stroke,
+        vertex_i: int,
+        pos: PixelPoint,
+        next_hint: PixelPoint | None,
+    ) -> float:
+        p = stroke.points_px[vertex_i]
+        c = dist(pos, p)
+        if next_hint is not None:
+            c += dist(next_hint, p)
+        return c
+
+    @staticmethod
+    def _virtual_entry_distance(
+        stroke: Stroke,
+        pos: PixelPoint,
+        *,
+        allow_reverse: bool = True,
+        next_hint: PixelPoint | None = None,
+    ) -> float:
+        """估算入口距离（不修改 stroke）。"""
+        if not stroke.points_px:
+            return float("inf")
+        if stroke.closed:
+            return min(
+                PathScheduler._closed_vertex_cost(stroke, i, pos, next_hint)
+                for i in range(len(stroke.points_px))
+            )
+        d0 = dist(pos, PathScheduler.get_start_point(stroke))
+        if allow_reverse and PathScheduler._can_reverse(stroke):
+            d1 = dist(pos, PathScheduler.get_end_point(stroke))
+            return min(d0, d1)
+        return d0
+
+    @staticmethod
+    def _orient_stroke_entry(
+        stroke: Stroke,
+        pos: PixelPoint,
+        *,
+        allow_reverse: bool = True,
+        next_hint: PixelPoint | None = None,
+    ) -> float:
+        """将 stroke 起点对准 pos 最近入口，返回入口距离。"""
+        if not stroke.points_px:
+            return float("inf")
+        if stroke.closed:
+            pts = stroke.points_px
+            best_i = min(
+                range(len(pts)),
+                key=lambda i: PathScheduler._closed_vertex_cost(
+                    stroke, i, pos, next_hint,
+                ),
+            )
+            if best_i != 0:
+                stroke.points_px = pts[best_i:] + pts[:best_i]
+                stroke.metadata = {**stroke.metadata, "scheduler_rotated": True}
+            return dist(pos, PathScheduler.get_start_point(stroke))
+        d0 = dist(pos, PathScheduler.get_start_point(stroke))
+        d1 = float("inf")
+        if allow_reverse and PathScheduler._can_reverse(stroke):
+            d1 = dist(pos, PathScheduler.get_end_point(stroke))
+        if d1 < d0 - 1e-9:
+            PathScheduler.reverse_stroke(stroke)
+            return d1
+        return d0
+
+    @staticmethod
+    def _nearest_neighbor_from_position(
+        strokes: list[Stroke],
+        start_pos: PixelPoint | None,
+        *,
+        allow_reverse: bool = True,
+        next_hint: PixelPoint | None = None,
+    ) -> tuple[list[Stroke], float, int, int, int]:
+        """从 start_pos 对 strokes 最近邻排序；None 时从字 bbox 左上最近入口起步。"""
+        if not strokes:
+            return [], 0.0, 0, 0, 0
+
+        remaining = list(strokes)
+        ordered: list[Stroke] = []
+        current = start_pos
+        intra_px = 0.0
+        intra_n = 0
+        rev_total = 0
+        rot_total = 0
+
+        if current is None:
+            ref_x = min(p.x for s in remaining for p in s.points_px)
+            ref_y = min(p.y for s in remaining for p in s.points_px)
+            ref = PixelPoint(ref_x, ref_y)
+            seed = min(
+                remaining,
+                key=lambda s: (
+                    PathScheduler._virtual_entry_distance(
+                        s, ref, allow_reverse=allow_reverse, next_hint=next_hint,
+                    ),
+                    s.id,
+                ),
+            )
+            remaining.remove(seed)
+            PathScheduler._orient_stroke_entry(
+                seed, ref, allow_reverse=allow_reverse, next_hint=next_hint,
+            )
+            ordered.append(seed)
+            current = PathScheduler._stroke_exit_point(seed)
+
+        while remaining:
+            pick_hint = next_hint if len(ordered) == 0 else None
+            best_d = min(
+                PathScheduler._virtual_entry_distance(
+                    s, current, allow_reverse=allow_reverse, next_hint=pick_hint,
+                )
+                for s in remaining
+            )
+            near = [
+                s for s in remaining
+                if PathScheduler._virtual_entry_distance(
+                    s, current, allow_reverse=allow_reverse, next_hint=pick_hint,
+                ) <= best_d * 1.12 + 1e-6
+            ]
+            if len(ordered) == 0 and start_pos is not None:
+                open_near = [s for s in near if not s.closed]
+                pool = open_near if open_near else near
+            else:
+                pool = near
+            best = min(
+                pool,
+                key=lambda s: (
+                    PathScheduler._virtual_entry_distance(
+                        s, current, allow_reverse=allow_reverse, next_hint=pick_hint,
+                    ),
+                    0 if not s.closed else 1,
+                    s.id,
+                ),
+            )
+            best_d = PathScheduler._orient_stroke_entry(
+                best, current, allow_reverse=allow_reverse, next_hint=pick_hint,
+            )
+
+            if best_d > 1e-6 and not (start_pos is not None and len(ordered) == 0):
+                intra_px += best_d
+                intra_n += 1
+
+            remaining.remove(best)
+            ordered.append(best)
+            current = PathScheduler._stroke_exit_point(best)
+
+        rev_total = sum(1 for s in ordered if s.metadata.get("scheduler_reversed"))
+        rot_total = sum(1 for s in ordered if s.metadata.get("scheduler_rotated"))
+        return ordered, intra_px, intra_n, rev_total, rot_total
+
+    @staticmethod
+    def _rotate_closed_to_nearest(stroke: Stroke, pos: PixelPoint) -> Stroke:
+        pts = stroke.points_px
+        if not stroke.closed or len(pts) < 2:
+            return stroke
+        best_i = min(range(len(pts)), key=lambda i: dist(pts[i], pos))
+        if best_i == 0:
+            return stroke
+        stroke.points_px = pts[best_i:] + pts[:best_i]
+        stroke.metadata = {**stroke.metadata, "scheduler_rotated": True}
+        return stroke
+
     # ---- Travel 计算 ----
 
     @staticmethod

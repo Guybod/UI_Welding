@@ -22,6 +22,11 @@ class TcpAdapter(QObject):
         self._host = ""
         self._port = 9001
         self._timeout_timer: QTimer | None = None
+        self._traffic_log_filter = None
+
+    def set_traffic_log_filter(self, fn) -> None:
+        """fn(msg: dict, direction: 'send'|'recv') -> bool；False 不写系统日志。"""
+        self._traffic_log_filter = fn
 
     @property
     def is_connected(self) -> bool:
@@ -64,8 +69,18 @@ class TcpAdapter(QObject):
     @Slot(str)
     def send_message(self, message: str):
         if self._socket and self._socket.state() == QAbstractSocket.ConnectedState:
-            # 心跳不写日志
-            if "Heartbeat" not in message and "heartbeat" not in message:
+            should_log = (
+                "Heartbeat" not in message
+                and "heartbeat" not in message
+            )
+            if should_log and self._traffic_log_filter:
+                try:
+                    import json as _json
+                    obj = _json.loads(message)
+                    should_log = self._traffic_log_filter(obj, "send")
+                except Exception:
+                    pass
+            if should_log:
                 log.debug(f"[send] {self._host}:{self._port} {message[:200]}")
             self._socket.write(message.encode("utf-8"))
 
@@ -113,7 +128,13 @@ class TcpAdapter(QObject):
             # publish/Error db=[] 是空推送, 不写日志
             is_empty_error = (ty == "publish/Error" and not msg.get("db"))
             is_heartbeat = ("Heartbeat" in ty or "heartbeat" in ty)
-            if not is_heartbeat and (("id" in msg) or (ty == "publish/Log") or (ty == "publish/Error" and not is_empty_error)):
+            should_log = (
+                not is_heartbeat
+                and (("id" in msg) or (ty == "publish/Log") or (ty == "publish/Error" and not is_empty_error))
+            )
+            if should_log and self._traffic_log_filter:
+                should_log = self._traffic_log_filter(msg, "recv")
+            if should_log:
                 import json as _json
                 log.debug(f"[recv] {self._host}:{self._port} {_json.dumps(msg, ensure_ascii=False)}")
             self.data_received.emit(msg)

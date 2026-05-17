@@ -1,6 +1,16 @@
 import sys
-from PySide6.QtGui import QFont
+
+from PySide6.QtGui import QFont, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
+
+
+def _configure_opengl() -> None:
+    fmt = QSurfaceFormat()
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    fmt.setVersion(2, 1)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    QSurfaceFormat.setDefaultFormat(fmt)
 
 from network.connection_manager import ConnectionManager
 from services.cri_service import CriService
@@ -12,6 +22,7 @@ from app.service_provider import ServiceProvider
 
 
 def main():
+    _configure_opengl()
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 9))  # 固定默认字体避免 pointSize=-1 警告
 

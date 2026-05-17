@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.widgets.node_editor.models import GraphData, NODE_SPECS, NodeData
+from app.widgets.node_editor.models import GraphData, NODE_SPECS, NodeData, is_pure_node_type, is_decorator_node
+from app.widgets.node_editor.pose_resolve import resolve_static_pose
 
 
 @dataclass
@@ -9,6 +10,13 @@ class ValidationResult:
     ok: bool = True
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    error_node_ids: set[str] = field(default_factory=set)
+
+    def add_error(self, message: str, node_id: str = "") -> None:
+        self.ok = False
+        self.errors.append(message)
+        if node_id:
+            self.error_node_ids.add(node_id)
 
 
 class GraphValidator:
@@ -27,6 +35,7 @@ class GraphValidator:
         self._source_of = {(e.target_node_id, e.target_port_name): e.source_node_id for e in graph.edges}
 
         self._check_start_end(graph, r)
+        self._check_node_specs(graph, r)
         self._check_unique_ids(graph, r)
         self._check_edge_refs(graph, r)
         self._check_flow_connectivity(graph, r)
@@ -35,6 +44,7 @@ class GraphValidator:
         self._check_motion_position(graph, r)
         self._check_motion_params(graph, r)
         self._check_flow_unique_output(graph, r)
+        self._check_pure_not_on_flow_spine(graph, r)
 
         r.ok = len(r.errors) == 0
         return r
@@ -45,11 +55,21 @@ class GraphValidator:
         start_count = sum(1 for n in graph.nodes if n.node_type == "Start")
         end_count = sum(1 for n in graph.nodes if n.node_type == "End")
         if start_count == 0:
-            r.errors.append("缺少 Start 节点")
+            r.add_error("缺少 Start 节点")
         if end_count == 0:
-            r.errors.append("缺少 End 节点")
+            r.add_error("缺少 End 节点")
         if start_count > 1:
             r.warnings.append(f"存在多个 Start 节点({start_count})，当前执行引擎只会从第一个 Start 开始")
+
+    def _check_node_specs(self, graph: GraphData, r: ValidationResult):
+        for n in graph.nodes:
+            if n.node_type in ("GetVar", "SetVar"):
+                ports = (n.data or {}).get("_ports")
+                if not ports:
+                    r.add_error(f"变量节点缺少端口定义: {n.title or n.node_type}", n.node_id)
+                continue
+            if n.node_type not in NODE_SPECS:
+                r.add_error(f"未知节点类型: {n.node_type} ({n.title})", n.node_id)
 
     def _check_unique_ids(self, graph: GraphData, r: ValidationResult):
         ids = [n.node_id for n in graph.nodes]
@@ -103,8 +123,11 @@ class GraphValidator:
 
             src_type, _ = src_match[0]
             tgt_type, _ = tgt_match[0]
-            if src_type != tgt_type and src_type != "any" and tgt_type != "any":
-                r.errors.append(f"边 {e.edge_id}: 端口类型不匹配 ({src_type} → {tgt_type})")
+            from app.widgets.node_editor.port_types import conversion_hint, ports_compatible
+
+            if not ports_compatible(src_type, tgt_type):
+                hint = conversion_hint(src_type, tgt_type)
+                r.errors.append(f"边 {e.edge_id}: 类型不匹配 ({src_type} → {tgt_type})，{hint}")
 
     def _check_flow_connectivity(self, graph: GraphData, r: ValidationResult):
         flow_outs: dict[str, set[str]] = {}
@@ -140,7 +163,7 @@ class GraphValidator:
 
     def _check_flow_cycle(self, graph: GraphData, r: ValidationResult):
         """检测 flow 路径中的循环 (仅检查主线, 跳过If/For/While分支)"""
-        CONTROL_NODES = {"If", "For", "While"}
+        CONTROL_NODES = {"If", "For", "While", "Sequence"}
         flow_graph: dict[str, str] = {}
         for e in graph.edges:
             src_ports = self._port_map.get(e.source_node_id, [])
@@ -177,7 +200,7 @@ class GraphValidator:
         connected_inputs = {(e.target_node_id, e.target_port_name) for e in graph.edges}
 
         for n in graph.nodes:
-            if n.node_type in ("Start", "End"):
+            if n.node_type in ("Start", "End") or is_decorator_node(n.node_type):
                 continue
             for port_name, port_type, direction in self._port_map.get(n.node_id, []):
                 if port_type == "flow" and direction == "input":
@@ -197,37 +220,49 @@ class GraphValidator:
                     if pos and (self._valid_jp(pos) or self._valid_cp(pos)):
                         break
                 else:
-                    r.errors.append(f"{n.title}({n.node_id}) MovePath 至少需要一个合法的 Position（含 jp 或 cp）")
+                    r.add_error(f"{n.title}({n.node_id}) MovePath 至少需要一个合法的 Position（含 jp 或 cp）", n.node_id)
                 continue
 
             if n.node_type == "MoveJ":
                 pos = self._position_input(n, "target")
                 if not pos:
-                    r.errors.append(f"{n.title}({n.node_id}) 必须连接 target Position")
+                    r.add_error(f"{n.title}({n.node_id}) 必须连接 target Position", n.node_id)
                 elif not self._valid_jp(pos):
-                    r.errors.append(f"{n.title}({n.node_id}) 的 target Position 必须包含合法 jp[6]，MoveJ 初版不允许 cp fallback")
+                    r.add_error(
+                        f"{n.title}({n.node_id}) 的 target Position 必须包含合法 jp[6]，MoveJ 初版不允许 cp fallback",
+                        n.node_id,
+                    )
                 continue
 
             if n.node_type == "MoveL":
                 pos = self._position_input(n, "target")
                 if not pos:
-                    r.errors.append(f"{n.title}({n.node_id}) 必须连接 target Position")
+                    r.add_error(f"{n.title}({n.node_id}) 必须连接 target Position", n.node_id)
                 elif not self._valid_cp(pos):
-                    r.errors.append(f"{n.title}({n.node_id}) 的 target Position 必须包含合法 cp[x,y,z,a,b,c]")
+                    r.add_error(
+                        f"{n.title}({n.node_id}) 的 target Position 必须包含合法 cp[x,y,z,a,b,c]",
+                        n.node_id,
+                    )
                 continue
 
             if n.node_type in ("MoveC", "MoveCircle"):
                 target = self._position_input(n, "target")
                 middle = self._position_input(n, "middle")
                 if not target:
-                    r.errors.append(f"{n.title}({n.node_id}) 必须连接 target Position")
+                    r.add_error(f"{n.title}({n.node_id}) 必须连接 target Position", n.node_id)
                 elif not self._valid_cp(target):
-                    r.errors.append(f"{n.title}({n.node_id}) 的 target Position 必须包含合法 cp，{n.node_type} 不能用 jp")
+                    r.add_error(
+                        f"{n.title}({n.node_id}) 的 target Position 必须包含合法 cp，{n.node_type} 不能用 jp",
+                        n.node_id,
+                    )
 
                 if not middle:
-                    r.errors.append(f"{n.title}({n.node_id}) 必须连接 middle Position")
+                    r.add_error(f"{n.title}({n.node_id}) 必须连接 middle Position", n.node_id)
                 elif not self._valid_cp(middle):
-                    r.errors.append(f"{n.title}({n.node_id}) 的 middle Position 必须包含合法 cp，{n.node_type} 不能用 jp")
+                    r.add_error(
+                        f"{n.title}({n.node_id}) 的 middle Position 必须包含合法 cp，{n.node_type} 不能用 jp",
+                        n.node_id,
+                    )
 
     def _check_motion_params(self, graph: GraphData, r: ValidationResult):
         for n in graph.nodes:
@@ -257,13 +292,7 @@ class GraphValidator:
         src_id = self._source_of.get((node.node_id, port_name))
         if not src_id:
             return None
-        src_node = self._node_idx.get(src_id)
-        if not src_node or src_node.node_type != "Position":
-            return None
-        data = src_node.data or {}
-        if data.get("configured") is False:
-            return None
-        return data
+        return resolve_static_pose(self._node_idx, self._source_of, src_id)
 
     @staticmethod
     def _valid_jp(pos: dict | None) -> bool:
@@ -296,7 +325,7 @@ class GraphValidator:
 
     def _check_flow_unique_output(self, graph: GraphData, r: ValidationResult):
         """每个 flow 输出端口最多只能连一条边 (If/For/While除外)"""
-        CONTROL_NODES = {"If", "For", "While"}
+        CONTROL_NODES = {"If", "For", "While", "Sequence"}
         flow_out_edges: dict[tuple[str, str], list[str]] = {}
         for e in graph.edges:
             src_ports = self._port_map.get(e.source_node_id, [])
@@ -310,7 +339,27 @@ class GraphValidator:
                 if node and node.node_type in CONTROL_NODES:
                     continue  # 控制流节点允许多个 flow 输出
                 title = node.title if node else nid
-                r.errors.append(f"{title}({nid}) 的 flow 输出 '{port}' 连接了 {len(eids)} 条边，不能分叉")
+                r.add_error(f"{title}({nid}) 的 flow 输出 '{port}' 连接了 {len(eids)} 条边，不能分叉", nid)
+
+    def _check_pure_not_on_flow_spine(self, graph: GraphData, r: ValidationResult):
+        """纯节点不能接入 flow 执行链（UE Pure 语义）。"""
+        for e in graph.edges:
+            src_ports = self._port_map.get(e.source_node_id, [])
+            is_flow_out = any(
+                n == e.source_port_name and t == "flow" and d == "output"
+                for n, t, d in src_ports
+            )
+            if not is_flow_out:
+                continue
+            tgt = self._node_idx.get(e.target_node_id)
+            if not tgt:
+                continue
+            dyn = (tgt.data or {}).get("_ports")
+            if is_pure_node_type(tgt.node_type, dyn):
+                r.add_error(
+                    f"纯节点 {tgt.title}({tgt.node_id}) 不能连接 flow 执行线，请用数据线连接",
+                    tgt.node_id,
+                )
 
     @staticmethod
     def _to_float(value: Any) -> float | None:

@@ -9,8 +9,17 @@ from PySide6.QtWidgets import QMessageBox
 
 from core.logger import log
 from core.robot_model_config import get_model_config
-from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
+from core.unit_converter import deg_list_to_rad, rad_list_to_deg, m_to_mm, rad_to_deg
+from services.cri_service import CriService
 from services.robot_realtime_state import RobotRealtimeState
+
+
+def _cri_pose_active(state: dict) -> bool:
+    """CRI 已启用且收到过有效关节帧时，位姿以 CRI 为准。"""
+    cri_svc = state.get("cri_svc")
+    if not isinstance(cri_svc, CriService) or not cri_svc.is_enabled:
+        return False
+    return RobotRealtimeState.instance().is_valid()
 
 
 def _bind_login_flow(cm, login, main_win, stack, state):
@@ -27,6 +36,8 @@ def _bind_login_flow(cm, login, main_win, stack, state):
         main_win.reset_to_home(reason="logout")
         cm.disconnect()
         main_win._status_bar.set_connection_status("未连接")
+        main_win.update_home_connection(False)
+        main_win.update_home_cri(False)
         main_win._drawer.set_jog_enabled(False)
         login.set_enabled(True)
         login.set_status("准备连接")
@@ -44,7 +55,9 @@ def _bind_connection_state(cm, login, main_win, stack, state):
         main_win._status_bar.set_connection_status(state_str)
 
     def on_connection_changed(state_str: str):
-        if state_str == "connected":
+        connected = state_str == "connected"
+        main_win.update_home_connection(connected)
+        if connected:
             main_win._command_bar.set_all_enabled(True)
             main_win._drawer.set_jog_enabled(True)
         else:
@@ -53,6 +66,7 @@ def _bind_connection_state(cm, login, main_win, stack, state):
                 stop()
             main_win._command_bar.set_all_enabled(False)
             main_win._drawer.set_jog_enabled(False)
+            main_win.update_home_cri(False)
 
     def on_connection_failed(error_msg: str):
         QMessageBox.critical(login, "连接失败",
@@ -67,7 +81,8 @@ def _bind_connection_state(cm, login, main_win, stack, state):
 
 def _bind_subscriptions(cm, cri_svc, main_win, state):
     """连接成功后：toAuto→toRemote→订阅 5 个 topic→默认速度 70%"""
-    _robot_type_received = [False]
+    _last_robot_type = [""]
+    _last_robot_mode = [None]
 
     def on_connected(sub_state: str):
         if sub_state != "connected":
@@ -114,15 +129,16 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
         ))
 
     def _on_robot_status(db: dict):
-        nonlocal _robot_type_received
         robot_type = db.get("type", "")
         mode = db.get("mode", 0)
         state_num = db.get("state", 0)
 
-        if robot_type and not _robot_type_received[0]:
-            _robot_type_received[0] = True
+        if robot_type and robot_type != _last_robot_type[0]:
+            _last_robot_type[0] = robot_type
             cfg = get_model_config(robot_type)
-            main_win._drawer.set_robot_model(f"{cfg.display_name} ({robot_type})")
+            main_win.set_robot_model(
+                f"{cfg.display_name} ({robot_type})", robot_type=robot_type
+            )
 
         mode_names = {0: "手动", 1: "自动", 2: "远程"}
         state_names = {
@@ -135,10 +151,19 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
             f"{state_names.get(state_num, str(state_num))}"
         )
         main_win._command_bar.set_mode(mode)
+        if _last_robot_mode[0] != mode:
+            _last_robot_mode[0] = mode
+            main_win._page_router.notify_robot_mode(mode)
         main_win._command_bar.set_enable_state(state_num != 0)
         main_win._command_bar.set_simulation(db.get("isSimulation", False))
-        main_win._drawer.set_world_coordinate(f"坐标系{db.get('CoordinateId', 0)}")
-        main_win._drawer.set_tool_coordinate(f"工具{db.get('ToolId', 0)}")
+        main_win.update_coordinates(
+            f"坐标系{db.get('CoordinateId', 0)}",
+            f"工具{db.get('ToolId', 0)}",
+        )
+        main_win.update_home_runtime(
+            mode_text=mode_names.get(mode, str(mode)),
+            state_text=state_names.get(state_num, str(state_num)),
+        )
 
         moving = db.get("isMoving", False)
         main_win._command_bar.set_motion_paused(not moving)
@@ -148,15 +173,27 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
         main_win._command_bar.set_project_paused(state_num == 3)
 
     def _on_robot_posture(db: dict):
+        """fallback：仅 CRI 未就绪时更新 3D；CRI 在线时只刷新标签，避免与笛卡尔 TCP 不一致。"""
         joint = db.get("joint", [])
+        cri_ok = _cri_pose_active(state)
         if joint:
-            main_win._drawer.update_joint_display(joint)
-        end = db.get("end", {})
-        if end:
-            main_win._drawer.update_tcp_display(
-                end.get("x", 0), end.get("y", 0), end.get("z", 0),
-                end.get("a", 0), end.get("b", 0), end.get("c", 0),
+            main_win.update_joint_display(
+                joint,
+                joint_rad=deg_list_to_rad(joint) if not cri_ok else None,
+                drive_model=not cri_ok,
             )
+        end = db.get("end", {})
+        if end and not cri_ok:
+            main_win.update_tcp_display(
+                end.get("x", 0),
+                end.get("y", 0),
+                end.get("z", 0),
+                end.get("a", 0),
+                end.get("b", 0),
+                end.get("c", 0),
+            )
+        if not cri_ok:
+            main_win.update_home_cri(False)
 
     _error_dialog_data = [None]
 
@@ -339,15 +376,26 @@ def _bind_speed(cm, main_win, state):
 
 
 def _bind_cri(cri_svc, main_win, state):
-    """CRI 实时数据 → 抽屉 + RobotRealtimeState"""
+    """CRI 实时数据 → 抽屉 + RobotRealtimeState（3D 模型仅由此关节角驱动）"""
+    def _on_cri_stopped():
+        RobotRealtimeState.instance().invalidate()
+        main_win.update_home_cri(False)
+
+    cri_svc.cri_stopped.connect(_on_cri_stopped)
+
     def _on_cri_frame(frame: dict):
         RobotRealtimeState.instance().update_from_cri_frame(frame)
+        rt = RobotRealtimeState.instance()
 
         joint_rad = frame.get("joint_position", [])
         if joint_rad:
-            main_win._drawer.update_joint_display(rad_list_to_deg(joint_rad))
+            main_win.update_joint_display(
+                rad_list_to_deg(joint_rad),
+                joint_rad=joint_rad,
+                drive_model=True,
+            )
 
-        main_win._drawer.update_tcp_display(
+        main_win.update_tcp_display(
             m_to_mm(frame.get("tcp_x", 0)),
             m_to_mm(frame.get("tcp_y", 0)),
             m_to_mm(frame.get("tcp_z", 0)),
@@ -355,8 +403,19 @@ def _bind_cri(cri_svc, main_win, state):
             rad_to_deg(frame.get("tcp_ry", 0)),
             rad_to_deg(frame.get("tcp_rz", 0)),
         )
+        main_win.update_home_cri(_cri_pose_active(state))
+        main_win.update_home_runtime(
+            enabled=rt.is_enabled(),
+            moving=rt.is_moving(),
+            emergency=rt.is_emergency_stop(),
+        )
 
     cri_svc.cri_frame_received.connect(_on_cri_frame)
+
+    def _on_cri_started():
+        main_win.update_home_cri(True)
+
+    cri_svc.cri_started.connect(_on_cri_started)
 
     # 连接后 3 秒自动启动 CRI
     def _auto_start_cri(sub_state: str):
@@ -374,6 +433,7 @@ def bind_all(cm, cri_svc, login, main_win, stack):
     state = {
         "cri_config": None,
         "cm": cm,
+        "cri_svc": cri_svc,
     }
 
     _bind_login_flow(cm, login, main_win, stack, state)

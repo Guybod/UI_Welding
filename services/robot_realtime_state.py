@@ -20,6 +20,8 @@ class RobotRealtimeState(QObject):
         self._tcp_ry_rad: float = 0.0
         self._tcp_rz_rad: float = 0.0
         self._is_moving: bool = False
+        self._is_enabled: bool = False
+        self._is_emergency: bool = False
 
     @classmethod
     def instance(cls):
@@ -39,12 +41,28 @@ class RobotRealtimeState(QObject):
         self._tcp_rz_rad = frame.get("tcp_rz", 0.0)
         # is_moving from statusData1 bit7 (placeholder)
         self._is_moving = frame.get("is_moving", False)
+        self._is_enabled = frame.get("is_enabled", False)
+        self._is_emergency = frame.get("is_emergency_stop", False)
 
     def is_valid(self) -> bool:
         return self._valid
 
+    def invalidate(self) -> None:
+        """CRI 停止后清除，允许 RobotPosture 兜底驱动 3D。"""
+        self._valid = False
+        self._joint_rad = []
+
     def is_moving(self) -> bool:
         return self._is_moving
+
+    def is_enabled(self) -> bool:
+        return self._is_enabled
+
+    def is_emergency_stop(self) -> bool:
+        return self._is_emergency
+
+    def current_joint_rad(self) -> list[float]:
+        return list(self._joint_rad)
 
     def current_joints_deg(self) -> list[float]:
         """返回 J1~J6 关节角 (deg)"""

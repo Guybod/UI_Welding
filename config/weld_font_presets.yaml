@@ -1,0 +1,41 @@
+# 焊接骨架字 — Arial / Consolas（Win / Linux / macOS）
+# 修改字体：编辑 paths；自备 TTF 可放 assets/fonts/ 并用 paths.project
+
+default_preset_id: arial
+
+presets:
+  - id: arial
+    family: Arial
+    label:
+      zh: "Arial（默认，骨架推荐）"
+      en: "Arial (default)"
+    skeleton:
+      raster_close_px: 0
+      raster_dilate_px: 0
+      merge_gap_mm: 0.35
+      spur_min_mm: 0.3
+      branch_cluster_radius_px: 5
+    paths:
+      win32: "${WINDIR}/Fonts/arial.ttf"
+      linux:
+        - "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        - "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+      darwin: "/System/Library/Fonts/Supplemental/Arial.ttf"
+
+  - id: consolas
+    family: Consolas
+    label:
+      zh: "Consolas 等宽"
+      en: "Consolas monospace"
+    skeleton:
+      raster_close_px: 0
+      raster_dilate_px: 0
+      merge_gap_mm: 0.35
+      spur_min_mm: 0.3
+      branch_cluster_radius_px: 5
+    paths:
+      win32: "${WINDIR}/Fonts/consola.ttf"
+      linux:
+        - "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+        - "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"
+      darwin: "/System/Library/Fonts/Supplemental/Consolas.ttf"

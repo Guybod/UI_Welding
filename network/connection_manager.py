@@ -41,6 +41,7 @@ class ConnectionManager(QObject):
         # ── 请求/响应管理 (UI 线程) ──
         self._seq = 0
         self._pending: dict[int | str, dict] = {}
+        self._silent_log_ids: set[int] = set()
 
         # ── 订阅回调 (UI 线程) ──
         self._subscribe_callbacks: dict[str, list] = {}
@@ -78,6 +79,7 @@ class ConnectionManager(QObject):
         self._sig_send.connect(self._adapter.send_message)
         self._sig_shutdown.connect(self._adapter.shutdown)
 
+        self._adapter.set_traffic_log_filter(self._traffic_log_filter)
         self._adapter.data_received.connect(self._on_data_received)
         self._adapter.connected.connect(self._on_connected)
         self._adapter.disconnected.connect(self._on_disconnected)
@@ -232,8 +234,26 @@ class ConnectionManager(QObject):
         if ty.startswith("publish/"):
             self._dispatch_publish(msg)
 
+    def _traffic_log_filter(self, msg: dict, direction: str) -> bool:
+        """返回 True 表示写入系统日志（log/ 文件）。"""
+        if direction not in ("send", "recv"):
+            return True
+        rid = msg.get("id")
+        if rid is None:
+            return True
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            return True
+        return rid not in self._silent_log_ids
+
     def _dispatch_response(self, msg: dict):
         req_id = msg.get("id")
+        if req_id is not None:
+            try:
+                self._silent_log_ids.discard(int(req_id))
+            except (TypeError, ValueError):
+                pass
         req = self._pending.pop(req_id, None)
         if req is None:
             return
@@ -276,19 +296,31 @@ class ConnectionManager(QObject):
 
     # ════════════════ 请求/响应 (UI 线程) ════════════════
 
-    def send_call(self, ty: str, db: dict, on_response, on_error, timeout: float = 5.0):
+    def send_call(
+        self,
+        ty: str,
+        db,
+        on_response,
+        on_error,
+        timeout: float = 5.0,
+        *,
+        log_traffic: bool = True,
+    ):
         if not self._adapter:
             on_error(Exception("未连接"))
             return
 
         self._seq += 1
         req_id = self._seq
+        if not log_traffic:
+            self._silent_log_ids.add(req_id)
         self._pending[req_id] = {
             "ty": ty,
             "on_response": on_response,
             "on_error": on_error,
             "created_at": time.monotonic(),
             "timeout": timeout,
+            "log_traffic": log_traffic,
         }
         msg = json.dumps({"id": req_id, "ty": ty, "db": db}, ensure_ascii=False)
         self._sig_send.emit(msg)
@@ -311,6 +343,7 @@ class ConnectionManager(QObject):
             except Exception:
                 pass
         self._pending.clear()
+        self._silent_log_ids.clear()
 
     def _check_timeouts(self):
         now = time.monotonic()
@@ -319,6 +352,7 @@ class ConnectionManager(QObject):
             if now - req["created_at"] > req["timeout"]
         ]
         for rid in timed_out:
+            self._silent_log_ids.discard(rid)
             req = self._pending.pop(rid, None)
             if req:
                 try:

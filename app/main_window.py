@@ -5,11 +5,12 @@ from PySide6.QtWidgets import (
     QMainWindow, QApplication,
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QStackedWidget,
     QMessageBox,
 )
 from PySide6.QtGui import QAction
-from PySide6.QtCore import Qt, QSettings, Signal, QPoint, QTimer
+from PySide6.QtCore import Qt, QSettings, Signal, QTimer
 
 from app.i18n import I18nManager, tr
 from app.widgets.status_bar import StatusBar
@@ -78,24 +79,23 @@ class MainWindow(QMainWindow):
         self._top_tab = TopTabBar()
         root.addWidget(self._top_tab)
 
-        # 页面路由区域
+        # 中间：左侧抽屉 + 页面区（并排布局，避免抽屉盖住首页）
+        self._content_row = QWidget()
+        content_layout = QHBoxLayout(self._content_row)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        self._drawer = RobotControlDrawer(parent=self._content_row)
         self._page_stack = QStackedWidget()
         self._page_stack.setObjectName("pageStackPlaceholder")
+
+        content_layout.addWidget(self._drawer)
+        content_layout.addWidget(self._page_stack, stretch=1)
 
         self._page_router = PageRouter(self._page_stack)
         self._top_tab.tab_clicked.connect(self._on_user_tab_clicked)
 
-        root.addWidget(self._page_stack, stretch=1)
-
-        # 左侧运动控制抽屉
-        #
-        # parent 挂 MainWindow：
-        #   避免被 QStackedWidget 当前页面盖住，导致“运动”按钮点不动。
-        #
-        # 位置按 page_stack 映射到 MainWindow 的坐标来算：
-        #   避免覆盖顶部标签栏和底部命令栏。
-        self._drawer = RobotControlDrawer(parent=self)
-        self._drawer.hide()
+        root.addWidget(self._content_row, stretch=1)
 
         # 底部全局命令栏
         self._command_bar = GlobalCommandBar()
@@ -108,14 +108,7 @@ class MainWindow(QMainWindow):
         # 初始化首页（仅此一处 app_init）
         self.reset_to_home(reason="app_init")
 
-        # 页面切换后重新定位并抬高抽屉，避免被当前页面盖住
-        self._page_stack.currentChanged.connect(
-            lambda _: self._schedule_drawer_position()
-        )
-
-        # 等 Qt 布局完成后再定位抽屉
-        QTimer.singleShot(0, self._init_drawer_position)
-        QTimer.singleShot(100, self._position_drawer)
+        self._page_stack.currentChanged.connect(self._on_page_changed)
 
     # ════════════════ 页面导航 ════════════════
 
@@ -129,7 +122,6 @@ class MainWindow(QMainWindow):
                 self._top_tab.set_active(spec.key)
             except Exception:
                 pass
-            self._schedule_drawer_position()
         self._curr_user_page = spec.key
 
     def reset_to_home(self, reason: str = ""):
@@ -155,7 +147,15 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._curr_user_page = home_spec.key
-        self._schedule_drawer_position()
+        self._refresh_home_preview()
+
+    def _on_page_changed(self, _index: int) -> None:
+        self._refresh_home_preview()
+
+    def _refresh_home_preview(self) -> None:
+        home = self._page_router.get_cached_page("home")
+        if home is not None and hasattr(home, "on_enter"):
+            home.on_enter()
 
     # ════════════════ Qt events ════════════════
 
@@ -170,59 +170,7 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._schedule_drawer_position()
-
-    def hideEvent(self, event):
-        super().hideEvent(event)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._schedule_drawer_position()
-
-    def _init_drawer_position(self):
-        """首次显示时定位抽屉。"""
-        self._drawer.show()
-        self._drawer.raise_()
-        self._schedule_drawer_position()
-
-    def _schedule_drawer_position(self):
-        """
-        延迟多次定位，解决窗口刚显示时布局尚未稳定的问题。
-        首次启动时 page_stack 的坐标可能还没最终落位，所以需要在事件循环后校正。
-        """
-        if not hasattr(self, "_drawer"):
-            return
-
-        QTimer.singleShot(0, self._position_drawer)
-        QTimer.singleShot(30, self._position_drawer)
-        QTimer.singleShot(100, self._position_drawer)
-
-    def _position_drawer(self):
-        """把左侧抽屉定位到 page_stack 区域内。"""
-        if not hasattr(self, "_drawer"):
-            return
-
-        if not hasattr(self, "_page_stack"):
-            return
-
-        # 把 page_stack 左上角从 page_stack 坐标系转换到 MainWindow 坐标系
-        pos = self._page_stack.mapTo(self, QPoint(0, 0))
-
-        width = (
-            self._drawer.expanded_width()
-            if self._drawer.is_expanded()
-            else self._drawer.collapsed_width()
-        )
-
-        height = max(1, self._page_stack.height())
-
-        self._drawer.setGeometry(
-            pos.x(),
-            pos.y(),
-            width,
-            height,
-        )
-        self._drawer.raise_()
+        QTimer.singleShot(0, self._refresh_home_preview)
 
     # ════════════════ 对外接口：状态栏 / 抽屉 / 命令栏 ════════════════
 
@@ -238,16 +186,32 @@ class MainWindow(QMainWindow):
     def status_bar(self) -> StatusBar:
         return self._status_bar
 
-    def set_robot_model(self, text: str):
-        """设置抽屉中的机器人型号显示。"""
-        self._drawer.set_robot_model(text)
+    def set_robot_model(self, text: str, robot_type: str = ""):
+        """同步抽屉与首页的机器人型号与 3D 模型。"""
+        self._drawer.set_robot_model(text, robot_type=robot_type)
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            home.set_robot_model(text, robot_type=robot_type)
 
-    def update_joint_display(self, joint_deg: list):
-        """更新抽屉中的关节角显示。"""
-        self._drawer.update_joint_display(joint_deg)
+    def update_joint_display(
+        self,
+        joint_deg: list,
+        joint_rad: list | None = None,
+        *,
+        drive_model: bool = True,
+    ):
+        """同步抽屉与首页的关节角显示；3D 仅当 drive_model 且提供 joint_rad 时更新。"""
+        self._drawer.update_joint_display(
+            joint_deg, joint_rad=joint_rad, drive_model=drive_model
+        )
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            updater = getattr(home, "update_joint_display", None)
+            if callable(updater):
+                updater(joint_deg, joint_rad=joint_rad, drive_model=drive_model)
 
     def update_tcp_display(self, x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg):
-        """更新抽屉中的 TCP 位姿显示。"""
+        """更新抽屉与首页的 TCP 位姿显示。"""
         self._drawer.update_tcp_display(
             x_mm,
             y_mm,
@@ -256,6 +220,55 @@ class MainWindow(QMainWindow):
             ry_deg,
             rz_deg,
         )
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            updater = getattr(home, "update_tcp_display", None)
+            if callable(updater):
+                updater(x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
+
+    def update_home_connection(self, connected: bool) -> None:
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            updater = getattr(home, "update_connection", None)
+            if callable(updater):
+                updater(connected)
+
+    def update_home_cri(self, active: bool) -> None:
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            updater = getattr(home, "update_cri_status", None)
+            if callable(updater):
+                updater(active)
+
+    def update_home_runtime(
+        self,
+        *,
+        enabled: bool | None = None,
+        moving: bool | None = None,
+        emergency: bool | None = None,
+        mode_text: str | None = None,
+        state_text: str | None = None,
+    ) -> None:
+        home = self._page_router.get_cached_page("home")
+        if home is None:
+            return
+        flags = getattr(home, "update_runtime_flags", None)
+        if callable(flags) and any(
+            v is not None for v in (enabled, moving, emergency)
+        ):
+            flags(enabled=enabled, moving=moving, emergency=emergency)
+        mode_state = getattr(home, "update_mode_state", None)
+        if callable(mode_state) and (mode_text is not None or state_text is not None):
+            mode_state(mode_text or "", state_text or "")
+
+    def update_coordinates(self, world_text: str, tool_text: str) -> None:
+        self._drawer.set_world_coordinate(world_text)
+        self._drawer.set_tool_coordinate(tool_text)
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            updater = getattr(home, "update_coordinates", None)
+            if callable(updater):
+                updater(world_text, tool_text)
 
     # ════════════════ 菜单 / 样式 ════════════════
 

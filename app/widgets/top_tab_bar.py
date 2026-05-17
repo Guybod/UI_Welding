@@ -10,6 +10,7 @@ TAB_I18N_KEYS = {
     "writing": "tab_writing",
     "motion": "tab_motion",
     "io": "tab_io",
+    "register": "tab_register",
     "program": "tab_program",
     "upload": "tab_upload",
     "settings": "tab_settings",

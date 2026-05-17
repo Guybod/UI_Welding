@@ -66,12 +66,186 @@ class PropertyPanel(QWidget):
             self._show_generic(node, [("port", "int", "")])
         elif nt in ("GetVar", "SetVar"):
             self._show_var_value(node)
+        elif nt == "MacroCall":
+            self._show_macro_call(node)
+        elif nt == "Cast":
+            self._show_cast(node)
+        elif nt == "EnumInt":
+            self._show_enum_int(node)
+        elif nt == "Comment":
+            self._show_comment(node)
+        elif nt == "MakePosition":
+            self._show_make_position(node)
+        elif nt in ("Print", "Wait"):
+            self._show_flow_options(node)
         elif nt == "SetRegister":
             self._show_generic(node, [("address", "int", ""), ("value", "int", "")])
         elif nt == "ReadRegister":
             self._show_generic(node, [("address", "int", "")])
         else:
             self._show_placeholder()
+
+    def _append_disabled_toggle(self, root, node) -> None:
+        from PySide6.QtWidgets import QCheckBox
+
+        cb = QCheckBox(tr("node_disabled"))
+        cb.setChecked(bool((node.node_data() or {}).get("disabled")))
+        cb.toggled.connect(lambda v: self._set_node_disabled(node, v))
+        root.addWidget(cb)
+
+    @staticmethod
+    def _set_node_disabled(node, disabled: bool) -> None:
+        data = dict(node.node_data() or {})
+        data["disabled"] = disabled
+        node.set_node_data(data)
+
+    def _show_flow_options(self, node) -> None:
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        self._append_disabled_toggle(root, node)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_cast(self, node) -> None:
+        from PySide6.QtWidgets import QComboBox
+
+        data = node.node_data() or {}
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        combo = QComboBox()
+        for t in ("int", "float", "bool", "string"):
+            combo.addItem(t, t)
+        cur = (data.get("cast_to") or "float").lower()
+        combo.setCurrentIndex(max(0, combo.findData(cur)))
+
+        def apply():
+            d = dict(node.node_data() or {})
+            d["cast_to"] = combo.currentData()
+            d["_auto_title"] = True
+            node.set_node_data(d)
+
+        combo.currentIndexChanged.connect(apply)
+        root.addWidget(combo)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_enum_int(self, node) -> None:
+        data = node.node_data() or {}
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        opts = QLineEdit(",".join(str(x) for x in (data.get("options") or [0, 1])))
+        root.addWidget(QLabel(tr("enum_options")))
+        root.addWidget(opts)
+        sel = QLineEdit(str(int(data.get("selected", 0))))
+        root.addWidget(QLabel(tr("enum_selected_index")))
+        root.addWidget(sel)
+
+        def apply():
+            parts = [p.strip() for p in opts.text().split(",") if p.strip()]
+            values = []
+            for p in parts:
+                try:
+                    values.append(int(p))
+                except ValueError:
+                    values.append(0)
+            if not values:
+                values = [0]
+            try:
+                index = int(sel.text())
+            except ValueError:
+                index = 0
+            index = max(0, min(index, len(values) - 1))
+            node.set_node_data({
+                "options": values,
+                "selected": index,
+                "_auto_title": True,
+            })
+
+        opts.editingFinished.connect(apply)
+        sel.editingFinished.connect(apply)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_comment(self, node) -> None:
+        from PySide6.QtWidgets import QTextEdit
+
+        data = node.node_data() or {}
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        edit = QTextEdit()
+        edit.setPlainText(data.get("text", ""))
+        edit.setMaximumHeight(120)
+
+        def apply():
+            text = edit.toPlainText()
+            node.set_node_data({"text": text})
+            node._calc_size()
+            node.update()
+
+        edit.textChanged.connect(apply)
+        root.addWidget(edit)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_make_position(self, node) -> None:
+        data = node.node_data() or {}
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        name = QLineEdit(str(data.get("name", "")))
+        root.addWidget(QLabel(tr("pos_name")))
+        root.addWidget(name)
+
+        def apply():
+            d = dict(node.node_data() or {})
+            d["name"] = name.text().strip()
+            d["_auto_title"] = True
+            node.set_node_data(d)
+
+        name.editingFinished.connect(apply)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _show_macro_call(self, node) -> None:
+        data = node.node_data() or {}
+        macro_id = data.get("macro_id", "")
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.addWidget(QLabel(node._title))
+        root.addWidget(QLabel(tr("macro_prop_id").format(id=macro_id)))
+        macro = None
+        scene = node.scene()
+        lib = getattr(scene, "_library", None) if scene else None
+        if lib and macro_id:
+            macro = lib.get_macro(macro_id)
+        if macro and macro.params:
+            ins = [p for p in macro.params if p.direction == "in"]
+            outs = [p for p in macro.params if p.direction == "out"]
+            if ins:
+                root.addWidget(QLabel(tr("macro_prop_inputs")))
+                for p in ins:
+                    root.addWidget(QLabel(f"  ↓ {p.param_id}: {p.name} ({p.port_type})"))
+            if outs:
+                root.addWidget(QLabel(tr("macro_prop_outputs")))
+                for p in outs:
+                    root.addWidget(QLabel(f"  ↑ {p.param_id}: {p.name} ({p.port_type})"))
+        btn = QPushButton(tr("macro_edit"))
+        btn.clicked.connect(lambda: self._request_macro_edit(macro_id))
+        root.addWidget(btn)
+        root.addStretch()
+        self._scroll.setWidget(w)
+
+    def _request_macro_edit(self, macro_id: str) -> None:
+        parent = self.parent()
+        while parent is not None:
+            if hasattr(parent, "_open_macro_editor"):
+                parent._open_macro_editor(macro_id)
+                return
+            parent = parent.parent()
 
     def _show_motion(self, node):
         """MoveJ/L/C/Circle/Path 运动参数"""
@@ -105,6 +279,7 @@ class PropertyPanel(QWidget):
         acc.valueChanged.connect(apply)
         blend.valueChanged.connect(apply)
         rel_blend.valueChanged.connect(apply)
+        self._append_disabled_toggle(root, node)
         root.addStretch()
         self._scroll.setWidget(w)
 
@@ -122,53 +297,40 @@ class PropertyPanel(QWidget):
         self._scroll.setWidget(w)
 
     def _show_array(self, node):
-        from PySide6.QtWidgets import QPlainTextEdit
-        data = node.node_data()
-        arr = data.get("value", [])
-        if isinstance(arr, str):
-            arr = [x.strip() for x in arr.replace("[","").replace("]","").split(",") if x.strip()]
-        text = "[" + ", ".join(str(v) for v in arr) + "]" if arr else "[]"
+        from app.widgets.node_editor.array_list_editor import ArrayListEditor
 
+        data = node.node_data()
         w = QWidget()
         root = QVBoxLayout(w)
         root.addWidget(QLabel(node._title))
-        lbl = QLabel("数组内容 (JSON 格式):")
-        lbl.setStyleSheet("color: #aaaaaa; font-size: 11px;")
-        root.addWidget(lbl)
-        editor = QPlainTextEdit()
-        editor.setMaximumHeight(200)
-        editor.setStyleSheet("background: #3a3a3d; color: #e0e0e0; border: 1px solid #555; border-radius: 4px; padding: 4px;")
-        editor.setPlainText(text)
+        editor = ArrayListEditor()
+        editor.set_value(data.get("value", []))
 
-        def apply():
-            try:
-                import json
-                val = json.loads(editor.toPlainText().strip())
-                if not isinstance(val, list):
-                    val = []
-            except Exception:
-                val = [x.strip() for x in editor.toPlainText().strip().lstrip("[").rstrip("]").split(",") if x.strip()]
-                try: val = [float(v) if v.replace('.','',1).replace('-','',1).isdigit() else v for v in val]
-                except: pass
-            node.set_node_data({"value": val})
-            title = "[" + ", ".join(str(v)[:10] for v in val[:3]) + ("..." if len(val) > 3 else "") + "]"
-            if title != node._title:
-                node._title = title if title != "[]" else "Array"
-                node.update()
+        def apply(val: list) -> None:
+            data = dict(node.node_data())
+            data["value"] = val
+            data["_auto_title"] = True
+            node.set_node_data(data)
 
-        editor.textChanged.connect(apply)
+        editor.value_changed.connect(apply)
         root.addWidget(editor)
         root.addStretch()
         self._scroll.setWidget(w)
 
+    @staticmethod
+    def _array_node_title(val: list) -> str:
+        if not val:
+            return "Array"
+        preview = ", ".join(str(v)[:10] for v in val[:3])
+        if len(val) > 3:
+            preview += "..."
+        return f"[{preview}]"
+
     def _show_var_value(self, node):
         """GetVar/SetVar — 显示并编辑绑定变量的当前值，全类型同步。"""
-        from PySide6.QtWidgets import QCheckBox, QPlainTextEdit
-        from app.widgets.node_editor.var_value import (
-            array_to_editor_text,
-            parse_array_editor_text,
-            parse_var_storage,
-        )
+        from PySide6.QtWidgets import QCheckBox
+        from app.widgets.node_editor.array_list_editor import ArrayListEditor
+        from app.widgets.node_editor.var_value import parse_var_storage
 
         data = node.node_data()
         var_id = data.get("var_id", "")
@@ -221,14 +383,9 @@ class PropertyPanel(QWidget):
             widgets["value"] = ("string", line)
             self._var_value_widget = line
         elif var_type == "array":
-            editor = QPlainTextEdit()
-            editor.setMaximumHeight(160)
-            editor.setStyleSheet(
-                "background: #3a3a3d; color: #e0e0e0; border: 1px solid #555;"
-                " border-radius: 4px; padding: 4px;",
-            )
-            editor.setPlainText(array_to_editor_text(val))
-            form.addRow("值:", editor)
+            editor = ArrayListEditor()
+            editor.set_value(val)
+            root.addWidget(editor)
             widgets["value"] = ("array", editor)
             self._var_value_widget = editor
         else:
@@ -250,7 +407,7 @@ class PropertyPanel(QWidget):
                 elif ftype == "bool":
                     v = bool(wdg.isChecked())
                 elif ftype == "array":
-                    v = parse_array_editor_text(wdg.toPlainText())
+                    v = wdg.get_value()
                 else:
                     v = wdg.text()
             self.variable_value_changed.emit(var_id, v)
@@ -261,7 +418,7 @@ class PropertyPanel(QWidget):
             elif ftype == "bool":
                 wdg.toggled.connect(apply)
             elif ftype == "array":
-                wdg.textChanged.connect(apply)
+                wdg.value_changed.connect(apply)
             else:
                 wdg.editingFinished.connect(apply)
 
@@ -270,7 +427,8 @@ class PropertyPanel(QWidget):
 
     def refresh_bound_variable_value(self, var_id: str, value) -> None:
         """同 var_id 在别处被修改时，刷新右侧显示（不触发回写）。"""
-        from app.widgets.node_editor.var_value import array_to_editor_text, parse_var_storage
+        from app.widgets.node_editor.array_list_editor import ArrayListEditor
+        from app.widgets.node_editor.var_value import parse_var_storage
 
         if not var_id or var_id != self._var_bound_id:
             return
@@ -287,8 +445,8 @@ class PropertyPanel(QWidget):
                 w.setValue(float(val))
             elif vt == "bool":
                 w.setChecked(bool(val))
-            elif vt == "array":
-                w.setPlainText(array_to_editor_text(val))
+            elif vt == "array" and isinstance(w, ArrayListEditor):
+                w.set_value(val)
             else:
                 w.setText(str(val))
         finally:
@@ -495,11 +653,8 @@ class PropertyPanel(QWidget):
                 "blend": self._opt_blend.value(), "relativeBlend": self._opt_rel_blend.value(),
             },
         }
+        data["_auto_title"] = True
         node.set_node_data(data)
-        name = data["name"] or "Position"
-        if node._title != name:
-            node._title = name
-            node.update()
 
     def _jp_toggle(self, node, checked):
         self._jp_group.setVisible(checked)
@@ -550,11 +705,8 @@ class PropertyPanel(QWidget):
                 "relativeBlend": self._opt_rel_blend.value(),
             },
         }
+        data["_auto_title"] = True
         self._node.set_node_data(data)
-        name = data["name"] or "Position"
-        if self._node._title != name:
-            self._node._title = name
-            self._node.update()
         self.apply_requested.emit(self._node, data)
 
     def clear(self):

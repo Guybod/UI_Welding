@@ -25,6 +25,10 @@ class BasePage(QWidget):
         """连接状态变化时调用"""
         pass
 
+    def on_robot_mode_changed(self, mode: int):
+        """机器人模式变化时调用（0 手动 / 1 自动 / 2 远程）"""
+        pass
+
     def on_robot_state_changed(self, state):
         """机器人状态变化时调用"""
         pass

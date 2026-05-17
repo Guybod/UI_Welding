@@ -1,0 +1,33 @@
+# RobotStatus.type -> models/ 下 GLB 文件（优先精确匹配，再按 patterns）
+
+default_glb: "10kg-6axis-model-v2.glb"
+
+exact:
+  S20-180-ECO-V2: "20kg-6axis-model-v2.glb"
+  S20-180-ECO: "20kg-6axis-model-v2.glb"
+  S10-700: "10kg-6axis-model-v2.glb"
+  S5-400: "5kg-6axis-model-v2.glb"
+  S3-400: "3kg-6axis-model-v2.glb"
+
+# 子串匹配（大写），先匹配先生效
+patterns:
+  - contains: "HM"
+    glb: "hm-60-th.glb"
+  - contains: "S35"
+    glb: "35kg-6axis-model-v2.glb"
+  - contains: "S30"
+    glb: "30kg-6axis-model-v2.glb"
+  - contains: "S20"
+    glb: "20kg-6axis-model-v2.glb"
+  - contains: "S16"
+    glb: "16kg-6axis-model-v2.glb"
+  - contains: "S12"
+    glb: "12kg-6axis-model-v2.glb"
+  - contains: "S10"
+    glb: "10kg-6axis-model-v2.glb"
+  - contains: "S7"
+    glb: "7kg-6axis-model-v2.glb"
+  - contains: "S5"
+    glb: "5kg-6axis-model-v2.glb"
+  - contains: "S3"
+    glb: "3kg-6axis-model-v2.glb"

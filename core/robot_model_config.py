@@ -26,6 +26,9 @@ class RobotModelConfig:
     ui_tcp_position_unit: str
     ui_tcp_orientation_unit: str
     mesh_dir: str = ""
+    glb_file: str = ""
+    joint_axes: list[str] = field(default_factory=lambda: ["z", "y", "y", "y", "z", "y"])
+    joint_signs: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
     link_visual: LinkVisual = field(default_factory=LinkVisual)
 
 
@@ -50,6 +53,9 @@ def _load_config() -> dict[str, RobotModelConfig]:
             ui_tcp_position_unit=raw.get("ui_tcp_position_unit", "mm"),
             ui_tcp_orientation_unit=raw.get("ui_tcp_orientation_unit", "deg"),
             mesh_dir=raw.get("mesh_dir", ""),
+            glb_file=raw.get("glb_file", ""),
+            joint_axes=list(raw.get("joint_axes", ["z", "y", "y", "y", "z", "y"])),
+            joint_signs=[float(x) for x in raw.get("joint_signs", [1, 1, 1, 1, 1, 1])],
             link_visual=LinkVisual(
                 base_height_mm=link.get("base_height_mm", 180),
                 link_lengths_mm=link.get("link_lengths_mm", []),

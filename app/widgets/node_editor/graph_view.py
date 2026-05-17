@@ -13,6 +13,8 @@ class GraphView(QGraphicsView):
     var_get_requested = Signal(str, str, str, str)
     var_set_requested = Signal(str, str, str, str)
     position_requested = Signal(str, str)
+    save_macro_requested = Signal()
+    macro_edit_requested = Signal(str)
 
     _zoom_min = 0.1
     _zoom_max = 3.0
@@ -55,6 +57,21 @@ class GraphView(QGraphicsView):
         else:
             super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            from app.widgets.node_editor.node_item import NodeItem
+
+            item = self.itemAt(event.position().toPoint())
+            while item is not None:
+                if isinstance(item, NodeItem) and item.node_type() == "MacroCall":
+                    mid = (item.node_data() or {}).get("macro_id", "")
+                    if mid:
+                        self.macro_edit_requested.emit(mid)
+                        event.accept()
+                        return
+                item = item.parentItem()
+        super().mouseDoubleClickEvent(event)
+
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.RightButton:
             delta = event.pos() - self._right_press_pos
@@ -86,6 +103,15 @@ class GraphView(QGraphicsView):
                 break
             item_at = item_at.parentItem()
 
+        from app.widgets.node_editor.node_item import NodeItem as _NI
+
+        selected_nodes = [i for i in s.items() if isinstance(i, _NI) and i.isSelected()]
+        if len(selected_nodes) >= 1:
+            act_macro = QAction(tr("macro_save_selection"), menu)
+            act_macro.triggered.connect(self.save_macro_requested.emit)
+            menu.addAction(act_macro)
+            menu.addSeparator()
+
         if clicked_node is not None:
             act_del = QAction(tr("node_delete"), menu)
             act_del.triggered.connect(lambda: s.remove_node(clicked_node))
@@ -93,6 +119,12 @@ class GraphView(QGraphicsView):
             act_rename = QAction(tr("node_rename_title"), menu)
             act_rename.triggered.connect(lambda: self._rename_node(clicked_node))
             menu.addAction(act_rename)
+            if clicked_node.node_type() == "MacroCall":
+                mid = (clicked_node.node_data() or {}).get("macro_id", "")
+                if mid:
+                    act_edit = QAction(tr("macro_edit"), menu)
+                    act_edit.triggered.connect(lambda m=mid: self.macro_edit_requested.emit(m))
+                    menu.addAction(act_edit)
             menu.addSeparator()
         # node library menu (shown both on empty and on node right-click)
         from app.widgets.node_editor.node_library_panel import CATEGORIES, CAT_I18N
@@ -108,7 +140,9 @@ class GraphView(QGraphicsView):
                     sub.addSeparator()
                 for v in self._library.variables():
                     var_menu = sub.addMenu(f"{v.name} ({v.var_type})")
-                    port_type = {"int":"number","float":"number","bool":"bool","string":"string","array":"any"}.get(v.var_type,"any")
+                    port_type = {"int": "int", "float": "float", "bool": "bool", "string": "string", "array": "any"}.get(
+                        v.var_type, "any",
+                    )
                     act_get = QAction(tr("var_get"), var_menu)
                     act_get.triggered.connect(lambda *a, vid=v.var_id, n=v.name, t=v.var_type, p=port_type: self.var_get_requested.emit(vid, n, t, p))
                     var_menu.addAction(act_get)
@@ -125,6 +159,14 @@ class GraphView(QGraphicsView):
                 for pos in self._library.positions():
                     act = QAction(pos.name, sub)
                     act.triggered.connect(lambda *a, pid=pos.pos_id, n=pos.name: self.position_requested.emit(pid, n))
+                    sub.addAction(act)
+                continue
+            if cat_name == "宏" and self._library:
+                for m in self._library._macros:
+                    act = QAction(m.name, sub)
+                    act.triggered.connect(
+                        lambda *a, mid=m.macro_id, n=m.name: self._place_macro_call(s, scene_pos, mid, n)
+                    )
                     sub.addAction(act)
                 continue
             for node_name in items:
@@ -145,21 +187,40 @@ class GraphView(QGraphicsView):
         from PySide6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, tr("node_rename_title"), tr("node_rename_label"), text=node._title)
         if ok and name.strip():
+            data = dict(node.node_data())
+            data["_auto_title"] = False
+            node.set_node_data(data)
             node._title = name.strip()
             node.update()
 
+    def _place_macro_call(self, scene, scene_pos, macro_id: str, macro_name: str) -> None:
+        if hasattr(scene, "add_macro_call"):
+            node = scene.add_macro_call(macro_id, macro_name, scene_pos.x(), scene_pos.y())
+            if hasattr(scene, "try_insert_node_on_flow_edge"):
+                scene.try_insert_node_on_flow_edge(node, scene_pos)
+
     def dragEnterEvent(self, event):
-        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION
-        if any(event.mimeData().hasFormat(f) for f in [MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION]):
+        from app.widgets.node_editor.node_library_panel import (
+            MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION, MIME_MACRO,
+        )
+        if any(event.mimeData().hasFormat(f) for f in [
+            MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION, MIME_MACRO,
+        ]):
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event):
-        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION
-        if any(event.mimeData().hasFormat(f) for f in [MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION]):
+        from app.widgets.node_editor.node_library_panel import (
+            MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION, MIME_MACRO,
+        )
+        if any(event.mimeData().hasFormat(f) for f in [
+            MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION, MIME_MACRO,
+        ]):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        from app.widgets.node_editor.node_library_panel import MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION as MP
+        from app.widgets.node_editor.node_library_panel import (
+            MIME_NODE_TYPE, MIME_VAR_GET, MIME_VAR_SET, MIME_POSITION as MP, MIME_MACRO,
+        )
         scene_pos = self.mapToScene(event.position().toPoint())
         s = self.scene()
         md = event.mimeData()
@@ -198,6 +259,13 @@ class GraphView(QGraphicsView):
                         node._title = p.name
                         node.update()
                         break
+            event.acceptProposedAction()
+            return
+
+        if md.hasFormat(MIME_MACRO):
+            import json
+            info = json.loads(md.data(MIME_MACRO).data().decode())
+            self._place_macro_call(s, scene_pos, info.get("macro_id", ""), info.get("name", ""))
             event.acceptProposedAction()
             return
 

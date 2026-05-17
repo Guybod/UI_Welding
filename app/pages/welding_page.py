@@ -24,6 +24,12 @@ from config.welding_defaults import (
     CHAR_HEIGHT_MM, CHAR_SPACING_MM, LINE_SPACING_MM, MARGIN_LEFT_MM, MARGIN_TOP_MM,
     LEAD_IN_MM, LEAD_OUT_MM, OVERLAP_MM, POINT_SPACING_MM,
 )
+from config.weld_font_presets import (
+    build_weld_font_item_data,
+    get_default_weld_font_preset_id,
+    is_allowed_weld_font_path,
+    list_available_weld_font_presets,
+)
 
 _sys_log = logging.getLogger("codroid")
 
@@ -313,23 +319,19 @@ class WeldingPage(BasePage):
         font_row = QHBoxLayout()
         font_row.addWidget(QLabel(tr("weld_font") + ":"))
         self._font_combo = QComboBox()
-        for fp in _find_system_fonts():
-            data = _build_font_item_data(fp)
-            self._font_combo.addItem(data["display"], data)
-        if self._font_combo.count() == 0:
-            self._font_combo.addItem("(未找到字体)", {
-                "path": "", "family": "", "display": "(未找到字体)",
-            })
+        self._font_combo.setToolTip(tr("weld_font_presets_tip"))
+        self._populate_weld_font_combo()
         font_row.addWidget(self._font_combo)
         font_row.addStretch()
         text_layout.addLayout(font_row)
 
-        # Mode selector (contour / skeleton)
+        # Mode selector (skeleton primary / contour)
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel(tr("weld_mode") + ":"))
         self._mode_combo = QComboBox()
-        self._mode_combo.addItem(tr("weld_mode_contour"), "contour")
         self._mode_combo.addItem(tr("weld_mode_skeleton_beta"), "skeleton")
+        self._mode_combo.addItem(tr("weld_mode_contour"), "contour")
+        self._mode_combo.setCurrentIndex(0)
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_row.addWidget(self._mode_combo)
         mode_row.addStretch()
@@ -769,12 +771,12 @@ class WeldingPage(BasePage):
 
             # 文字与字体
             s.setValue(p + "text", normalize_weld_text_input(self._text_input.toPlainText()))
-            font_idx = self._font_combo.currentIndex()
-            if font_idx >= 0:
-                data = self._font_combo.itemData(font_idx)
-                if isinstance(data, dict) and data.get("path"):
-                    s.setValue(p + "font_path", data["path"])
-                    s.setValue(p + "font_family", data.get("family", ""))
+            data = self._current_font_item()
+            if data.get("path"):
+                s.setValue(p + "font_path", data["path"])
+                s.setValue(p + "font_family", data.get("family", ""))
+            if data.get("preset_id"):
+                s.setValue(p + "font_preset_id", data["preset_id"])
             s.setValue(p + "mode", self._mode_combo.currentData())
 
             # 排版
@@ -879,17 +881,26 @@ class WeldingPage(BasePage):
             self._text_input.setPlainText(normalize_weld_text_input(txt))
 
         # Mode
-        mode_val = _str("mode", "contour")
+        mode_val = _str("mode", "skeleton")
         idx = self._mode_combo.findData(mode_val)
         if idx >= 0:
             self._mode_combo.setCurrentIndex(idx)
 
-        # 字体恢复（三级回退：path → family → 默认 index 0）
+        # 字体恢复：preset_id → path → family → 默认 preset
+        font_preset_id = _str("font_preset_id", "")
         font_path = _str("font_path", "")
         font_family = _str("font_family", "")
         selected = False
 
-        if font_path and os.path.exists(font_path):
+        if font_preset_id:
+            for i in range(self._font_combo.count()):
+                data = self._font_combo.itemData(i)
+                if isinstance(data, dict) and data.get("preset_id") == font_preset_id:
+                    self._font_combo.setCurrentIndex(i)
+                    selected = True
+                    break
+
+        if not selected and font_path and is_allowed_weld_font_path(font_path):
             for i in range(self._font_combo.count()):
                 data = self._font_combo.itemData(i)
                 if isinstance(data, dict) and data.get("path") == font_path:
@@ -1017,6 +1028,33 @@ class WeldingPage(BasePage):
                 if v is not None:
                     self._ws_spins[row][col].setValue(_qsettings_float(v, 0.0))
 
+    def _populate_weld_font_combo(self) -> None:
+        """焊接页字体：仅 config/weld_font_presets.yaml 白名单。"""
+        self._font_combo.clear()
+        lang = I18nManager.instance().lang
+        presets = list_available_weld_font_presets()
+        default_id = get_default_weld_font_preset_id()
+        for preset in presets:
+            data = build_weld_font_item_data(preset, lang=lang)
+            self._font_combo.addItem(data["display"], data)
+        if self._font_combo.count() == 0:
+            self._font_combo.addItem(tr("weld_log_no_font_preset"), {
+                "path": "", "family": "", "display": "", "preset_id": "",
+            })
+            return
+        for i in range(self._font_combo.count()):
+            data = self._font_combo.itemData(i)
+            if isinstance(data, dict) and data.get("preset_id") == default_id:
+                self._font_combo.setCurrentIndex(i)
+                break
+
+    def _current_font_item(self) -> dict:
+        idx = self._font_combo.currentIndex()
+        if idx < 0:
+            return {}
+        data = self._font_combo.itemData(idx)
+        return data if isinstance(data, dict) else {}
+
     def _on_mode_changed(self, index: int):
         if self._mode_combo.itemData(index) == "skeleton":
             self._append_log(tr("weld_mode_skeleton_tip"))
@@ -1088,16 +1126,14 @@ class WeldingPage(BasePage):
         self._last_preview_path = png_path
 
     def _collect_params(self) -> dict:
-        font_idx = self._font_combo.currentIndex()
-        font_data = self._font_combo.itemData(font_idx) if font_idx >= 0 else {}
-        if isinstance(font_data, dict):
-            font_path = font_data.get("path", "")
-        else:
-            font_path = font_data or ""
+        font_data = self._current_font_item()
+        font_path = font_data.get("path", "") or ""
+        font_preset_id = font_data.get("preset_id", "") or ""
 
         return {
             "text": normalize_weld_text_input(self._text_input.toPlainText()),
-            "font_path": font_path or "",
+            "font_path": font_path,
+            "font_preset_id": font_preset_id,
             "char_height_mm": self._spin_char_h.value(),
             "margin_left_mm": self._spin_margin_left.value(),
             "margin_top_mm": self._spin_margin_top.value(),
@@ -1120,13 +1156,24 @@ class WeldingPage(BasePage):
         if not params["text"]:
             self._append_log(tr("weld_log_no_text"))
             return
+        if not params["font_path"] or not is_allowed_weld_font_path(params["font_path"]):
+            self._append_log(tr("weld_log_no_font_preset"))
+            return
+        mode = self._mode_combo.currentData() or "skeleton"
+        if mode == "skeleton":
+            from pipeline.weld_skeleton_latin import validate_weld_skeleton_text
+            sk_err = validate_weld_skeleton_text(
+                params["text"], lang=I18nManager.instance().lang,
+            )
+            if sk_err:
+                self._append_log(sk_err)
+                return
         self._save_settings()
         # 清空上次生成的状态
         self._last_txt_path = ""
         self._last_json_path = ""
         self._last_preview_path = ""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        mode = self._mode_combo.currentData() or "contour"
         text_log = params["text"].replace("\n", " ↵ ")
         self._append_log(tr("weld_log_generate_header").format(
             ts=ts, text=text_log, mode=mode))
@@ -1156,6 +1203,7 @@ class WeldingPage(BasePage):
             right_top=ws["right_top"],
             left_bottom=ws["left_bottom"],
             font_path=params["font_path"] or None,
+            font_preset_id=params.get("font_preset_id") or None,
             font_size_px=600,
             px_per_mm=10.0,
             char_height_mm=params["char_height_mm"],

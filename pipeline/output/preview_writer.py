@@ -21,9 +21,9 @@ from matplotlib.patches import FancyArrowPatch
 
 from core.types import Stroke, ProcessSegment, RobotPoint
 
-# ── CJK 字体 ──
+# ── CJK 字体（预览 PNG 标题中文，与焊接 raster 字体无关）──
 
-_CJK_CONFIGURED = False
+_CJK_FP = None
 
 # 预览元数据（写入 summary.json；transform 仅作用于 PNG 显示）
 PREVIEW_META_DEFAULTS: dict[str, Any] = {
@@ -63,50 +63,83 @@ _STROKE_COLORS = {
     "image": "purple",
 }
 
-_TITLE_RAW = "Raw Strokes Preview / 原始字形轮廓预览"
-_TITLE_EXEC = "Execution Preview (paper-aligned) / 执行预览（纸面对齐）"
-_TITLE_WELD = "Weld Path Preview / 焊接轨迹预览"
-_TITLE_COMBINED = "Combined Preview / 组合预览"
+_TITLE_RAW = "Raw Strokes Preview"
+_TITLE_EXEC = "Execution Preview (paper-aligned)"
+_TITLE_WELD = "Weld Path Preview"
+_TITLE_COMBINED = "Combined Preview"
 
 
 def _find_cjk_font() -> str | None:
+    """预览图标题/占位中文用（与焊接 preset 字体无关）。"""
     candidates: list[str] = []
     if _sys.platform == "win32":
         windir = _os.environ.get("WINDIR", "C:\\Windows")
         candidates.extend([
             _os.path.join(windir, "Fonts", "msyh.ttc"),
+            _os.path.join(windir, "Fonts", "msyhbd.ttc"),
             _os.path.join(windir, "Fonts", "simhei.ttf"),
-            _os.path.join(windir, "Fonts", "simsun.ttc"),
+        ])
+    elif _sys.platform == "darwin":
+        candidates.extend([
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
         ])
     candidates.extend([
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
     ])
     for p in candidates:
-        if _os.path.exists(p):
+        if _os.path.isfile(p):
             return p
     return None
 
 
-def _configure_cjk_font(preferred: str | None = None):
-    global _CJK_CONFIGURED
-    if _CJK_CONFIGURED:
-        return
-    _CJK_CONFIGURED = True
-    font_path = _find_cjk_font()
-    if font_path is None:
-        return
+def _cjk_fontproperties(preferred: str | None = None):
+    """返回含中文的预览用 FontProperties；失败返回 None。"""
+    global _CJK_FP
+    if _CJK_FP is not None:
+        return _CJK_FP
+    font_path = (preferred or "").strip() or _find_cjk_font()
+    if not font_path or not _os.path.isfile(font_path):
+        return None
     from matplotlib.font_manager import FontProperties, fontManager
     try:
         fontManager.addfont(font_path)
-        fp = FontProperties(fname=font_path)
-        family = fp.get_name()
-        prev = plt.rcParams.get("font.sans-serif", [])
-        if isinstance(prev, list) and family not in prev:
-            plt.rcParams["font.sans-serif"] = [family] + prev
+        _CJK_FP = FontProperties(fname=font_path)
         plt.rcParams["axes.unicode_minus"] = False
+        return _CJK_FP
     except Exception:
-        pass
+        return None
+
+
+def _configure_cjk_font(preferred: str | None = None) -> None:
+    _cjk_fontproperties(preferred)
+
+
+def _text_kw(preferred: str | None = None) -> dict:
+    fp = _cjk_fontproperties(preferred)
+    return {"fontproperties": fp} if fp is not None else {}
+
+
+def _set_mpl_title(ax, title: str, *, preferred: str | None = None, **kwargs) -> None:
+    ax.set_title(title, **_text_kw(preferred), **kwargs)
+
+
+def _set_mpl_suptitle(fig, title: str, *, preferred: str | None = None, **kwargs) -> None:
+    fig.suptitle(title, **_text_kw(preferred), **kwargs)
+
+
+def _mpl_text(ax, x, y, s: str, *, preferred: str | None = None, **kwargs) -> None:
+    ax.text(x, y, s, **_text_kw(preferred), **kwargs)
+
+
+def _savefig(fig, output_path: str | _Path, **kwargs) -> None:
+    path = _Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, **kwargs)
 
 
 def _uv_projector(workplane):
@@ -242,7 +275,7 @@ def _plot_segments_on_ax(
 
 
 def _finalize_paper_ax(ax, *, title: str, workplane) -> None:
-    ax.set_title(title, fontsize=11)
+    _set_mpl_title(ax, title, fontsize=11)
     if workplane is not None:
         ax.set_xlabel("Paper U (mm) · LT→RT")
         ax.set_ylabel("Paper V (mm) · LT→LB")
@@ -273,6 +306,7 @@ class DebugExporter:
         canvas_h: float | None = None,
     ) -> dict:
         """像素空间字形轮廓（可 invert_yaxis，不代表机器人方向）。"""
+        _configure_cjk_font()
         fig, ax = plt.subplots(figsize=(10, 10))
         warnings_list: list[str] = []
         point_count = 0
@@ -292,12 +326,14 @@ class DebugExporter:
             if show_order and xs:
                 ax.annotate(str(i), (xs[0], ys[0]), fontsize=7, xytext=(3, 3),
                             textcoords="offset points")
-        ax.set_title(title)
+        _set_mpl_title(ax, title)
         ax.set_xlabel("pixel X")
         ax.set_ylabel("pixel Y")
         ax.invert_yaxis()
-        ax.text(0.02, 0.02, "像素空间，非机器人坐标", transform=ax.transAxes,
-                fontsize=8, color="gray", va="bottom")
+        ax.text(
+            0.02, 0.02, "pixel space (not robot coords)",
+            transform=ax.transAxes, fontsize=8, color="gray", va="bottom",
+        )
         if canvas_w and canvas_h:
             ax.set_xlim(0, canvas_w)
             ax.set_ylim(canvas_h, 0)
@@ -305,7 +341,7 @@ class DebugExporter:
             ax.legend(fontsize=7, loc="upper right")
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return {
             "output_path": str(path),
@@ -326,6 +362,7 @@ class DebugExporter:
         show_travel: bool = True,
     ) -> dict:
         """正式执行预览：点位与 points/Lua 同源；纸面 UV 显示 LB 左下 / RT 右上。"""
+        _configure_cjk_font()
         fig, ax = plt.subplots(figsize=(11, 10))
         to_uv = _uv_projector(workplane) if workplane is not None else None
         corners = _workplane_corners_uv(workplane)
@@ -337,7 +374,7 @@ class DebugExporter:
         _finalize_paper_ax(ax, title=title, workplane=workplane)
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return {
             "output_path": str(path),
@@ -378,7 +415,7 @@ class DebugExporter:
         _finalize_paper_ax(ax, title=title, workplane=workplane)
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return {
             "output_path": str(path),
@@ -415,6 +452,7 @@ class DebugExporter:
         title: str = _TITLE_WELD,
     ) -> dict:
         """焊接相关轨迹：weld / overlap / lead_in / lead_out，不含 travel/retreat。"""
+        _configure_cjk_font()
         fig, ax = plt.subplots(figsize=(10, 10))
         to_uv = _uv_projector(workplane) if workplane is not None else None
         corners = _workplane_corners_uv(workplane)
@@ -426,7 +464,7 @@ class DebugExporter:
         _finalize_paper_ax(ax, title=title, workplane=workplane)
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return {
             "output_path": str(path),
@@ -449,6 +487,7 @@ class DebugExporter:
         workplane=None,
     ) -> dict:
         """三栏：Raw Strokes | Weld Only | Execution (Base Z+)。"""
+        _configure_cjk_font()
         fig, axes = plt.subplots(1, 3, figsize=(24, 8))
 
         # 左：像素 raw
@@ -462,7 +501,7 @@ class DebugExporter:
                 xs = xs + [xs[0]]
                 ys = ys + [ys[0]]
             ax0.plot(xs, ys, "-", color=_STROKE_COLORS.get(s.source_type, "black"), lw=0.9)
-        ax0.set_title("Raw Strokes\n像素轮廓")
+        ax0.set_title("Raw Strokes")
         ax0.set_xlabel("px")
         ax0.set_ylabel("px")
         ax0.invert_yaxis()
@@ -475,7 +514,7 @@ class DebugExporter:
             _draw_workplane_frame_uv(ax1, corners)
         _plot_segments_on_ax(ax1, segments, to_uv=to_uv, allowed_types=_WELD_ONLY_TYPES,
                              show_travel=False, legend=True)
-        _finalize_paper_ax(ax1, title="Weld Path\n焊接轨迹", workplane=workplane)
+        _finalize_paper_ax(ax1, title="Weld Path", workplane=workplane)
 
         # 右：execution（纸面 UV）
         ax2 = axes[2]
@@ -483,12 +522,12 @@ class DebugExporter:
         if corners:
             _draw_workplane_frame_uv(ax2, corners)
             _draw_paper_axes_arrows(ax2, corners)
-        _finalize_paper_ax(ax2, title="Execution\n执行预览", workplane=workplane)
+        _finalize_paper_ax(ax2, title="Execution", workplane=workplane)
 
-        fig.suptitle(title, fontsize=12, y=1.02)
+        _set_mpl_suptitle(fig, title, fontsize=12, y=1.02)
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return {
             "output_path": str(path),
@@ -502,16 +541,23 @@ class DebugExporter:
         output_path: str | _Path,
         *,
         reason: str,
-        title: str = "Preview Not Generated / 未生成预览",
+        title: str = "Preview Not Generated",
     ) -> dict:
         """空间不足等失败时：占位图，避免误用旧成功图。"""
+        _configure_cjk_font()
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.axis("off")
-        ax.text(0.5, 0.55, title, ha="center", va="center", fontsize=14, fontweight="bold")
-        ax.text(0.5, 0.35, reason[:200], ha="center", va="center", fontsize=10, wrap=True)
+        _mpl_text(
+            ax, 0.5, 0.55, title,
+            ha="center", va="center", fontsize=14, fontweight="bold",
+        )
+        _mpl_text(
+            ax, 0.5, 0.35, reason[:200],
+            ha="center", va="center", fontsize=10, wrap=True,
+        )
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=120, bbox_inches="tight")
+        _savefig(fig, path, dpi=120, bbox_inches="tight")
         plt.close(fig)
         return {"output_path": str(path), "placeholder": True, "reason": reason}
 
@@ -568,10 +614,10 @@ class DebugExporter:
                 ax.plot(lx, ly, "-", color=color, lw=1.2)
             ax.invert_yaxis()
             ax.set_aspect("equal")
-        ax.set_title(title)
+        _set_mpl_title(ax, title)
         path = _Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return {"output_path": str(path), "warnings": warnings}
 
@@ -602,12 +648,10 @@ class DebugExporter:
         output_dir: str | _Path,
         *,
         title_prefix: str = "",
-        cjk_font_path: str | None = None,
         workplane=None,
         show_travel_in_execution: bool = True,
     ) -> dict:
         """输出全套预览 PNG + preview_meta（供 summary.json）。"""
-        _configure_cjk_font(cjk_font_path)
         out = _Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         t = f"{title_prefix}\n" if title_prefix else ""

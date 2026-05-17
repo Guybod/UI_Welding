@@ -3,8 +3,57 @@ from datetime import datetime
 from app.widgets.node_editor.models import GraphData, NodeData, EdgeData, VarDef, PositionDef, GRAPH_VERSION
 
 
-def graph_to_json(graph: GraphData) -> str:
+def reconcile_graph_variables(graph: GraphData) -> None:
+    """从画布 GetVar/SetVar 补全 variables 表（兼容缺 variables 段或库不完整的 JSON）。"""
+    from app.widgets.node_editor.var_value import format_var_storage, parse_var_storage
+
+    by_id: dict[str, VarDef] = {}
+    for v in graph.variables:
+        if v.var_id:
+            by_id[v.var_id] = v
+
+    for nd in graph.nodes:
+        if nd.node_type not in ("GetVar", "SetVar"):
+            continue
+        d = nd.data or {}
+        vid = d.get("var_id", "")
+        if not vid:
+            continue
+
+        vtype = d.get("var_type", "int")
+        name = (d.get("var_name") or "").strip()
+        if not name:
+            title = (nd.title or "").strip()
+            if title.lower().startswith("get "):
+                name = title[4:].strip()
+            elif title.lower().startswith("set "):
+                name = title[4:].strip()
+            else:
+                name = vid
+
+        if vid not in by_id:
+            val = parse_var_storage(d.get("value"), vtype)
+            by_id[vid] = VarDef(
+                var_id=vid,
+                name=name,
+                var_type=vtype,
+                value=format_var_storage(val, vtype),
+            )
+            continue
+
+        existing = by_id[vid]
+        if not existing.name.strip() and name:
+            existing.name = name
+        if not existing.var_type:
+            existing.var_type = vtype
+
+    graph.variables = list(by_id.values())
+
+
+def graph_to_json(graph: GraphData, *, merge_nodes_into_variables: bool = True) -> str:
     """GraphData → JSON 字符串"""
+    if merge_nodes_into_variables:
+        reconcile_graph_variables(graph)
     obj = {
         "graph_version": graph.graph_version,
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -69,17 +118,6 @@ def json_to_graph(text: str) -> GraphData:
         )
         for e in obj.get("edges", [])
     ]
-    variables = []
-    for v in obj.get("variables", []):
-        val = v.get("value", v.get("initial", v.get("default", "")))
-        if val is None:
-            val = ""
-        variables.append(VarDef(
-            var_id=v.get("var_id", v.get("id", "")),
-            name=v.get("name", ""),
-            var_type=v.get("var_type", v.get("type", "int")),
-            value=str(val),
-        ))
     positions_raw = obj.get("positions", [])
     positions = []
     for p in positions_raw:
@@ -97,7 +135,7 @@ def json_to_graph(text: str) -> GraphData:
             ))
     variables = []
     for v in obj.get("variables", []):
-        val = v.get("value", v.get("initial", ""))
+        val = v.get("value", v.get("initial", v.get("default", "")))
         if val is None:
             val = ""
         variables.append(VarDef(
@@ -114,4 +152,6 @@ def json_to_graph(text: str) -> GraphData:
                 d["duration_ms"] = int(float(d.pop("duration")) * 1000)
             if "duration_sec" in d and "duration_ms" not in d:
                 d["duration_ms"] = int(float(d.pop("duration_sec")) * 1000)
-    return GraphData(graph_version=version, nodes=nodes, edges=edges, variables=variables, positions=positions)
+    graph = GraphData(graph_version=version, nodes=nodes, edges=edges, variables=variables, positions=positions)
+    reconcile_graph_variables(graph)
+    return graph

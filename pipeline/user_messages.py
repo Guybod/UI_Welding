@@ -37,6 +37,13 @@ def pipeline_failed_prefix(*, lang: str = "zh") -> str:
     return "Pipeline FAILED: " if normalize_lang(lang) == "en" else "生成失败："
 
 
+def weld_font_not_allowed(font_path: str, *, lang: str = "zh") -> str:
+    lang = normalize_lang(lang)
+    if lang == "en":
+        return f"Font not in weld preset allowlist: {font_path}"
+    return f"字体不在焊接预设白名单中: {font_path}"
+
+
 def stage_error(stage: str, exc: Exception | str, *, lang: str = "zh") -> str:
     lang = normalize_lang(lang)
     detail = str(exc)

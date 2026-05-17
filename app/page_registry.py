@@ -46,6 +46,11 @@ def _io():
     return IoMonitorPage()
 
 
+def _register():
+    from app.pages.register_monitor_page import RegisterMonitorPage
+    return RegisterMonitorPage()
+
+
 def _program():
     from app.pages.program_editor import ProgramEditorPage
     return ProgramEditorPage()
@@ -64,6 +69,7 @@ PAGE_REGISTRY = [
     PageSpec("welding", "焊接", "process", _welding),
     PageSpec("writing", "绘图", "process", _writing),
     PageSpec("io", "IO", "robot", _io),
+    PageSpec("register", "寄存器", "robot", _register),
     PageSpec("program", "程序", "robot", _program),
     PageSpec("upload", "上传", "tools", _upload, requires_connection=True),
     PageSpec("settings", "设置", "system", _settings),

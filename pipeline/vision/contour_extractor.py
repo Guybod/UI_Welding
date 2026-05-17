@@ -1,5 +1,8 @@
 """轮廓字引擎 — PIL 二值图 → cv2.findContours → Stroke 序列
 
+焊接文字请经 pipeline.text_stroke_extract.extract_glyph_strokes(..., mode="contour")
+调用，勿与骨架模式混用。图片模式见 image_preprocessor。
+
 无 Qt/PySide6 依赖。只做像素空间轮廓提取 + 可选像素级简化。
 不做 mm 映射、不做 mm 级重采样、不做拐角保护、不做工艺段。
 """

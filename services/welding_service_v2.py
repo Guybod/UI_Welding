@@ -7,6 +7,7 @@
 
 from PySide6.QtCore import QObject, Signal
 
+from config.weld_font_presets import WeldFontPresetError
 from core.types import RobotPoint
 from pipeline.mapping import WorkPlane
 from pipeline.offline_runner import OfflinePipelineRunner
@@ -16,6 +17,7 @@ from pipeline.user_messages import (
     pipeline_failed_prefix,
     pipeline_start_log,
     unexpected_error_log,
+    weld_font_not_allowed,
     workplane_log,
 )
 
@@ -51,7 +53,7 @@ class WeldingServiceV2(QObject):
     def generate(
         self,
         text: str,
-        mode: str = "contour",
+        mode: str = "skeleton",
         *,
         # 四点标定 (UI 三点 + 推导 right_top)
         left_top: RobotPoint | dict | None = None,
@@ -60,6 +62,7 @@ class WeldingServiceV2(QObject):
         right_bottom: RobotPoint | dict | None = None,
         # 可选配置
         font_path: str | None = None,
+        font_preset_id: str | None = None,
         font_size_px: int = 600,
         px_per_mm: float = 10.0,
         char_spacing_mm: float = 2.0,
@@ -132,6 +135,8 @@ class WeldingServiceV2(QObject):
             runner = OfflinePipelineRunner(
                 output_dir=out,
                 font_path=font_path,
+                font_preset_id=font_preset_id,
+                restrict_weld_fonts=True,
                 font_size_px=font_size_px,
                 lua_config=LuaExportConfig(
                     acceleration=lua_accel,
@@ -208,6 +213,13 @@ class WeldingServiceV2(QObject):
             if png_path:
                 self.preview_ready.emit(png_path)
 
+        except WeldFontPresetError as exc:
+            self._state = self.STATE_ERROR
+            self.state_changed.emit(self._state)
+            path = font_path or ""
+            msg = weld_font_not_allowed(path, lang=user_lang) if path else str(exc)
+            self.log_message.emit(f"{pipeline_failed_prefix(lang=user_lang)}{msg}")
+            self.error_occurred.emit(msg)
         except Exception as exc:
             self._state = self.STATE_ERROR
             self.state_changed.emit(self._state)

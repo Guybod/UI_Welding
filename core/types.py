@@ -239,6 +239,12 @@ class PathConfig:
     curve_epsilon_mm: float = 0.65
     curve_resample_step_mm: float = 2.5
     contour_inner_area_frac: float = 0.32
+    # 骨架字（由 weld_font_presets 按字体写入）
+    skeleton_raster_close_px: int = 0
+    skeleton_raster_dilate_px: int = 0
+    skeleton_spur_min_px: float = 3.0
+    skeleton_merge_gap_px: float = 0.0
+    skeleton_branch_cluster_radius_px: int = 5
 
 
 @dataclass
@@ -391,6 +397,10 @@ class WeldingProcessConfig:
     current: float = 150.0
     job: int = 0
     inductance: float = 0.0
+    # 骨架字 W1-a：分叉处连续焊（仅 skeleton + 启用时）
+    skeleton_continuous_junctions: bool = True
+    skeleton_junction_merge_mm: float = 2.0
+    skeleton_component_bridge_mm: float = 25.0
 
 
 @dataclass

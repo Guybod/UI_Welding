@@ -8,6 +8,7 @@ from app.widgets.node_editor.node_item import NodeItem
 from app.widgets.node_editor.port_item import PortItem
 from app.widgets.node_editor.edge_item import EdgeItem
 from app.widgets.node_editor.models import GraphData, NodeData, EdgeData
+from app.widgets.node_editor.node_display_title import AUTO_TITLE_NODE_TYPES
 
 
 class GraphScene(QGraphicsScene):
@@ -39,9 +40,18 @@ class GraphScene(QGraphicsScene):
         # 常量节点默认值
         _CONSTANT_DEFAULTS = {"Int": 0, "Float": 0.0, "Bool": False, "String": "", "Array": []}
         if node_type in _CONSTANT_DEFAULTS:
-            node.set_node_data({"value": _CONSTANT_DEFAULTS[node_type]})
-            node._title = str(_CONSTANT_DEFAULTS[node_type])
-            node.update()
+            node.set_node_data({"value": _CONSTANT_DEFAULTS[node_type], "_auto_title": True})
+        if node_type == "EnumInt":
+            node.set_node_data({
+                "options": [0, 1],
+                "labels": ["0", "1"],
+                "selected": 0,
+                "_auto_title": True,
+            })
+        if node_type == "Cast":
+            node.set_node_data({"cast_to": "float", "_auto_title": True})
+        if node_type == "Comment":
+            node.set_node_data({"text": ""})
 
         return node
 
@@ -69,11 +79,118 @@ class GraphScene(QGraphicsScene):
                     break
         node.set_node_data({
             "_ports": [(p.name, p.port_type, p.direction) for p in ports],
-            "var_id": var_id, "var_name": var_name, "var_type": var_type, "value": init_val,
+            "var_id": var_id,
+            "var_name": var_name,
+            "var_type": var_type,
+            "value": init_val,
+            "_auto_title": True,
         })
         node.setPos(x, y)
         self.addItem(node)
+        node.refresh_display_title()
         return node
+
+    def add_macro_call(self, macro_id: str, macro_name: str, x: float = 0, y: float = 0) -> NodeItem:
+        from app.widgets.node_editor.macro_storage import MacroDef
+        from app.widgets.node_editor.models import GraphData
+        from app.widgets.node_editor.macro_ports import macro_call_node_spec, macro_call_ports_snapshot
+
+        macro = None
+        if self._library:
+            macro = self._library.get_macro(macro_id)
+        if macro is None:
+            macro = MacroDef(macro_id=macro_id, name=macro_name, graph=GraphData())
+        spec = macro_call_node_spec(macro)
+        node = NodeItem("MacroCall", override_spec=spec)
+        node.setPos(x, y)
+        self.addItem(node)
+        node.set_node_data({
+            "macro_id": macro_id,
+            "macro_name": macro_name,
+            "_ports": macro_call_ports_snapshot(macro),
+            "_param_in": len([p for p in macro.params or [] if p.direction == "in"]),
+            "_param_out": len([p for p in macro.params or [] if p.direction == "out"]),
+            "_auto_title": True,
+        })
+        node.refresh_display_title()
+        return node
+
+    def rebuild_macro_call(self, node: NodeItem, macro_id: str | None = None) -> NodeItem:
+        """宏定义变更后重建 MacroCall 引脚，尽量保留同名端口连线。"""
+        from app.widgets.node_editor.macro_ports import macro_call_node_spec, macro_call_ports_snapshot
+        from app.widgets.node_editor.node_item import NodeItem
+
+        data = dict(node.node_data())
+        mid = macro_id or data.get("macro_id", "")
+        macro = self._library.get_macro(mid) if self._library else None
+        if not macro:
+            return node
+        edge_records: list[tuple[str, str, str, str]] = []
+        for port in node.ports():
+            for edge in list(port.connected_edges):
+                other = edge.target() if edge.source() is port else edge.source()
+                if not other:
+                    continue
+                other_node = other.parentItem()
+                if other_node is node or not hasattr(other_node, "data"):
+                    continue
+                oid = other_node.data(0)
+                if not oid:
+                    continue
+                edge_records.append((
+                    port.port_name(),
+                    port.direction(),
+                    oid,
+                    other.port_name(),
+                ))
+        pos = node.pos()
+        nid = node.data(0)
+        selected = node.isSelected()
+        self.remove_node(node)
+        spec = macro_call_node_spec(macro)
+        new_node = NodeItem("MacroCall", override_spec=spec)
+        new_node.setPos(pos)
+        self.addItem(new_node)
+        if nid:
+            new_node.setData(0, nid)
+        data["macro_id"] = macro.macro_id
+        data["macro_name"] = macro.name
+        data["_ports"] = macro_call_ports_snapshot(macro)
+        data["_param_in"] = len([p for p in macro.params or [] if p.direction == "in"])
+        data["_param_out"] = len([p for p in macro.params or [] if p.direction == "out"])
+        new_node.set_node_data(data)
+        new_node.refresh_display_title()
+        new_node.setSelected(selected)
+        node_by_id = {
+            item.data(0): item
+            for item in self.items()
+            if isinstance(item, NodeItem) and item.data(0)
+        }
+        port_by_name = {p.port_name(): p for p in new_node.ports()}
+        for pname, direction, oid, other_pname in edge_records:
+            macro_port = port_by_name.get(pname)
+            other_node = node_by_id.get(oid)
+            if not macro_port or not other_node:
+                continue
+            other_port = self._find_port(other_node, other_pname, "output" if direction == "input" else "input")
+            if not other_port:
+                continue
+            if direction == "input":
+                self._add_edge(other_port, macro_port)
+            else:
+                self._add_edge(macro_port, other_port)
+        return new_node
+
+    def selected_node_ids(self) -> set[str]:
+        from app.widgets.node_editor.node_item import NodeItem
+
+        out: set[str] = set()
+        for item in self.selectedItems():
+            if isinstance(item, NodeItem):
+                nid = item.data(0)
+                if nid:
+                    out.add(nid)
+        return out
 
     def _init_position_data(self, node: NodeItem):
         from services.robot_realtime_state import RobotRealtimeState
@@ -164,15 +281,50 @@ class GraphScene(QGraphicsScene):
             node = None
             # rebuild dynamic nodes (GetVar/SetVar) with correct ports
             if nd.node_type in ("GetVar", "SetVar") and nd.data.get("_ports"):
-                from app.widgets.node_editor.models import PortSpec, NodeSpec
-                ports = [PortSpec(p[0], p[1], p[2]) for p in nd.data["_ports"]]
+                from app.widgets.node_editor.models import PortSpec, NodeSpec, VAR_PORT_TYPE
+                from app.widgets.node_editor.port_types import migrate_ports_list
+
+                vtype = nd.data.get("var_type", "int")
+                raw_ports = migrate_ports_list(list(nd.data["_ports"]), vtype)
+                ports = [PortSpec(p[0], p[1], p[2]) for p in raw_ports]
+                nd.data["_ports"] = raw_ports
+                if nd.node_type == "GetVar":
+                    ptype = VAR_PORT_TYPE.get(vtype, "any")
+                    for i, ps in enumerate(ports):
+                        if ps.name == "value" and ps.direction == "output":
+                            ports[i] = PortSpec("value", ptype, "output")
                 spec = NodeSpec(nd.node_type, nd.title, "变量", ports, color="#00BCD4")
                 node = self.add_node(nd.node_type, nd.x, nd.y, override_spec=spec)
+            elif nd.node_type == "MacroCall":
+                from app.widgets.node_editor.macro_ports import macro_call_node_spec, macro_call_ports_snapshot
+                from app.widgets.node_editor.macro_storage import MacroDef
+                from app.widgets.node_editor.models import GraphData
+
+                macro = None
+                if self._library:
+                    macro = self._library.get_macro((nd.data or {}).get("macro_id", ""))
+                if macro is None:
+                    macro = MacroDef(
+                        macro_id=(nd.data or {}).get("macro_id", ""),
+                        name=(nd.data or {}).get("macro_name", nd.title),
+                        graph=GraphData(),
+                    )
+                raw_ports = (nd.data or {}).get("_ports") or macro_call_ports_snapshot(macro)
+                ports = [PortSpec(p[0], p[1], p[2]) for p in raw_ports]
+                spec = macro_call_node_spec(macro, nd.title)
+                node = self.add_node(nd.node_type, nd.x, nd.y, override_spec=spec)
+                nd.data = dict(nd.data or {})
+                nd.data["_ports"] = raw_ports
             else:
                 node = self.add_node(nd.node_type, nd.x, nd.y)
             node.setData(0, nd.node_id)
-            node.set_node_data(nd.data)
-            if nd.title not in (nd.node_type, "", None):
+            data = dict(nd.data or {})
+            if data.get("_auto_title") is False and nd.title:
+                data["_auto_title"] = False
+            else:
+                data.setdefault("_auto_title", True)
+            node.set_node_data(data)
+            if data.get("_auto_title") is False and nd.title:
                 node._title = nd.title
                 node.update()
             node_map[nd.node_id] = node
@@ -187,6 +339,8 @@ class GraphScene(QGraphicsScene):
             if src_port and tgt_port:
                 self._add_edge(src_port, tgt_port)
 
+        self.refresh_display_titles()
+
     def _find_port(self, node: NodeItem, name: str, direction: str) -> PortItem | None:
         for p in node.ports():
             if p.port_name() == name and p.direction() == direction:
@@ -199,7 +353,9 @@ class GraphScene(QGraphicsScene):
         # validate: output → input, compatible types
         if src.direction() != "output" or tgt.direction() != "input":
             return
-        if src.port_type() != tgt.port_type() and src.port_type() != "any" and tgt.port_type() != "any":
+        from app.widgets.node_editor.port_types import ports_compatible
+
+        if not ports_compatible(src.port_type(), tgt.port_type()):
             return
         # auto-disconnect old connection on same target port
         for old_edge in list(tgt.connected_edges):
@@ -214,10 +370,66 @@ class GraphScene(QGraphicsScene):
         tgt.add_edge(edge)
         self.addItem(edge)
         edge.update_path()
+        self._refresh_titles_for_ports(src, tgt)
 
     def _remove_edge(self, edge: EdgeItem):
+        src = edge.source()
+        tgt = edge.target()
         edge.detach()
         self.removeItem(edge)
+        if src and tgt:
+            self._refresh_titles_for_ports(src, tgt)
+
+    def _refresh_titles_for_ports(self, src: PortItem, tgt: PortItem) -> None:
+        nodes: set[NodeItem] = set()
+        for port in (src, tgt):
+            parent = port.parentItem()
+            if isinstance(parent, NodeItem) and parent.node_type() in AUTO_TITLE_NODE_TYPES:
+                nodes.add(parent)
+        if nodes:
+            self.refresh_display_titles(nodes)
+
+    def collect_pose_links(self) -> dict[str, dict[str, str]]:
+        """motion_node_id -> {input_port: Position 显示名}"""
+        node_by_id: dict[str, NodeItem] = {}
+        for item in self.items():
+            if isinstance(item, NodeItem):
+                nid = item.data(0)
+                if nid:
+                    node_by_id[nid] = item
+
+        links: dict[str, dict[str, str]] = {}
+        for item in self.items():
+            if not isinstance(item, EdgeItem):
+                continue
+            src_port = item.source()
+            tgt_port = item.target()
+            if not src_port or not tgt_port:
+                continue
+            src_node = src_port.parentItem()
+            tgt_node = tgt_port.parentItem()
+            if not isinstance(src_node, NodeItem) or not isinstance(tgt_node, NodeItem):
+                continue
+            if src_node.node_type() != "Position":
+                continue
+            if tgt_port.port_type() != "pose":
+                continue
+            tgt_id = tgt_node.data(0)
+            if not tgt_id:
+                continue
+            pdata = src_node.node_data() or {}
+            name = (pdata.get("name") or "").strip() or src_node._title or "Position"
+            links.setdefault(tgt_id, {})[tgt_port.port_name()] = name
+        return links
+
+    def refresh_display_titles(self, nodes: set[NodeItem] | None = None) -> None:
+        pose_map = self.collect_pose_links()
+        if nodes is None:
+            nodes = {item for item in self.items() if isinstance(item, NodeItem)}
+        for node in nodes:
+            nid = node.data(0)
+            pose_links = pose_map.get(nid, {}) if nid else {}
+            node.refresh_display_title(pose_links)
 
     def _linear_flow_ports(self, node: NodeItem) -> tuple[PortItem | None, PortItem | None]:
         """主 flow 链路上的 in/out（名为 flow 的端口）。"""
@@ -352,17 +564,11 @@ class GraphScene(QGraphicsScene):
                 self._add_edge(target, src)
         elif not target and src.direction() == "input":
             # dragged from input port to empty space → create constant
-            pt = src.port_type()
-            if pt in ("number", "int", "float"):
-                node_type = "Int"
-            elif pt == "bool":
-                node_type = "Bool"
-            elif pt == "string":
-                node_type = "String"
-            elif pt == "pose":
-                node_type = "Position"
-            else:
-                node_type = "Int"
+            from app.widgets.node_editor.port_types import literal_node_for_port
+
+            node_type = literal_node_for_port(src.port_type())
+            if not node_type:
+                return
             node = self.add_node(node_type, pos.x(), pos.y())
             # set sensible defaults
             default_vals = {"Int": 1, "Float": 1.0, "Bool": True, "String": ""}

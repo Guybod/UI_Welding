@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent, QMenu
 from PySide6.QtGui import QPen, QBrush, QColor, QPainter, QPolygonF, QAction
 from PySide6.QtCore import Qt, QPointF, QRectF
 from app.i18n import tr
-from app.widgets.node_editor.models import PORT_COLORS
+from app.widgets.node_editor.port_types import PORT_COLORS
 
 PORT_SIZE = 5.0
 HOVER_SIZE = PORT_SIZE + 2

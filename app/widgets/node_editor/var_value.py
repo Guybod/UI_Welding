@@ -65,6 +65,31 @@ def array_to_editor_text(value: Any) -> str:
     return "[]"
 
 
+def format_array_element(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    return str(value)
+
+
+def coerce_array_element(text: str) -> Any:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        if "." in raw or "e" in low:
+            return float(raw)
+        return int(raw)
+    except ValueError:
+        return raw
+
+
 def parse_array_editor_text(text: str) -> list:
     raw = text.strip()
     if not raw:

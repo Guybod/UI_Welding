@@ -27,11 +27,17 @@ from pathlib import Path
 from typing import Any
 
 from core.types import PathConfig, WeldingProcessConfig, WorkspaceConfig, LuaExportConfig
+from config.weld_font_presets import (
+    WeldFontPresetError,
+    apply_skeleton_tuning_to_path_config,
+    enforce_weld_font_path,
+)
 from pipeline.raster import FontRasterizer, get_default_font_path
 from pipeline.user_messages import (
     no_strokes_extracted,
     skeleton_baseline_drift_warning,
     stage_error,
+    weld_font_not_allowed,
     workplane_overflow_message,
 )
 
@@ -173,6 +179,7 @@ class OfflinePipelineRunner:
         self,
         output_dir: str = "output",
         font_path: str | None = None,
+        font_preset_id: str | None = None,
         font_size_px: int = 600,
         canvas_w_px: float = 600.0,
         canvas_h_px: float = 600.0,
@@ -189,10 +196,23 @@ class OfflinePipelineRunner:
         lua_config: LuaExportConfig | None = None,
         export_lua: bool = True,
         user_lang: str = "zh",
+        restrict_weld_fonts: bool = False,
     ):
         self.output_dir = output_dir
         self.user_lang = user_lang if user_lang in ("zh", "en") else "zh"
-        self.font_path = font_path or get_default_font_path()
+        self.restrict_weld_fonts = restrict_weld_fonts
+        if restrict_weld_fonts:
+            try:
+                self.font_path = enforce_weld_font_path(
+                    font_path, preset_id=font_preset_id,
+                )
+            except WeldFontPresetError as exc:
+                raise WeldFontPresetError(str(exc)) from exc
+        elif font_path and str(font_path).strip():
+            self.font_path = str(font_path).strip()
+        else:
+            self.font_path = get_default_font_path()
+        self.font_preset_id = font_preset_id
         self.char_height_mm = char_height_mm
         self.font_size_px = font_size_px
         self.canvas_w_px = canvas_w_px
@@ -205,7 +225,13 @@ class OfflinePipelineRunner:
         self.allow_overflow = allow_overflow
         self.lua_config = lua_config or LuaExportConfig()
         self.export_lua = export_lua
-        self.path_config = path_config or PathConfig()
+        base_path_cfg = path_config or PathConfig()
+        if restrict_weld_fonts:
+            self.path_config = apply_skeleton_tuning_to_path_config(
+                base_path_cfg, self.font_path, px_per_mm=self.px_per_mm,
+            )
+        else:
+            self.path_config = base_path_cfg
         self.process_config = process_config or WeldingProcessConfig()
         self.workspace_config = workspace_config or WorkspaceConfig()
 
@@ -225,6 +251,17 @@ class OfflinePipelineRunner:
         run_dir = os.path.join(self.output_dir, f"{ts}_{safe_text}_{mode}")
         os.makedirs(run_dir, exist_ok=True)
         files: dict[str, str] = {}
+
+        from pipeline.text_stroke_extract import normalize_weld_text_mode
+        mode = normalize_weld_text_mode(mode)
+
+        if mode == "skeleton":
+            from pipeline.weld_skeleton_latin import validate_weld_skeleton_text
+
+            sk_err = validate_weld_skeleton_text(text, lang=self.user_lang)
+            if sk_err:
+                errors.append(sk_err)
+                return _fail(text, mode, run_dir, stage_stats, errors)
 
         # ── Stage 0: 字高 → font_size_px (二分 A 的 bbox 高度) ──
         if self.char_height_mm > 0 and self.px_per_mm > 0:
@@ -246,11 +283,10 @@ class OfflinePipelineRunner:
             except Exception:
                 pass
 
-        # ── Stage 1-2: render + extract ──
+        # ── Stage 1-2: render + extract（轮廓 / 骨架严格分流，见 text_stroke_extract）──
         extract_stats: dict = {}
-        multiline_contour = False
+        multiline_layout = False
         try:
-            from pipeline.vision import ContourExtractor
             from pipeline.multiline_layout import (
                 layout_contour_multiline,
                 layout_legacy_single_string,
@@ -262,9 +298,20 @@ class OfflinePipelineRunner:
             )
             lines = split_text_lines(text)
             line_count = len(lines)
-            multiline_contour = mode == "contour" and line_count >= 1
+            use_multiline = line_count >= 1 and mode == "contour"
+            multiline_layout = use_multiline
 
-            if multiline_contour:
+            if mode == "skeleton":
+                strokes_raw, extract_stats = layout_legacy_single_string(
+                    text.replace("\r\n", "\n").replace("\r", "\n").split("\n")[0],
+                    rasterizer=rasterizer,
+                    path_config=self.path_config,
+                    char_spacing_mm=self.char_spacing_mm,
+                    px_per_mm=self.px_per_mm,
+                    mode=mode,
+                )
+                extract_stats["skeleton_single_line_only"] = True
+            elif mode == "contour" and use_multiline:
                 strokes_raw, extract_stats = layout_contour_multiline(
                     lines,
                     rasterizer=rasterizer,
@@ -273,7 +320,6 @@ class OfflinePipelineRunner:
                     char_height_mm=self.char_height_mm,
                     line_spacing_mm=self.line_spacing_mm,
                     px_per_mm=self.px_per_mm,
-                    contour_extractor_cls=ContourExtractor,
                 )
             else:
                 strokes_raw, extract_stats = layout_legacy_single_string(
@@ -283,8 +329,6 @@ class OfflinePipelineRunner:
                     char_spacing_mm=self.char_spacing_mm,
                     px_per_mm=self.px_per_mm,
                     mode=mode,
-                    contour_extractor_cls=ContourExtractor,
-                    skeleton_extractor_mod=None,
                 )
 
             linebox_h = extract_stats.get("linebox_height_px", 0)
@@ -334,7 +378,13 @@ class OfflinePipelineRunner:
         # ── Stage 5: schedule ──
         try:
             from pipeline.path import PathScheduler
-            if multiline_contour and extract_stats.get("line_count", 1) > 0:
+            if mode == "skeleton":
+                strokes_sc, s5 = PathScheduler.schedule_char_order_nearest_endpoint(
+                    strokes_rf,
+                    char_key="weld_char_index",
+                    allow_reverse=True,
+                )
+            elif multiline_layout and extract_stats.get("line_count", 1) > 0:
                 strokes_sc, s5 = PathScheduler.schedule_by_line_groups(
                     strokes_rf, strategy="nearest", allow_reverse=True)
             else:
@@ -465,7 +515,7 @@ class OfflinePipelineRunner:
             s6["workspace_height_mm"] = round(getattr(workplane, "height_mm", 0), 1)
 
             # 骨架模式 baseline 安全网：用字符 pixel x 范围分组后检查跨字符基线
-            if mode == "skeleton" and strokes_mp and linebox_h > 0 and not multiline_contour:
+            if mode == "skeleton" and strokes_mp and linebox_h > 0 and not multiline_layout:
                 glyphs = rasterizer.render_text_linebox(text)
                 char_x_ranges_px = []
                 spacing_px = self.char_spacing_mm * self.px_per_mm
@@ -518,6 +568,7 @@ class OfflinePipelineRunner:
             segs, s7 = WeldingProcessPlanner.plan(
                 strokes_mp, self.process_config,
                 workplane=workplane, workspace_cfg=self.workspace_config,
+                mode=mode,
             )
             stage_stats.append(StageStats(name="plan", status="ok", stats=s7))
         except Exception as exc:
@@ -543,7 +594,6 @@ class OfflinePipelineRunner:
             preview_results = DebugExporter.write_run_preview(
                 strokes_sc, segs, run_dir,
                 title_prefix=f"{text} ({mode})",
-                cjk_font_path=self.font_path,
                 workplane=workplane,
                 show_travel_in_execution=True,
             )
@@ -598,8 +648,78 @@ class OfflinePipelineRunner:
             beta_layout_used=(mode != "contour"),
             extract_stats=extract_stats,
         )
+        skeleton_summary: dict = {}
+        if mode == "skeleton":
+            from pipeline.weld_skeleton_latin import skeleton_charset_descriptor
+            from config.weld_font_presets import get_weld_font_preset
+
+            from config.weld_font_presets import list_available_weld_font_presets, _norm_path
+            preset_id = (self.font_preset_id or "").strip()
+            if not preset_id and self.restrict_weld_fonts:
+                try:
+                    fp = _norm_path(self.font_path)
+                    for p in list_available_weld_font_presets():
+                        if _norm_path(p.resolved_path) == fp:
+                            preset_id = p.id
+                            break
+                except OSError:
+                    pass
+            plan_stats = next(
+                (s.stats for s in stage_stats if s.name == "plan"), {},
+            )
+            extract_s = next(
+                (s.stats for s in stage_stats if s.name == "extract"), {},
+            )
+            sched_s = next(
+                (s.stats for s in stage_stats if s.name == "schedule"), {},
+            )
+            px_per_mm = self.px_per_mm or 10.0
+            skeleton_summary = {
+                "skeleton_font_preset": preset_id,
+                "skeleton_allowed_charset": skeleton_charset_descriptor(),
+                "skeleton_scheduler": sched_s.get(
+                    "skeleton_scheduler", sched_s.get("strategy", ""),
+                ),
+                "stroke_count": extract_s.get("strokes", len(strokes_raw)),
+                "weld_segment_count": plan_stats.get("weld_count", 0),
+                "lead_in_count": plan_stats.get("lead_in_count", 0),
+                "lead_out_count": plan_stats.get("lead_out_count", 0),
+                "junction_merge_mm": plan_stats.get("junction_merge_mm", 0),
+                "continuous_junctions_enabled": plan_stats.get(
+                    "continuous_junctions_enabled", False,
+                ),
+                "continuous_junctions_merged_count": plan_stats.get(
+                    "continuous_junctions_merged_count", 0,
+                ),
+                "stroke_reversed_count": max(
+                    sched_s.get("stroke_reversed_count", 0),
+                    plan_stats.get("stroke_reversed_count", 0),
+                ),
+                "intra_char_travel_count": plan_stats.get(
+                    "intra_char_travel_count", 0,
+                ),
+                "intra_char_travel_length_mm": plan_stats.get(
+                    "intra_char_travel_length_mm",
+                    round(sched_s.get("intra_char_travel_px", 0) / px_per_mm, 2),
+                ),
+                "inter_char_travel_count": plan_stats.get(
+                    "inter_char_travel_count", 0,
+                ),
+                "inter_char_travel_length_mm": plan_stats.get(
+                    "inter_char_travel_length_mm",
+                    round(sched_s.get("inter_char_travel_px", 0) / px_per_mm, 2),
+                ),
+                "strokes_deduped": extract_s.get("skeleton_strokes_deduped", 0),
+                "strokes_spur_dropped": extract_s.get(
+                    "skeleton_strokes_spur_dropped", 0,
+                ),
+                "phantom_loops_opened": extract_s.get(
+                    "skeleton_phantom_loops_opened", 0,
+                ),
+            }
+
         summary = {
-            "pipeline_version": "8.7b",
+            "pipeline_version": "8.7w1",
             "text": text,
             "mode": mode,
             "ok": True,
@@ -633,6 +753,7 @@ class OfflinePipelineRunner:
             },
             "stats": {"strokes_raw": len(strokes_raw), "strokes_mapped": len(strokes_mp),
                       "segments": len(segs), "robot_points": total_rp},
+            "skeleton": skeleton_summary if skeleton_summary else None,
             "output_files": {k: os.path.basename(v) for k, v in files.items()},
             "stage_stats": _stage_stats_to_json(stage_stats),
             "warnings": warnings,

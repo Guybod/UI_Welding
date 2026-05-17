@@ -12,6 +12,10 @@ def rad_list_to_deg(rad_list: list[float]) -> list[float]:
     return [v * RAD_TO_DEG for v in rad_list]
 
 
+def deg_list_to_rad(deg_list: list[float]) -> list[float]:
+    return [deg_to_rad(v) for v in deg_list]
+
+
 def m_to_mm(m: float) -> float:
     return m * M_TO_MM
 

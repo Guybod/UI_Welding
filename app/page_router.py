@@ -28,6 +28,13 @@ class PageRouter(QObject):
         for page in self._cache.values():
             page.on_connection_changed(connected)
 
+    def notify_robot_mode(self, mode: int) -> None:
+        """机器人模式变化时通知所有已缓存页面（IO/寄存器等需远程模式）。"""
+        for page in self._cache.values():
+            handler = getattr(page, "on_robot_mode_changed", None)
+            if callable(handler):
+                handler(mode)
+
     def navigate(self, spec: PageSpec):
         if spec.key == self._current_key:
             return
@@ -59,6 +66,9 @@ class PageRouter(QObject):
         if self._current_key:
             return self._cache.get(self._current_key)
         return None
+
+    def get_cached_page(self, key: str) -> BasePage | None:
+        return self._cache.get(key)
 
     def persist_all_page_settings(self):
         """退出前保存已缓存页面中的 QSettings（不触发 on_leave 副作用）。"""

@@ -6,7 +6,7 @@ import math as _math
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from app.i18n import tr
-from app.widgets.node_editor.models import GraphData, NodeData, NODE_SPECS
+from app.widgets.node_editor.models import GraphData, NodeData, NODE_SPECS, is_pure_node_type
 
 
 class ExecutionEngine(QObject):
@@ -18,10 +18,13 @@ class ExecutionEngine(QObject):
     - 运动节点发送 Robot/move 后，不能用 TCP response 判断完成，必须等待 CRI moving。
     - 禁止 time.sleep / 阻塞 while，全部用 QTimer 状态机推进。
     - 执行模型：图遍历（非预计算线性路径）。每个节点执行后根据 flow 输出边决定下一节点。
-      控制流节点 (If/For/While) 在运行时动态选择分支。
+      控制流节点 (If/For/While/Sequence) 在运行时动态选择分支。
     """
 
+    SEQUENCE_THEN_PORTS = ("then_0", "then_1", "then_2")
+
     node_highlight = Signal(str, bool)
+    pin_value_emitted = Signal(str, str, object)  # node_id, output_port_name, value
     log_emitted = Signal(str)
     graph_started = Signal()
     graph_finished = Signal()
@@ -57,10 +60,20 @@ class ExecutionEngine(QObject):
         self._active_node: NodeData | None = None
         self._active_target: dict | None = None
         self._run_token: int = 0
-        self._return_stack: list = []  # For: (id,i,end,step) | While: ("while", id)
+        self._return_stack: list = []  # For: (id,i,end,step) | While: ("while", id) | Sequence: ("sequence", id, ports, idx)
         self._runtime_vars: dict[str, object] = {}
+        self._value_cache: dict[tuple[str, str], object] = {}
+        self._pin_values: dict[tuple[str, str], object] = {}
+        self._macro_stack: list[dict] = []
+        self._macro_resolver = None  # (macro_id) -> MacroDef | None
+        self._macro_param_bindings: dict[tuple[str, str], object] = {}
+        self._macro_call_outputs: dict[tuple[str, str], object] = {}
 
     # ───────────────────────── public ─────────────────────────
+
+    def set_macro_resolver(self, resolver):
+        """设置宏查找回调：macro_id -> MacroDef | None。"""
+        self._macro_resolver = resolver
 
     def set_send_callback(self, cb: Callable):
         """设置 TCP 发送回调。
@@ -125,8 +138,12 @@ class ExecutionEngine(QObject):
         self._path_node = None
         self._path_index = 0
         self._value_cache = {}
+        self._pin_values: dict[tuple[str, str], object] = {}
         self._loop_counters = {}
         self._while_iter_counts: dict[str, int] = {}
+        self._macro_stack.clear()
+        self._macro_param_bindings.clear()
+        self._macro_call_outputs.clear()
         self._runtime_vars = self._init_runtime_vars()
 
         mode = "[在线]" if online else "[DryRun]"
@@ -143,15 +160,19 @@ class ExecutionEngine(QObject):
         if not self._running:
             return
 
-        # If no current node, check return stack (loop body completed)
+        # If no current node, check return stack (loop / sequence branch completed)
         if not self._current_node_id:
             if self._return_stack:
                 ret = self._return_stack.pop()
+                if len(ret) >= 4 and ret[0] == "sequence":
+                    self._on_sequence_branch_done(ret[1], ret[2], ret[3])
+                    return
                 if len(ret) == 2 and ret[0] == "while":
                     self._current_node_id = ret[1]
-                else:
-                    for_node_id, _i, _end, _step = ret
-                    self._current_node_id = for_node_id
+                    QTimer.singleShot(50, lambda: self._step())
+                    return
+                for_node_id, _i, _end, _step = ret
+                self._current_node_id = for_node_id
                 QTimer.singleShot(50, lambda: self._step())
                 return
             self._finish_graph()
@@ -171,29 +192,41 @@ class ExecutionEngine(QObject):
         nt = node.node_type
         self._log(f"  ▶ {node.title} ({nt})")
 
+        if (node.data or {}).get("disabled"):
+            self._log(tr("log_node_disabled").format(title=node.title))
+            self._advance_to(self._flow_target(node, "flow"), 50)
+            return
+
         if nt == "End":
-            if (
-                self._return_stack
-                and len(self._return_stack[-1]) == 2
-                and self._return_stack[-1][0] == "while"
-            ):
-                _tag, while_id = self._return_stack.pop()
-                self._current_node_id = while_id
-                QTimer.singleShot(50, self._step)
+            if self._macro_stack:
+                self._exit_macro()
                 return
+            if self._return_stack:
+                top = self._return_stack[-1]
+                if len(top) >= 4 and top[0] == "sequence":
+                    self._return_stack.pop()
+                    self._on_sequence_branch_done(top[1], top[2], top[3])
+                    return
+                if len(top) == 2 and top[0] == "while":
+                    _tag, while_id = self._return_stack.pop()
+                    self._current_node_id = while_id
+                    QTimer.singleShot(50, self._step)
+                    return
             self._log(tr("log_end_reached"))
             self._finish_graph()
             return
 
-        if nt in ("Start", "Position"):
+        if nt in ("Start", "Position", "Comment"):
             self._execute_passive(node)
             return
 
         if nt == "Wait":
+            self._watch_input_ports(node, ("duration_ms",))
             self._exec_wait(node)
             return
 
         if nt in ("MoveJ", "MoveL", "MoveC", "MoveCircle", "MovePath"):
+            self._watch_motion_inputs(node)
             if self._online:
                 self._exec_motion_online(node)
             else:
@@ -207,6 +240,7 @@ class ExecutionEngine(QObject):
                 self._exec_array_set(node)
             else:
                 self._execute_dry(node)
+                self._watch_io_register_outputs(node)
                 self._advance_to(self._flow_target(node, "flow"), 150)
             return
 
@@ -218,20 +252,35 @@ class ExecutionEngine(QObject):
             self._exec_control_flow(node)
             return
 
-        # Data nodes and other passive nodes on flow path
-        if nt in ("Int", "Float", "Bool", "String", "Array", "GetVar", "SetVar",
-                  "Add", "Sub", "Mul", "Div", "Pow", "Mod", "Square", "Sqrt", "Abs", "Neg",
-                  "Sin", "Cos", "Tan", "Deg2Rad", "Rad2Deg", "Int2Float", "Float2Int",
-                  "And", "Or", "Not", "Xor", "Gt", "Lt", "Eq", "Ge", "Le",
-                  "StrConcat", "StrSplit", "StrFind", "StrReplace", "StrLen", "Num2Str", "Bool2Str",
-                  "MatMulL", "MatMulR", "BreakPosition", "MakePosition",
-                  "ArrayGet", "ArrayLen", "Print"):
+        if nt == "Sequence":
+            self._exec_sequence(node)
+            return
+
+        if nt == "MacroCall":
+            self._enter_macro(node)
+            return
+
+        dyn_ports = (node.data or {}).get("_ports")
+        if is_pure_node_type(nt, dyn_ports):
+            self._log(f"    ⚠ 纯节点 {nt} 不应出现在 flow 链上，已跳过")
+            self._advance_to(self._flow_target(node, "flow"), 50)
+            return
+
+        if nt == "Print":
+            val = self._resolve_input_raw(node, "value")
+            self._emit_pin_watch(node.node_id, "value", val)
             self._execute_dry(node)
             self._advance_to(self._flow_target(node, "flow"), 100 if self._online else 150)
             return
 
-        # Unknown node types: log and advance
-        self._execute_dry(node)
+        from app.widgets.node_editor.plugins.registry import get_flow_handler
+
+        plugin_flow = get_flow_handler(nt)
+        if plugin_flow:
+            plugin_flow(self, node)
+            return
+
+        self._log(f"    ⚠ 未实现的 flow 节点: {nt}")
         self._advance_to(self._flow_target(node, "flow"), 100 if self._online else 150)
 
     def _execute_passive(self, node: NodeData):
@@ -259,6 +308,84 @@ class ExecutionEngine(QObject):
             if n.node_type == "Start":
                 return n.node_id
         return None
+
+    def _enter_macro(self, node: NodeData) -> None:
+        data = node.data or {}
+        macro_id = (data.get("macro_id") or "").strip()
+        if not self._macro_resolver or not macro_id:
+            self._fail_node(node, tr("macro_missing_resolver"))
+            return
+        macro = self._macro_resolver(macro_id)
+        if not macro:
+            self._fail_node(node, tr("macro_not_found").format(name=data.get("macro_name", macro_id)))
+            return
+        from app.widgets.node_editor.macro_storage import clone_macro_graph
+
+        inner = clone_macro_graph(macro.graph)
+        start_id = self._find_start_in_graph(inner)
+        if not start_id:
+            self._fail_node(node, tr("macro_no_start"))
+            return
+        return_id = self._flow_target(node, "flow")
+        from app.widgets.node_editor.macro_ports import macro_input_params, macro_output_params
+
+        bindings: dict[tuple[str, str], object] = {}
+        for p in macro_input_params(macro):
+            val = self._resolve_input_raw(node, p.param_id)
+            bindings[(p.inner_node_id, p.inner_port_name)] = val
+            self._emit_pin_watch(node.node_id, p.param_id, val)
+        outer_graph = self._graph
+        self._macro_stack.append({
+            "graph": outer_graph,
+            "return_node_id": return_id,
+            "return_stack": list(self._return_stack),
+            "loop_counters": dict(getattr(self, "_loop_counters", {})),
+            "while_iter_counts": dict(self._while_iter_counts),
+            "call_node_id": node.node_id,
+            "macro_id": macro_id,
+            "output_params": macro_output_params(macro),
+        })
+        self._return_stack.clear()
+        inner.variables = list(outer_graph.variables) if outer_graph else []
+        inner.positions = list(outer_graph.positions) if outer_graph else []
+        self._graph = inner
+        self._macro_param_bindings = bindings
+        self._build_maps()
+        self._current_node_id = start_id
+        self._log(tr("log_macro_enter").format(name=macro.name))
+        QTimer.singleShot(50, self._step)
+
+    @staticmethod
+    def _find_start_in_graph(graph: GraphData) -> str | None:
+        for n in graph.nodes:
+            if n.node_type == "Start":
+                return n.node_id
+        return None
+
+    def _exit_macro(self) -> None:
+        if not self._macro_stack:
+            self._finish_graph()
+            return
+        frame = self._macro_stack[-1]
+        call_id = frame.get("call_node_id")
+        for p in frame.get("output_params") or []:
+            val = self._eval_data(p.inner_node_id, p.inner_port_name)
+            if call_id:
+                self._macro_call_outputs[(call_id, p.param_id)] = val
+                self._emit_pin_watch(call_id, p.param_id, val)
+        frame = self._macro_stack.pop()
+        self._graph = frame["graph"]
+        self._return_stack = frame["return_stack"]
+        self._loop_counters = frame.get("loop_counters", {})
+        self._while_iter_counts = frame.get("while_iter_counts", {})
+        self._build_maps()
+        self._macro_param_bindings.clear()
+        self._current_node_id = frame.get("return_node_id")
+        self._log(tr("log_macro_exit"))
+        if self._current_node_id:
+            QTimer.singleShot(50, self._step)
+        else:
+            QTimer.singleShot(50, self._step)
 
     def _flow_target(self, node: NodeData, port_name: str) -> str | None:
         """找到某 flow 输出端口连接的目标节点"""
@@ -505,12 +632,45 @@ class ExecutionEngine(QObject):
             self._log(f"    🧪 {node.node_type} 将发送 Robot/move db={db}")
         self._advance_to(self._flow_target(node, "flow"), 150)
 
-    # ───────────────────────── control flow: If / For / While ─────────────────────────
+    # ───────────────────────── control flow: If / For / While / Sequence ─────────────────────────
+
+    def _sequence_connected_ports(self, node: NodeData) -> list[str]:
+        return [p for p in self.SEQUENCE_THEN_PORTS if self._flow_target(node, p)]
+
+    def _exec_sequence(self, node: NodeData):
+        ports = self._sequence_connected_ports(node)
+        self._log(tr("log_sequence_run").format(n=len(ports)))
+        if not ports:
+            self._advance_to(self._flow_target(node, "done"), 50)
+            return
+        self._start_sequence_branch(node.node_id, ports, 0)
+
+    def _start_sequence_branch(self, seq_id: str, ports: list[str], idx: int) -> None:
+        node = self._node_idx.get(seq_id)
+        if not node:
+            self._advance_to(None, 50)
+            return
+        if idx >= len(ports):
+            self._advance_to(self._flow_target(node, "done"), 50)
+            return
+        port = ports[idx]
+        target = self._flow_target(node, port)
+        if not target:
+            self._start_sequence_branch(seq_id, ports, idx + 1)
+            return
+        self._log(tr("log_sequence_branch").format(port=port))
+        if idx + 1 < len(ports):
+            self._return_stack.append(("sequence", seq_id, ports, idx))
+        self._advance_to(target, 50)
+
+    def _on_sequence_branch_done(self, seq_id: str, ports: list[str], idx: int) -> None:
+        self._start_sequence_branch(seq_id, ports, idx + 1)
 
     def _exec_control_flow(self, node: NodeData):
         nt = node.node_type
         if nt == "If":
             cond_raw = self._resolve_input_raw(node, "condition")
+            self._emit_pin_watch(node.node_id, "condition", cond_raw)
             cond = bool(cond_raw)
             self._log(f"    ? Condition: {'True' if cond else 'False'} (={cond_raw!r})")
             branch = "true" if cond else "false"
@@ -534,9 +694,12 @@ class ExecutionEngine(QObject):
             if (step > 0 and i < end) or (step < 0 and i > end):
                 self._log(f"    🔁 For i={i}")
                 node.data["_for_index"] = i
+                self._emit_pin_watch(node.node_id, "index", i)
+                self._watch_input_ports(node, ("start", "end", "step"))
                 # 清除 For 节点的缓存值，使每次迭代重新读取 _for_index
                 if hasattr(self, '_value_cache'):
-                    self._value_cache.pop(node.node_id, None)
+                    self._value_cache.pop(self._eval_cache_key(node.node_id, None), None)
+                    self._value_cache.pop(self._eval_cache_key(node.node_id, "index"), None)
                 self._loop_counters[loop_key] = i + step
                 self._return_stack.append((node.node_id, i + step, end, step))
                 target = self._flow_target(node, "body")
@@ -560,6 +723,7 @@ class ExecutionEngine(QObject):
                 return
             self._value_cache.clear()
             cond_raw = self._resolve_input_raw(node, "condition")
+            self._emit_pin_watch(node.node_id, "condition", cond_raw)
             cond = bool(cond_raw)
             if cond:
                 self._log(f"    {tr('log_while_true')} (条件={cond_raw!r}, 第{wc}轮)")
@@ -601,6 +765,9 @@ class ExecutionEngine(QObject):
         self._value_cache.clear()
         name = data.get("var_name", var_id or node.title)
         self._log(f"    SetVar {name} = {val}")
+        self._emit_pin_watch(node.node_id, "value", val)
+        if var_id:
+            self._refresh_getvar_watches(var_id, val)
         self._advance_to(self._flow_target(node, "flow"), 50)
 
     def _sync_var_to_library(self, var_id: str, val: object) -> None:
@@ -710,7 +877,8 @@ class ExecutionEngine(QObject):
                     arr_node.data["value"] = arr
                     # 清除缓存使得后续 ArrayGet 读到新值
                     if hasattr(self, '_value_cache'):
-                        self._value_cache.pop(arr_src[0], None)
+                        for port in ("", "result"):
+                            self._value_cache.pop(self._eval_cache_key(arr_src[0], port), None)
                     self._log(f"    📝 Array[{idx}] = {val}")
                 else:
                     self._log(f"    ⚠ ArraySet 索引 {idx} 越界 (长度 {len(arr)})")
@@ -866,38 +1034,142 @@ class ExecutionEngine(QObject):
 
     def _resolve_input_raw(self, node: NodeData, port_name: str):
         """递归解析输入端口的计算值。"""
+        bind_key = (node.node_id, port_name)
+        if bind_key in self._macro_param_bindings:
+            return self._macro_param_bindings[bind_key]
         src = self._data_sources.get((node.node_id, port_name))
         if not src:
             return (node.data or {}).get(port_name, "?")
-        src_node_id, _src_port_name = src
-        return self._eval_data(src_node_id)
+        src_node_id, src_port_name = src
+        return self._eval_data(src_node_id, src_port_name)
 
-    def _eval_data(self, node_id: str):
-        """递归求值数据节点, 返回其 output 值。缓存避免重复计算。"""
-        if not hasattr(self, '_value_cache'):
-            self._value_cache: dict[str, object] = {}
-        if node_id in self._value_cache:
-            return self._value_cache[node_id]
+    def _eval_cache_key(self, node_id: str, output_port: str | None) -> tuple[str, str]:
+        return (node_id, output_port or "")
+
+    def _eval_data(self, node_id: str, output_port: str | None = None):
+        """递归求值数据节点；output_port 指定多输出节点的出口。"""
+        key = self._eval_cache_key(node_id, output_port)
+        if key in self._value_cache:
+            return self._value_cache[key]
 
         node = self._node_idx.get(node_id)
         if not node:
             return "?"
+        if node.node_type == "MacroCall" and output_port:
+            out_key = (node_id, output_port)
+            if out_key in self._macro_call_outputs:
+                return self._macro_call_outputs[out_key]
+            return None
         nt = node.node_type
         data = node.data or {}
 
         def resolve(port_name, default="?"):
             src = self._data_sources.get((node_id, port_name))
             if src:
-                return self._eval_data(src[0])
+                return self._eval_data(src[0], src[1])
             return data.get(port_name, default)
 
-        result = self._compute_node(nt, resolve, data)
-        # 只缓存字面量常量；Add/GetVar/Gt 等依赖变量的节点每次重新求值
-        if nt in ("Int", "Float", "Bool", "String", "Array", "Position"):
-            self._value_cache[node_id] = result
+        result = self._compute_node(nt, resolve, data, output_port)
+        dyn = (data or {}).get("_ports")
+        if is_pure_node_type(nt, dyn):
+            self._value_cache[key] = result
+            self._emit_pure_output_watches(node_id, nt, dyn, result, output_port)
         return result
 
-    def _compute_node(self, nt: str, resolve, data: dict):
+    def _emit_pin_watch(self, node_id: str, port_name: str, value: object) -> None:
+        self._pin_values[(node_id, port_name)] = value
+        self.pin_value_emitted.emit(node_id, port_name, value)
+
+    def _emit_pure_output_watches(
+        self,
+        node_id: str,
+        node_type: str,
+        dynamic_ports: list | None,
+        result: object,
+        requested_port: str | None,
+    ) -> None:
+        """纯节点：在输出引脚旁显示 Watch 值。"""
+        if node_type == "BreakPosition":
+            pose = result if isinstance(result, dict) else {}
+            jp = pose.get("jp", [])
+            cp = pose.get("cp", {})
+            if requested_port == "jp":
+                self._emit_pin_watch(node_id, "jp", jp)
+            elif requested_port == "cp":
+                self._emit_pin_watch(node_id, "cp", cp)
+            else:
+                self._emit_pin_watch(node_id, "jp", jp)
+                self._emit_pin_watch(node_id, "cp", cp)
+            return
+        outputs: list[str] = []
+        if dynamic_ports:
+            outputs = [p[0] for p in dynamic_ports if len(p) >= 3 and p[1] != "flow" and p[2] == "output"]
+        else:
+            spec = NODE_SPECS.get(node_type)
+            if spec:
+                outputs = [p.name for p in spec.ports if p.port_type != "flow" and p.direction == "output"]
+        if not outputs:
+            return
+        port = requested_port if requested_port in outputs else outputs[0]
+        self._emit_pin_watch(node_id, port, result)
+
+    def _watch_io_register_outputs(self, node: NodeData) -> None:
+        """Impure IO/寄存器节点：在数据引脚旁显示最近一次读/写值。"""
+        nt = node.node_type
+        if nt in ("ReadDI", "ReadAI"):
+            self._watch_input_ports(node, ("port",))
+            self._emit_pin_watch(node.node_id, "value", 0)
+        elif nt == "ReadRegister":
+            self._watch_input_ports(node, ("address",))
+            self._emit_pin_watch(node.node_id, "value", 0)
+        elif nt in ("SetDO", "SetAO", "SetRegister"):
+            self._watch_input_ports(node, ("port", "value") if nt != "SetRegister" else ("address", "value"))
+            self._emit_pin_watch(node.node_id, "value", self._resolve_input_raw(node, "value"))
+
+    def _watch_input_ports(self, node: NodeData, port_names: tuple[str, ...]) -> None:
+        for port_name in port_names:
+            self._emit_pin_watch(node.node_id, port_name, self._resolve_input_raw(node, port_name))
+
+    def _pose_port_label(self, node: NodeData, port_name: str) -> str:
+        """运动节点 pose 输入所连点位/组合节点的显示名。"""
+        src = self._data_sources.get((node.node_id, port_name))
+        if not src:
+            return "?"
+        src_id, src_port = src
+        src_node = self._node_idx.get(src_id)
+        if not src_node:
+            return "?"
+        if src_node.node_type == "Position":
+            data = src_node.data or {}
+            return (data.get("name") or "").strip() or src_node.title or "Position"
+        if src_node.node_type in ("MakePosition", "BreakPosition"):
+            val = self._eval_data(src_id, src_port)
+            if isinstance(val, dict):
+                return (val.get("name") or "").strip() or src_port
+        return src_node.title or src_node.node_type
+
+    def _watch_motion_inputs(self, node: NodeData) -> None:
+        nt = node.node_type
+        if nt == "MovePath":
+            for port_name in ("pose_1", "pose_2", "pose_3"):
+                if self._data_sources.get((node.node_id, port_name)):
+                    self._emit_pin_watch(node.node_id, port_name, self._pose_port_label(node, port_name))
+            return
+        if self._data_sources.get((node.node_id, "target")):
+            self._emit_pin_watch(node.node_id, "target", self._pose_port_label(node, "target"))
+        if nt in ("MoveC", "MoveCircle") and self._data_sources.get((node.node_id, "middle")):
+            self._emit_pin_watch(node.node_id, "middle", self._pose_port_label(node, "middle"))
+
+    def _refresh_getvar_watches(self, var_id: str, val: object) -> None:
+        """SetVar 后同步所有同源 GetVar 引脚的 Watch。"""
+        for node in self._node_idx.values():
+            if node.node_type != "GetVar":
+                continue
+            data = node.data or {}
+            if data.get("var_id") == var_id:
+                self._emit_pin_watch(node.node_id, "value", val)
+
+    def _compute_node(self, nt: str, resolve, data: dict, output_port: str | None = None):
         """根据节点类型计算结果值"""
         if nt == "GetVar":
             var_id = data.get("var_id", "")
@@ -941,6 +1213,17 @@ class ExecutionEngine(QObject):
         if nt == "Rad2Deg": return _math.degrees(self._num(resolve("a")))
         if nt == "Int2Float": return float(self._num(resolve("a")))
         if nt == "Float2Int": return int(self._num(resolve("a")))
+        if nt == "Cast":
+            from app.widgets.node_editor.port_types import apply_cast
+            return apply_cast(resolve("value"), data.get("cast_to", "float"))
+        if nt == "Reroute":
+            return resolve("in")
+        if nt == "EnumInt":
+            opts = data.get("options") or [0, 1]
+            idx = int(data.get("selected", 0))
+            if 0 <= idx < len(opts):
+                return opts[idx]
+            return opts[0] if opts else 0
         # logic
         if nt == "And": return bool(resolve("a")) and bool(resolve("b"))
         if nt == "Or": return bool(resolve("a")) or bool(resolve("b"))
@@ -955,6 +1238,13 @@ class ExecutionEngine(QObject):
             a = resolve("a"); b = resolve("b")
             try: return float(a) == float(b)
             except: return str(a) == str(b)
+        if nt == "Compare":
+            a = resolve("a")
+            b = resolve("b")
+            try:
+                return float(a) == float(b)
+            except (TypeError, ValueError):
+                return a == b
         # string
         if nt == "StrConcat": return str(resolve("a", "")) + str(resolve("b", ""))
         if nt == "StrSplit": return str(resolve("str", "")).split(str(resolve("sep", ",")))
@@ -965,11 +1255,46 @@ class ExecutionEngine(QObject):
         if nt == "Bool2Str": return str(bool(resolve("a")))
         # pose
         if nt == "BreakPosition":
-            pos_src = self._data_sources.get((node.node_id, "pose"))
-            pos_data = (self._eval_data(pos_src[0]) if pos_src else data) or {}
-            return pos_data  # caller extracts specific fields
+            pos_data = resolve("pose")
+            if not isinstance(pos_data, dict):
+                pos_data = {}
+            jp = pos_data.get("jp", [])
+            cp = pos_data.get("cp", {})
+            jp_list = [float(x) for x in jp[:6]] if isinstance(jp, list) and len(jp) >= 6 else (
+                list(jp) if isinstance(jp, list) else []
+            )
+            cp_dict = dict(cp) if isinstance(cp, dict) else {}
+            if output_port == "jp":
+                return jp_list
+            if output_port == "cp":
+                return cp_dict
+            return {"jp": jp_list, "cp": cp_dict, "name": pos_data.get("name", "")}
         if nt == "MakePosition":
-            return data
+            jp_in = resolve("jp")
+            cp_in = resolve("cp")
+            if isinstance(jp_in, dict) and "jp" in jp_in:
+                jp_list = jp_in.get("jp", [])
+            elif isinstance(jp_in, list):
+                jp_list = jp_in
+            else:
+                jp_list = []
+            if isinstance(cp_in, dict) and "cp" in cp_in and isinstance(cp_in.get("cp"), dict):
+                cp_dict = dict(cp_in["cp"])
+            elif isinstance(cp_in, dict) and "x" in cp_in:
+                cp_dict = dict(cp_in)
+            else:
+                cp_dict = {}
+            try:
+                jp_out = [float(x) for x in jp_list[:6]]
+            except (TypeError, ValueError):
+                jp_out = []
+            return {
+                "name": data.get("name", ""),
+                "jp": jp_out,
+                "cp": cp_dict,
+                "ep": data.get("ep", []),
+                "optional": dict(data.get("optional") or {}),
+            }
         if nt == "ArrayGet":
             arr = resolve("array")
             idx = int(self._num(resolve("index")))

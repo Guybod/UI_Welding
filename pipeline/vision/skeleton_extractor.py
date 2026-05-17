@@ -1,5 +1,8 @@
 """骨架字引擎 — 二值图 → 骨架化 → SkeletonGraph → Stroke 提取
 
+焊接文字请经 pipeline.text_stroke_extract.extract_glyph_strokes(..., mode="skeleton")
+调用，勿与轮廓模式混用。图片中心线不在此模块。
+
 无 Qt/PySide6 依赖。
 支持可插拔 backend: skimage (主力) / zhang_suen (fallback) / auto (自动选择)。
 全流程：binary → skeletonize → build_graph → extract strokes → order → debug。
@@ -295,11 +298,15 @@ class SkeletonExtractor:
     # ---- 边追踪 ----
 
     @staticmethod
-    def _trace_edges(skeleton: np.ndarray) -> list[list[PixelPoint]]:
+    def _trace_edges(
+        skeleton: np.ndarray,
+        *,
+        branch_cluster_radius: int = 5,
+    ) -> list[list[PixelPoint]]:
         """从骨架图中追踪出所有边。
 
-        对 branchpoints 做空间聚类（默认半径 5px），消除 Zhang-Suen zigzag 产生的
-        密集伪分叉点，避免一条长边被切碎为数十条短边。
+        对 branchpoints 做空间聚类，消除 zigzag 产生的密集伪分叉点，
+        避免一条长边被切碎为数十条短边。
         """
         skel = (skeleton > 0).astype(np.uint8)
         h, w = skel.shape
@@ -311,7 +318,8 @@ class SkeletonExtractor:
 
         # 分叉点：空间聚类后每簇取质心
         bp_raw = [(int(bp.x), int(bp.y)) for bp in SkeletonExtractor.detect_branchpoints(skeleton)]
-        special |= SkeletonExtractor._cluster_points(bp_raw, radius=5)
+        radius = max(3, int(branch_cluster_radius))
+        special |= SkeletonExtractor._cluster_points(bp_raw, radius=radius)
 
         visited = np.zeros((h, w), dtype=bool)
         edges = []
@@ -454,7 +462,12 @@ class SkeletonExtractor:
     # ---- Spur pruning ----
 
     @staticmethod
-    def spur_pruning(graph: 'SkeletonGraph', min_len_px: float = 3.0) -> 'SkeletonGraph':
+    def spur_pruning(
+        graph: 'SkeletonGraph',
+        min_len_px: float = 3.0,
+        *,
+        branch_cluster_radius: int = 5,
+    ) -> 'SkeletonGraph':
         """删除短枝 (spur)。"""
         skel = (graph.skeleton > 0).astype(np.uint8)
         h, w = skel.shape
@@ -493,7 +506,9 @@ class SkeletonExtractor:
                     changed = True
                     break
         return SkeletonExtractor.build_graph(
-            (skel * 255).astype(np.uint8), original_pruned=pruned_count,
+            (skel * 255).astype(np.uint8),
+            original_pruned=pruned_count,
+            branch_cluster_radius=branch_cluster_radius,
         )
 
     # ---- build_graph ----
@@ -505,6 +520,8 @@ class SkeletonExtractor:
         backend_used: str = "",
         iteration_count: int = 0,
         backend_warning: str = "",
+        *,
+        branch_cluster_radius: int = 5,
     ) -> SkeletonGraph:
         """从骨架图构建 SkeletonGraph。
 
@@ -524,7 +541,9 @@ class SkeletonExtractor:
         endpoints = SkeletonExtractor.detect_endpoints(skeleton)
         branchpoints = SkeletonExtractor.detect_branchpoints(skeleton)
         components = SkeletonExtractor.connected_components(skeleton)
-        edges = SkeletonExtractor._trace_edges(skeleton)
+        edges = SkeletonExtractor._trace_edges(
+            skeleton, branch_cluster_radius=branch_cluster_radius,
+        )
 
         stats = {
             "endpoint_count": len(endpoints),
@@ -550,6 +569,20 @@ class SkeletonExtractor:
             stats=stats,
         )
 
+    @staticmethod
+    def _prepare_binary_for_skeleton(binary: np.ndarray, config: PathConfig) -> np.ndarray:
+        """骨架化前：闭运算填缝 + 轻膨胀（按字体 tuning，改善黑体等粗笔画连通）。"""
+        img = ((binary > 0).astype(np.uint8)) * 255
+        close_px = max(0, int(config.skeleton_raster_close_px))
+        if close_px >= 2:
+            k = cv2.getStructuringElement(cv2.MORPH_RECT, (close_px, close_px))
+            img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, k)
+        dilate_px = max(0, int(config.skeleton_raster_dilate_px))
+        if dilate_px >= 1:
+            k = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+            img = cv2.dilate(img, k, iterations=dilate_px)
+        return img
+
     # ---- Stroke 提取 ----
 
     @staticmethod
@@ -570,22 +603,36 @@ class SkeletonExtractor:
             stats 透传 skeleton_backend_used / skeleton_iteration_count / skeleton_warning
         """
         cfg = config or PathConfig()
+        branch_r = max(3, int(cfg.skeleton_branch_cluster_radius_px))
+        prepared = SkeletonExtractor._prepare_binary_for_skeleton(binary, cfg)
 
         skeleton, backend_used, iters, warn = SkeletonExtractor.skeletonize_binary(
-            binary, backend=backend,
+            prepared, backend=backend,
         )
         graph = SkeletonExtractor.build_graph(
             skeleton,
             backend_used=backend_used,
             iteration_count=iters,
             backend_warning=warn,
+            branch_cluster_radius=branch_r,
+        )
+        spur_min = max(1.0, float(cfg.skeleton_spur_min_px))
+        graph = SkeletonExtractor.spur_pruning(
+            graph, min_len_px=spur_min, branch_cluster_radius=branch_r,
         )
         strokes = SkeletonExtractor._extract_strokes_from_graph(graph, cfg)
         strokes = SkeletonExtractor._order_strokes(strokes)
-        strokes = SkeletonExtractor._merge_nearby_endpoints(strokes, threshold_px=0.0)
+        merge_px = max(0.0, float(cfg.skeleton_merge_gap_px))
+        strokes_before = len(strokes)
+        strokes = SkeletonExtractor._merge_nearby_endpoints(strokes, threshold_px=merge_px)
 
         stats = {
             "stroke_count": len(strokes),
+            "strokes_before_merge": strokes_before,
+            "skeleton_merge_gap_px": merge_px,
+            "skeleton_spur_min_px": spur_min,
+            "skeleton_raster_close_px": cfg.skeleton_raster_close_px,
+            "skeleton_raster_dilate_px": cfg.skeleton_raster_dilate_px,
             "closed_count": sum(1 for s in strokes if s.closed),
             "open_count": sum(1 for s in strokes if not s.closed),
             **graph.stats,
@@ -719,18 +766,82 @@ class SkeletonExtractor:
         return sorted(strokes, key=_bbox_center)
 
     @staticmethod
+    def _stroke_endpoint(stroke: Stroke, which: str) -> PixelPoint:
+        return stroke.points_px[0] if which == "start" else stroke.points_px[-1]
+
+    @staticmethod
+    def _join_strokes(
+        a: Stroke,
+        b: Stroke,
+        end_a: str,
+        end_b: str,
+    ) -> Stroke:
+        pts_a = list(a.points_px)
+        pts_b = list(b.points_px)
+        if end_a == "start":
+            pts_a = pts_a[::-1]
+        if end_b == "end":
+            pts_b = pts_b[::-1]
+        if pts_a and pts_b:
+            pa, pb = pts_a[-1], pts_b[0]
+            if (pa.x - pb.x) ** 2 + (pa.y - pb.y) ** 2 < 1.0:
+                merged_pts = pts_a + pts_b[1:]
+            else:
+                merged_pts = pts_a + pts_b
+        else:
+            merged_pts = pts_a + pts_b
+        return Stroke(
+            id=str(uuid.uuid4())[:8],
+            source_type=a.source_type or "skeleton",
+            points_px=merged_pts,
+            closed=False,
+            is_hole=a.is_hole,
+            metadata={**a.metadata, **b.metadata},
+        )
+
+    @staticmethod
     def _merge_nearby_endpoints(
         strokes: list[Stroke],
         threshold_px: float = 0.0,
     ) -> list[Stroke]:
-        """附近端点合并 — 轻量预留。
-
-        threshold_px=0 时不启用，直接返回原列表。
-        """
+        """合并端点间距 < threshold 的开放 stroke（修复骨架 1px 断缝）。"""
         if threshold_px <= 0 or len(strokes) < 2:
             return strokes
-        # 预留：后续可实现基于距离的端点合并
-        return strokes
+        thresh2 = threshold_px * threshold_px
+        pool: list[Stroke] = [s for s in strokes if len(s.points_px) >= 2]
+        if len(pool) < 2:
+            return strokes
+
+        changed = True
+        while changed and len(pool) >= 2:
+            changed = False
+            best_i = best_j = -1
+            best_ends: tuple[str, str] = ("end", "start")
+            best_d2 = thresh2 + 1.0
+            for i in range(len(pool)):
+                for j in range(i + 1, len(pool)):
+                    if pool[i].closed or pool[j].closed:
+                        continue
+                    for ea in ("start", "end"):
+                        for eb in ("start", "end"):
+                            pa = SkeletonExtractor._stroke_endpoint(pool[i], ea)
+                            pb = SkeletonExtractor._stroke_endpoint(pool[j], eb)
+                            d2 = (pa.x - pb.x) ** 2 + (pa.y - pb.y) ** 2
+                            if d2 <= thresh2 and d2 < best_d2:
+                                best_d2 = d2
+                                best_i, best_j = i, j
+                                best_ends = (ea, eb)
+            if best_i < 0:
+                break
+            joined = SkeletonExtractor._join_strokes(
+                pool[best_i], pool[best_j], best_ends[0], best_ends[1],
+            )
+            pool = [pool[k] for k in range(len(pool)) if k not in (best_i, best_j)]
+            pool.append(joined)
+            changed = True
+
+        closed = [s for s in strokes if s.closed and len(s.points_px) >= 2]
+        return closed + pool
 
     # ---- debug 输出 ----
 

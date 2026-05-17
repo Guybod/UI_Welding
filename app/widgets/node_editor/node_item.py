@@ -29,6 +29,9 @@ class NodeItem(QGraphicsItem):
         self._ports: list[PortItem] = []
         self._data: dict = {}
         self._highlighted: bool = False
+        self._validation_error: bool = False
+        self._disabled: bool = False
+        self._port_debug_labels: dict[str, QGraphicsSimpleTextItem] = {}
         self._left_press_scene_pos: QPointF | None = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
@@ -69,6 +72,10 @@ class NodeItem(QGraphicsItem):
             lbl.setPos(NODE_WIDTH - lbl.boundingRect().width() - 10, y - 7)
 
     def _calc_size(self):
+        if self._node_type == "Comment":
+            lines = max(1, (self._data.get("text") or "").count("\n") + 1)
+            self._body_height = TITLE_HEIGHT + min(120, 14 * lines + 16)
+            return
         left_count = sum(1 for p in self._ports if p.direction() == "input")
         right_count = sum(1 for p in self._ports if p.direction() == "output")
         max_side = max(left_count, right_count, 1)
@@ -83,11 +90,64 @@ class NodeItem(QGraphicsItem):
 
     def set_node_data(self, data: dict):
         self._data = data
+        self._disabled = bool(data.get("disabled"))
+        scene = self.scene()
+        if scene is not None and hasattr(scene, "refresh_display_titles"):
+            scene.refresh_display_titles({self})
+
+    def refresh_display_title(self, pose_links: dict[str, str] | None = None) -> None:
+        from app.widgets.node_editor.node_display_title import (
+            compute_node_display_title,
+            should_auto_title,
+        )
+
+        if not should_auto_title(self._node_type, self._data):
+            return
+        title = compute_node_display_title(self._node_type, self._data, pose_links=pose_links)
+        if title and title != self._title:
+            self._title = title
+            self.update()
 
     def set_highlight(self, on: bool):
         """执行引擎高亮 — 绿色边框 + 浅色填充"""
         self._highlighted = on
         self.update()
+
+    def set_validation_error(self, on: bool) -> None:
+        self._validation_error = on
+        self.update()
+
+    def clear_port_debug_values(self) -> None:
+        for lbl in self._port_debug_labels.values():
+            lbl.setParentItem(None)
+            if lbl.scene():
+                lbl.scene().removeItem(lbl)
+        self._port_debug_labels.clear()
+
+    def set_port_debug_value(self, port_name: str, text: str | None) -> None:
+        port = next((p for p in self._ports if p.port_name() == port_name), None)
+        if port is None:
+            return
+        lbl = self._port_debug_labels.get(port_name)
+        if not text:
+            if lbl is not None:
+                lbl.setParentItem(None)
+                if lbl.scene():
+                    lbl.scene().removeItem(lbl)
+                del self._port_debug_labels[port_name]
+            return
+        if lbl is None:
+            lbl = QGraphicsSimpleTextItem(self)
+            font = QFont()
+            font.setPointSize(6)
+            lbl.setFont(font)
+            lbl.setBrush(QColor(255, 220, 120))
+            self._port_debug_labels[port_name] = lbl
+        lbl.setText(str(text)[:24])
+        if port.direction() == "output":
+            lbl.setPos(NODE_WIDTH + 4, port.pos().y() - 6)
+        else:
+            lbl.setPos(-lbl.boundingRect().width() - 4, port.pos().y() - 6)
 
     def split_port(self, port_name: str, sub_ports: list[tuple[str, str, str]]):
         """展开某端口为多个子端口 (name, port_type, direction)"""
@@ -162,7 +222,8 @@ class NodeItem(QGraphicsItem):
         # body
         path = QPainterPath()
         path.addRoundedRect(rect, 6, 6)
-        painter.fillPath(path, BODY_COLOR)
+        body_fill = QColor(70, 70, 75) if self._disabled else BODY_COLOR
+        painter.fillPath(path, body_fill)
 
         # title bar
         title_rect = QRectF(0, 0, NODE_WIDTH, TITLE_HEIGHT)
@@ -178,9 +239,23 @@ class NodeItem(QGraphicsItem):
         painter.setFont(font)
         painter.drawText(QRectF(0, 0, NODE_WIDTH, TITLE_HEIGHT), Qt.AlignCenter, self._title)
 
+        if self._node_type == "Comment":
+            painter.setPen(QPen(QColor(200, 200, 200)))
+            font = QFont()
+            font.setPointSize(8)
+            painter.setFont(font)
+            text = (self._data.get("text") or "").strip() or "…"
+            painter.drawText(
+                QRectF(6, TITLE_HEIGHT + 4, NODE_WIDTH - 12, self._body_height - TITLE_HEIGHT - 8),
+                Qt.AlignLeft | Qt.TextWordWrap,
+                text,
+            )
+
         # border
         if self._highlighted:
             pen = QPen(QColor("#4CAF50"), 3)
+        elif self._validation_error:
+            pen = QPen(QColor("#F44336"), 2)
         elif option.state & QStyle.State_Selected:
             pen = QPen(BORDER_SELECTED, 2)
         else:
