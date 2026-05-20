@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.logger import log
 from core.types import PathConfig, WeldingProcessConfig, WorkspaceConfig, LuaExportConfig
 from config.weld_font_presets import (
     WeldFontPresetError,
@@ -281,6 +282,7 @@ class OfflinePipelineRunner:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         run_dir = os.path.join(self.output_dir, f"{ts}_{safe_text}_{mode}")
         os.makedirs(run_dir, exist_ok=True)
+        _log_pipeline_start(text, mode, resolved_source, self.output_dir)
         files: dict[str, str] = {}
 
         text_pipeline_meta = build_text_pipeline(
@@ -986,13 +988,15 @@ class OfflinePipelineRunner:
             _json.dump(summary, f, ensure_ascii=False, indent=2)
         files["summary_json"] = spath
 
-        return RunResult(
+        result = RunResult(
             ok=True, text=text, mode=mode, output_dir=run_dir, files=files,
             stage_stats=stage_stats, total_strokes_raw=len(strokes_raw),
             total_strokes_mapped=len(strokes_mp), total_segments=len(segs),
             total_robot_points=total_rp, duration_ms=dur,
             warnings=warnings, errors=errors,
         )
+        _log_pipeline_result(result)
+        return result
 
 
 
@@ -1134,6 +1138,55 @@ def _baseline_sanity_check(strokes, *, layout_w_px, map_w,
     }
 
 
+def _pipeline_text_summary(text: str, max_len: int = 40) -> str:
+    t = (text or "").replace("\n", "\\n")
+    if len(t) > max_len:
+        return t[:max_len] + "..."
+    return t
+
+
+def _log_pipeline_start(
+    text: str, mode: str, text_source: str | None, output_dir: str,
+) -> None:
+    log.info(
+        "[Pipeline] run start text=%r mode=%s text_source=%s output_dir=%s",
+        _pipeline_text_summary(text),
+        mode,
+        text_source,
+        output_dir,
+    )
+
+
+def _log_pipeline_result(result: RunResult) -> None:
+    if result.ok:
+        log.info(
+            "[Pipeline] run end ok=True duration_ms=%.1f points=%d segments=%d warnings=%d",
+            result.duration_ms,
+            result.total_robot_points,
+            result.total_segments,
+            len(result.warnings),
+        )
+    else:
+        first_err = result.errors[0] if result.errors else "unknown"
+        log.error(
+            "[Pipeline] run end ok=False duration_ms=%.1f first_error=%s",
+            result.duration_ms,
+            first_err,
+        )
+    for st in result.stage_stats:
+        if st.status != "ok":
+            log.warning(
+                "[Pipeline] stage %s status=%s error=%s",
+                st.name, st.status, st.error,
+            )
+    if result.warnings:
+        log.warning(
+            "[Pipeline] warnings count=%d first=%s",
+            len(result.warnings),
+            result.warnings[0][:200],
+        )
+
+
 def _fail(text, mode, run_dir, stages, errors, *, text_pipeline: dict | None = None):
     from pipeline.output.preview_writer import DebugExporter, PREVIEW_META_DEFAULTS
 
@@ -1167,5 +1220,7 @@ def _fail(text, mode, run_dir, stages, errors, *, text_pipeline: dict | None = N
     with open(sp, "w", encoding="utf-8") as f:
         _json.dump(s, f, ensure_ascii=False, indent=2)
     files_out["summary_json"] = sp
-    return RunResult(ok=False, text=text, mode=mode, output_dir=run_dir,
+    result = RunResult(ok=False, text=text, mode=mode, output_dir=run_dir,
         files=files_out, stage_stats=stages, errors=errors)
+    _log_pipeline_result(result)
+    return result

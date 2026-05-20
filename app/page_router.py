@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QStackedWidget
 
 from app.base_page import BasePage
 from app.page_registry import PageSpec
+from core.logger import log
 
 
 class PageRouter(QObject):
@@ -39,6 +40,9 @@ class PageRouter(QObject):
         if spec.key == self._current_key:
             return
 
+        from_key = self._current_key or "(none)"
+        log.info("[PageRouter] navigate %s -> %s", from_key, spec.key)
+
         # 旧页 on_leave（切页时停止全局点动）
         if self._current_key and self._current_key in self._cache:
             self.on_stop_jog_requested.emit()
@@ -46,6 +50,7 @@ class PageRouter(QObject):
 
         # 懒加载
         if spec.key not in self._cache:
+            log.info("[PageRouter] lazy load page key=%s", spec.key)
             page = spec.factory()
             self._stack.addWidget(page)
             self._cache[spec.key] = page

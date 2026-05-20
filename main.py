@@ -12,7 +12,7 @@ def _configure_opengl() -> None:
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-from core.logger import setup_logger
+from core.logger import log, setup_logger
 
 setup_logger("codroid")
 
@@ -26,9 +26,19 @@ from app.service_provider import ServiceProvider
 
 
 def main():
+    import platform
+
+    from PySide6 import __version__ as pyside_version
+
     _configure_opengl()
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 9))  # 固定默认字体避免 pointSize=-1 警告
+    log.info(
+        "[Main] application start python=%s pyside6=%s platform=%s",
+        platform.python_version(),
+        pyside_version,
+        platform.platform(),
+    )
 
     # 0. 全局滚轮防护（禁止 spinbox/combobox 通过滚轮误改值）
     from app.utils.wheel_guard import install_wheel_guard
@@ -48,7 +58,8 @@ def main():
             ty, db,
             on_response=(on_response if on_response else lambda r: None),
             on_error=(on_error if on_error else
-                      lambda e: print(f"[NodeEditor] {ty} 失败: {e}")),
+                      lambda e, _ty=ty: log.warning(
+                          "[Main] NodeEditor send_tcp failed ty=%s: %s", _ty, e)),
         )
 
     NodeEditorWidget.set_global_send_callback(_send_tcp)
@@ -62,14 +73,22 @@ def main():
 
     # 6. 退出清理
     def cleanup():
-        cri_svc.stop()
-        cm.disconnect()
+        log.info("[Main] aboutToQuit cleanup start")
+        try:
+            cri_svc.stop()
+        except Exception as exc:
+            log.warning("[Main] cleanup cri_svc.stop failed: %s", exc)
+        try:
+            cm.disconnect()
+        except Exception as exc:
+            log.warning("[Main] cleanup cm.disconnect failed: %s", exc)
         stop_motion = binder_state.get("motion_cleanup")
         if stop_motion:
             try:
                 stop_motion()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("[Main] cleanup motion_cleanup failed: %s", exc)
+        log.info("[Main] aboutToQuit cleanup done")
 
     app.aboutToQuit.connect(cleanup)
 

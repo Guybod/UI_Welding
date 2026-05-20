@@ -8,6 +8,7 @@
 from PySide6.QtCore import QObject, Signal
 
 from config.weld_font_presets import WeldFontPresetError
+from core.logger import log
 from core.types import RobotPoint
 from pipeline.mapping import WorkPlane
 from pipeline.offline_runner import OfflinePipelineRunner
@@ -117,6 +118,10 @@ class WeldingServiceV2(QObject):
         self._state = self.STATE_GENERATING
         self.state_changed.emit(self._state)
         self.progress.emit(0, 100)
+        log.info(
+            "[WeldingService] generate start text=%r mode=%s text_source=%s output_dir=%s",
+            (text or "")[:40], mode, text_source, output_dir or self.output_dir,
+        )
 
         try:
             out = output_dir or self.output_dir
@@ -202,6 +207,7 @@ class WeldingServiceV2(QObject):
 
             if not result.ok:
                 err_msg = "; ".join(result.errors)
+                log.error("[WeldingService] generate failed: %s", err_msg)
                 self.log_message.emit(
                     f"{pipeline_failed_prefix(lang=user_lang)}{err_msg}"
                 )
@@ -237,6 +243,10 @@ class WeldingServiceV2(QObject):
             self._state = self.STATE_DONE
             self.progress.emit(100, 100)
             self.state_changed.emit(self._state)
+            log.info(
+                "[WeldingService] generate done points=%s job=%s preview=%s",
+                pts_path, job_path, png_path,
+            )
             self.finished.emit(pts_path, job_path)
             if png_path:
                 self.preview_ready.emit(png_path)
@@ -246,12 +256,14 @@ class WeldingServiceV2(QObject):
             self.state_changed.emit(self._state)
             path = font_path or ""
             msg = weld_font_not_allowed(path, lang=user_lang) if path else str(exc)
+            log.error("[WeldingService] generate WeldFontPresetError: %s", exc)
             self.log_message.emit(f"{pipeline_failed_prefix(lang=user_lang)}{msg}")
             self.error_occurred.emit(msg)
         except Exception as exc:
             self._state = self.STATE_ERROR
             self.state_changed.emit(self._state)
             msg = unexpected_error_log(exc, lang=user_lang)
+            log.exception("[WeldingService] generate exception: %s", exc)
             self.log_message.emit(msg)
             self.error_occurred.emit(str(exc))
 

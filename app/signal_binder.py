@@ -27,9 +27,11 @@ def _bind_login_flow(cm, login, main_win, stack, state):
     def on_connect(config):
         state["cri_config"] = config
         login.set_status("连接中...")
+        log.info("[Login] user connect request %s:9001", config.robot_ip)
         cm.connect_to_robot(config)
 
     def on_return_to_login():
+        log.info("[Login] return to login / logout cleanup")
         stop = state.get("stop_all_motion")
         if stop:
             stop()
@@ -55,6 +57,7 @@ def _bind_connection_state(cm, login, main_win, stack, state):
         main_win._status_bar.set_connection_status(state_str)
 
     def on_connection_changed(state_str: str):
+        log.info("[Login] connection_state_changed state=%s", state_str)
         connected = state_str == "connected"
         main_win.update_home_connection(connected)
         if connected:
@@ -96,6 +99,10 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
                 ("publish/Error", _on_error, 500),
                 ("publish/Log", _on_log),
             ]
+            log.info(
+                "[Login] subscriptions: %s",
+                ", ".join(item[0] for item in subs),
+            )
             for i, item in enumerate(subs):
                 topic, cb = item[0], item[1]
                 tc = item[2] if len(item) > 2 else 0
@@ -105,12 +112,14 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
                 )
 
         def _do_remote():
+            log.info("[Login] Robot/toRemote")
             cm.send_call(
                 "Robot/toRemote", {},
                 on_response=lambda db: QTimer.singleShot(100, _do_subscribe),
                 on_error=lambda e: QTimer.singleShot(100, _do_subscribe),
             )
 
+        log.info("[Login] Robot/toAuto")
         cm.send_call(
             "Robot/toAuto", {},
             on_response=lambda db: QTimer.singleShot(100, _do_remote),
@@ -136,6 +145,7 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
 
         if robot_type and robot_type != _last_robot_type[0]:
             _last_robot_type[0] = robot_type
+            log.info("[Login] robot_type changed: %s", robot_type)
             cfg = get_model_config(robot_type)
             main_win.set_robot_model(
                 f"{cfg.display_name} ({robot_type})", robot_type=robot_type
@@ -201,6 +211,7 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
     def _on_error(db):
         if not db:
             return
+        log.warning("[Login] publish/Error payload=%s", str(db)[:200])
         try:
             RobotRealtimeState.instance().set_last_error(str(db))
         except Exception:

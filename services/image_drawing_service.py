@@ -7,6 +7,7 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 
+from core.logger import log
 from core.types import ImageDrawingConfig, ImageProcessConfig
 from pipeline.image_runner import run_image_to_cri
 from pipeline.mapping.workplane import WorkPlane
@@ -24,13 +25,19 @@ class _PreviewWorker(QObject):
         self._output_dir = output_dir
 
     def run(self):
+        log.info("[ImageDrawing] preview start image=%s", self._image_path)
         try:
             result = process_image(self._image_path, self._cfg)
             if not result.ok:
+                log.error("[ImageDrawing] preview failed: %s", result.error)
                 self.failed.emit(result.error or "preprocess failed")
                 return
             paths = write_image_debug_previews(result, self._output_dir)
             points = sum(len(s.points_px) for s in result.strokes_px)
+            log.info(
+                "[ImageDrawing] preview done strokes=%d points=%d",
+                len(result.strokes_px), points,
+            )
             self.finished.emit({
                 "paths": paths,
                 "stats": result.stats,
@@ -39,6 +46,7 @@ class _PreviewWorker(QObject):
                 "warnings": list(result.warnings),
             })
         except Exception as exc:
+            log.exception("[ImageDrawing] preview exception: %s", exc)
             self.failed.emit(str(exc))
 
 
@@ -62,6 +70,10 @@ class _GenerateWorker(QObject):
         self._output_dir = output_dir
 
     def run(self):
+        log.info(
+            "[ImageDrawing] generate start image=%s output_dir=%s",
+            self._image_path, self._output_dir,
+        )
         try:
             run = run_image_to_cri(
                 self._image_path,
@@ -71,8 +83,13 @@ class _GenerateWorker(QObject):
                 self._output_dir,
             )
             if not run.ok:
+                log.error("[ImageDrawing] generate failed: %s", run.error)
                 self.failed.emit(run.error or "image run failed")
                 return
+            log.info(
+                "[ImageDrawing] generate done output_dir=%s files=%d",
+                run.output_dir, len(run.files),
+            )
             self.finished.emit({
                 "files": dict(run.files),
                 "stats": run.stats,
@@ -80,6 +97,7 @@ class _GenerateWorker(QObject):
                 "output_dir": run.output_dir,
             })
         except Exception as exc:
+            log.exception("[ImageDrawing] generate exception: %s", exc)
             self.failed.emit(str(exc))
 
 
@@ -149,6 +167,7 @@ class ImageDrawingService(QObject):
     ) -> bool:
         if self._busy:
             return False
+        log.info("[ImageDrawing] start_preview image=%s", image_path)
         worker = _PreviewWorker(image_path, cfg, str(output_dir))
         return self._start_worker(
             worker,
@@ -166,6 +185,7 @@ class ImageDrawingService(QObject):
     ) -> bool:
         if self._busy:
             return False
+        log.info("[ImageDrawing] start_generate image=%s output_dir=%s", image_path, output_dir)
         worker = _GenerateWorker(
             image_path, workplane, image_cfg, drawing_cfg, str(output_dir),
         )
@@ -179,10 +199,12 @@ class ImageDrawingService(QObject):
         self.preview_finished.emit(payload)
 
     def _on_preview_fail(self, err: str):
+        log.error("[ImageDrawing] preview_failed: %s", err)
         self.preview_failed.emit(err)
 
     def _on_generate_ok(self, payload: dict):
         self.generate_finished.emit(payload)
 
     def _on_generate_fail(self, err: str):
+        log.error("[ImageDrawing] generate_failed: %s", err)
         self.generate_failed.emit(err)

@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 
+from core.logger import log
 from network.cri_motion_sender import CriMotionSender
 from network.connection_manager import ConnectionManager
 from services.cri_execution_log import (
@@ -71,6 +72,7 @@ class _WritingExecWorker(QObject):
         self._stop = True
 
     def run(self):
+        log.info("[WritingExec] task start: %s traj=%s", self._task, self._cfg.traj_path)
         try:
             if self._task == "prepare":
                 self._run_prepare()
@@ -80,8 +82,10 @@ class _WritingExecWorker(QObject):
                 self._run_minimal_test()
             else:
                 raise ValueError(f"unknown task: {self._task}")
+            log.info("[WritingExec] task done: %s", self._task)
             self.done.emit(self._task)
         except Exception as exc:
+            log.error("[WritingExec] task failed %s: %s", self._task, exc)
             self.error.emit(str(exc))
 
     def _emit(self, msg: str) -> None:
@@ -407,6 +411,7 @@ class WritingExecutionService(QObject):
 
         self._busy = True
         self._pending_task = None
+        log.info("[WritingExec] start task=%s traj=%s", task, cfg.traj_path)
         thread = QThread(self)
         worker = _WritingExecWorker(task, cfg, cm, cri)
         worker.moveToThread(thread)
@@ -427,6 +432,7 @@ class WritingExecutionService(QObject):
         self.log_message.emit(msg)
 
     def _on_worker_error(self, err: str):
+        log.error("[WritingExec] error: %s", err)
         self.error_occurred.emit(err)
         self._pending_task = None
         if self._thread and self._thread.isRunning():

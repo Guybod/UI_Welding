@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 
+from core.logger import log
 from core.types import ImageDrawingConfig, RobotPoint, WeldingProcessConfig, WorkspaceConfig
 from pipeline.cri_trajectory_export import (
     TRAJECTORY_FILENAME,
@@ -93,6 +94,12 @@ class WritingService(QObject):
             return
 
         self._set_state(self.STATE_GENERATING)
+        text_source = kwargs.get("text_source", "")
+        log.info(
+            "[WritingService] generate start text=%r text_source=%s target_process=drawing",
+            str(kwargs.get("text", ""))[:40],
+            text_source,
+        )
         thread = QThread(self)
         worker = _GenerateWorker(self, kwargs)
         worker.moveToThread(thread)
@@ -117,6 +124,10 @@ class WritingService(QObject):
     def _on_worker_finished(self, traj: str, pts: str, preview: str):
         self._set_state(self.STATE_DONE)
         self.progress.emit(100, 100)
+        log.info(
+            "[WritingService] generate done traj=%s pts=%s preview=%s",
+            traj, pts, preview,
+        )
         self.finished.emit(traj, pts, preview)
         if preview:
             self.preview_ready.emit(preview)
@@ -125,6 +136,7 @@ class WritingService(QObject):
 
     def _on_worker_failed(self, err: str):
         self._set_state(self.STATE_ERROR)
+        log.error("[WritingService] generate failed: %s", err)
         self.log_message.emit(err)
         self.error_occurred.emit(err)
         if self._thread and self._thread.isRunning():

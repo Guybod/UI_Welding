@@ -3,6 +3,7 @@ import time
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from core.connection_config import ConnectionConfig
+from core.logger import log
 from core.thread_manager import TcpThread
 from network.tcp_adapter import TcpAdapter
 from network.protocol.errors import NetworkDisconnectedError
@@ -66,6 +67,7 @@ class ConnectionManager(QObject):
     def connect_to_robot(self, config: ConnectionConfig):
         self._config = config
         self._reconnect_attempt = 0
+        log.info("[Connection] connect_to_robot %s:9001", config.robot_ip)
         self._do_connect()
 
     def _do_connect(self):
@@ -122,6 +124,10 @@ class ConnectionManager(QObject):
 
     def _on_first_connect_timeout(self):
         if self._first_connect:
+            log.warning(
+                "[Connection] first_connect_timeout %s:9001",
+                self._config.robot_ip,
+            )
             self.connection_failed.emit(f"连接 {self._config.robot_ip}:9001 超时 (3秒)")
             self.disconnect()
             self._first_connect = False
@@ -129,6 +135,7 @@ class ConnectionManager(QObject):
     # ════════════════ 断线 ════════════════
 
     def disconnect(self):
+        log.info("[Connection] disconnect")
         if hasattr(self, '_connect_timeout'):
             self._connect_timeout.stop()
         self._reconnect_timer.stop()
@@ -149,13 +156,14 @@ class ConnectionManager(QObject):
             self._thread.quit()                  # 直接调用，线程安全（避免跨线程信号死锁）
             finished = self._thread.wait(3000)
             if not finished:
-                print("[ConnectionManager] TcpThread 未在 3s 内退出，强制终止")
+                log.warning("[Connection] TcpThread did not exit within 3s, terminating")
                 self._thread.terminate()
                 self._thread.wait(1000)
         self._adapter = None
         self._thread = None
 
     def stop_reconnect(self):
+        log.info("[Connection] stop_reconnect")
         self._reconnect_timer.stop()
         self.disconnect()
         self._reconnect_attempt = 0
@@ -175,6 +183,7 @@ class ConnectionManager(QObject):
 
     def _on_socket_error(self, msg: str):
         if self._first_connect:
+            log.warning("[Connection] socket_error (first_connect): %s", msg)
             self.connection_failed.emit(msg)
             self.disconnect()
             self._first_connect = False
@@ -189,6 +198,8 @@ class ConnectionManager(QObject):
         self._show_dialog()
         delay = BACKOFF_SEQUENCE[min(self._reconnect_attempt, len(BACKOFF_SEQUENCE) - 1)] \
             if self._reconnect_attempt < len(BACKOFF_SEQUENCE) else 10
+        attempt = self._reconnect_attempt + 1
+        log.info("[Connection] reconnect start attempt=%d delay=%ss", attempt, delay)
         self._reconnect_timer.start(int(delay * 1000))
         self._reconnect_attempt += 1
         if self._dialog:
@@ -204,9 +215,13 @@ class ConnectionManager(QObject):
     def _on_connected(self):
         if hasattr(self, '_connect_timeout'):
             self._connect_timeout.stop()
+        was_reconnect = self._dialog is not None
         self._first_connect = False
         self._was_connected = True
         self._reconnect_attempt = 0
+        log.info("[Connection] connected")
+        if was_reconnect:
+            log.info("[Connection] reconnect success")
         self.connection_state_changed.emit("connected")
         if self._dialog:
             self._dialog.mark_reconnected(self._cri_push_enabled)
@@ -281,7 +296,11 @@ class ConnectionManager(QObject):
         for cb in self._subscribe_callbacks.get(ty, []):
             try:
                 cb(db)
-            except Exception:
+            except Exception as e:
+                log.warning(
+                    "[Connection] publish callback failed topic=%s err=%r",
+                    ty, e,
+                )
                 pass
 
     def _on_robot_status(self, db: dict):
@@ -337,10 +356,19 @@ class ConnectionManager(QObject):
         self._sig_send.emit(json.dumps(obj, ensure_ascii=False))
 
     def _drain_pending(self, error: Exception):
+        pending_count = len(self._pending)
+        if pending_count:
+            log.warning(
+                "[Connection] drain_pending reason=%s pending=%d",
+                error, pending_count,
+            )
         for req in list(self._pending.values()):
             try:
                 req["on_error"](error)
-            except Exception:
+            except Exception as e:
+                log.warning(
+                    "[Connection] drain_pending on_error callback failed: %r", e,
+                )
                 pass
         self._pending.clear()
         self._silent_log_ids.clear()
@@ -355,9 +383,17 @@ class ConnectionManager(QObject):
             self._silent_log_ids.discard(rid)
             req = self._pending.pop(rid, None)
             if req:
+                log.warning(
+                    "[Connection] request timeout id=%s ty=%s",
+                    rid, req["ty"],
+                )
                 try:
                     req["on_error"](TimeoutError(f"Request timeout: id={rid}, ty={req['ty']}"))
-                except Exception:
+                except Exception as e:
+                    log.warning(
+                        "[Connection] timeout on_error callback failed id=%s: %r",
+                        rid, e,
+                    )
                     pass
 
     # ════════════════ 弹窗 ════════════════

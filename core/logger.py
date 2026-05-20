@@ -114,4 +114,11 @@ def setup_logger(name: str = "codroid") -> logging.Logger:
     return logger
 
 
+def get_logger(name: str | None = None) -> logging.Logger:
+    """Return codroid root logger or a child logger (codroid.<name>)."""
+    if not name:
+        return logging.getLogger("codroid")
+    return logging.getLogger(f"codroid.{name}")
+
+
 log = setup_logger()

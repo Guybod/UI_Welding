@@ -1,5 +1,6 @@
 from PySide6.QtCore import QObject, Signal, QTimer
 
+from core.logger import log
 from core.thread_manager import UdpThread
 from network.udp_cri_adapter import UdpCriAdapter
 from network.connection_manager import ConnectionManager
@@ -31,6 +32,10 @@ class CriService(QObject):
 
     def start(self, config):
         self._config = config
+        log.info(
+            "[CRI] start local_ip=%s udp_port=%s enabled=%s",
+            config.local_ip, config.udp_port, self._enabled,
+        )
 
         if self._udp_thread:
             # 安全销毁旧 adapter（在其所属线程中 deleteLater）
@@ -38,7 +43,7 @@ class CriService(QObject):
                 try:
                     self._sig_bind.disconnect(self._udp_adapter.bind_and_listen)
                     self._sig_shutdown_udp.disconnect(self._udp_adapter.shutdown)
-                    self._udp_adapter.bind_error.disconnect(self.bind_error.emit)
+                    self._udp_adapter.bind_error.disconnect(self._on_bind_error)
                     self._udp_adapter.datagram_received.disconnect(self.cri_frame_received.emit)
                 except (TypeError, RuntimeError):
                     pass
@@ -54,7 +59,7 @@ class CriService(QObject):
 
         self._sig_bind.connect(self._udp_adapter.bind_and_listen)
         self._sig_shutdown_udp.connect(self._udp_adapter.shutdown)
-        self._udp_adapter.bind_error.connect(self.bind_error.emit)
+        self._udp_adapter.bind_error.connect(self._on_bind_error)
         self._udp_adapter.datagram_received.connect(self.cri_frame_received.emit)
 
         self._udp_thread.started.connect(
@@ -73,10 +78,15 @@ class CriService(QObject):
             })
             self._enabled = True
             self._cm.set_cri_push_enabled(True)
+            log.info("[CRI] StartDataPush sent enabled=True")
             self.cri_started.emit()
 
         self._cm.send_raw({"id": 0, "ty": "CRI/StopDataPush"})
         QTimer.singleShot(200, _do_start)
+
+    def _on_bind_error(self, msg: str):
+        log.warning("[CRI] bind_error: %s", msg)
+        self.bind_error.emit(msg)
 
     # ════════════════ CRI 控制 (dry-run only) ════════════════
 
@@ -117,16 +127,17 @@ class CriService(QObject):
                 "startBuffer": start_buffer,
             },
         }
-        print(f"[CRI DryRun] StartControl: {msg}")
+        log.debug("[CRI] DryRun StartControl: %s", msg)
         return msg
 
     def stop_control_dry_run(self) -> dict:
         """构建 StopControl JSON 并打印日志。不实际发送。"""
         msg = {"id": 0, "ty": "CRI/StopControl"}
-        print(f"[CRI DryRun] StopControl: {msg}")
+        log.debug("[CRI] DryRun StopControl: %s", msg)
         return msg
 
     def stop(self):
+        log.info("[CRI] stop enabled=%s", self._enabled)
         self._cm.send_raw({"id": 0, "ty": "CRI/StopDataPush"})
         self._enabled = False
         self._cm.set_cri_push_enabled(False)
@@ -153,4 +164,5 @@ class CriService(QObject):
 
         self._udp_thread = None
         self._udp_adapter = None
+        log.info("[CRI] stopped enabled=False")
         self.cri_stopped.emit()
