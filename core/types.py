@@ -245,6 +245,9 @@ class PathConfig:
     skeleton_spur_min_px: float = 3.0
     skeleton_merge_gap_px: float = 0.0
     skeleton_branch_cluster_radius_px: int = 5
+    # 骨架字数据源：hershey=正式单线 stroke；ttf_skeleton_beta=旧 TTF 细化
+    skeleton_source: str = "hershey"
+    hershey_style: str = "futural"
 
 
 @dataclass

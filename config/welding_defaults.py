@@ -45,7 +45,7 @@ LEGACY_POINT_SPACING_MM = 0.5
 LEGACY_Z_SAFE = 166.0
 LEGACY_Z_WORK = 156.5
 
-# 旧名别名（向后兼容 app/pages/welding_page.py, services/welding_service.py）
+# 旧名别名（向后兼容 app/pages/welding_page.py）
 CHAR_HEIGHT_MM = LEGACY_CHAR_HEIGHT_MM
 CHAR_SPACING_MM = LEGACY_CHAR_SPACING_MM
 LINE_SPACING_MM = LEGACY_LINE_SPACING_MM

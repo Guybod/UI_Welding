@@ -13,7 +13,6 @@ TAB_I18N_KEYS = {
     "register": "tab_register",
     "program": "tab_program",
     "upload": "tab_upload",
-    "settings": "tab_settings",
 }
 
 

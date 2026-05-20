@@ -3,14 +3,32 @@
 from __future__ import annotations
 
 import math
+import socket
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 
 from network.cri_motion_sender import CriMotionSender
 from network.connection_manager import ConnectionManager
+from services.cri_execution_log import (
+    CriExecutionTrace,
+    _UdpPoseProbe,
+    format_ts_ms,
+    log_cri_protocol_reference,
+    log_cri_start_control,
+    log_cri_stop_control,
+    log_execution_footer,
+    log_tcp_vs_trajectory_start,
+    log_trajectory_summary,
+    log_trajectory_z_diagnosis,
+    log_udp_send_begin,
+    log_udp_send_summary,
+    log_udp_target_and_packets,
+)
+from services.cri_minimal_test import TRAJECTORY_FILENAME, write_minimal_z_test_trajectory
 from services.cri_service import CriService
 from services.robot_realtime_state import RobotRealtimeState
 
@@ -29,6 +47,11 @@ class WritingExecConfig:
     start_orient_tolerance_deg: float = 3.0
     start_stable_count: int = 6
     start_timeout_s: float = 120.0
+    z_draw_mm: float = 305.0
+    z_safe_mm: float = 315.0
+    cri_data_push_ip: str = ""
+    cri_data_push_port: int = 0
+    skip_start_check: bool = False
 
 
 class _WritingExecWorker(QObject):
@@ -53,63 +76,171 @@ class _WritingExecWorker(QObject):
                 self._run_prepare()
             elif self._task == "execute":
                 self._run_execute()
+            elif self._task == "minimal_test":
+                self._run_minimal_test()
             else:
                 raise ValueError(f"unknown task: {self._task}")
             self.done.emit(self._task)
         except Exception as exc:
             self.error.emit(str(exc))
 
+    def _emit(self, msg: str) -> None:
+        self.log.emit(msg)
+
     def _run_prepare(self):
         start = CriMotionSender.read_first_point(self._cfg.traj_path)
         if not start:
             raise RuntimeError("cannot read trajectory start point")
-        self.log.emit(
-            f"move to start: [{start[0]:.2f}, {start[1]:.2f}, {start[2]:.2f}]"
+        self._emit(
+            f"{format_ts_ms()} 移至起点: "
+            f"[{start[0]:.2f}, {start[1]:.2f}, {start[2]:.2f}]"
         )
         self._send_movL_sync(start)
-        self.log.emit("waiting: CRI moving + TCP pose...")
+        self._emit(f"{format_ts_ms()} 等待 CRI 运动结束并核对 TCP 位姿...")
         self._wait_until_at_start(start)
-        self.log.emit("arrived at trajectory start")
+        self._emit(f"{format_ts_ms()} 已到达轨迹起点")
+
+    def _run_minimal_test(self):
+        """最小 Z±10mm 诊断：读当前 TCP → 生成轨迹 → 移至起点 → CRI 执行。"""
+        rt = RobotRealtimeState.instance()
+        if not rt.is_valid():
+            raise RuntimeError("无 CRI 实时数据，无法读取当前 TCP 位姿")
+        start_pose = list(rt.current_tcp_pose_mm_deg())
+        out_dir = Path("output/cri_minimal_test")
+        traj_path = out_dir / TRAJECTORY_FILENAME
+        meta = write_minimal_z_test_trajectory(
+            traj_path,
+            start_pose,
+            delta_z_mm=10.0,
+            duration_s=3.0,
+            sample_rate_hz=int(self._cfg.sample_rate_hz),
+        )
+        self._emit(f"{format_ts_ms()} —— CRI 最小测试轨迹已生成（当前 TCP 为起点）——")
+        self._emit(
+            f"{format_ts_ms()} 路径={meta['path']} 点数={meta['sample_count']} "
+            f"TCP起点 Z={start_pose[2]:.1f}mm Z范围={meta['z_range']} "
+            f"(±{meta['delta_z_mm']:.0f}mm 往返)"
+        )
+        saved_traj = self._cfg.traj_path
+        self._cfg.traj_path = meta["path"]
+        try:
+            self._emit(f"{format_ts_ms()} 最小测试：先移至轨迹起点…")
+            self._run_prepare()
+            self._run_execute()
+        finally:
+            self._cfg.traj_path = saved_traj
 
     def _run_execute(self):
+        trace = CriExecutionTrace()
+        freq = float(self._cfg.sample_rate_hz)
+
         start = CriMotionSender.read_first_point(self._cfg.traj_path)
         if not start:
             raise RuntimeError("cannot read trajectory start point")
-        if not self._check_at_start(start, log_mismatch=True):
-            raise RuntimeError(
-                "robot not at trajectory start; run 'Move to Start' first"
-            )
+        if not self._cfg.skip_start_check:
+            if not self._check_at_start(start, log_mismatch=True):
+                raise RuntimeError(
+                    "robot not at trajectory start; run 'Move to Start' first"
+                )
 
-        self.log.emit("CRI StopControl (pre)")
-        self._cri.stop_control()
+        self._emit(f"{format_ts_ms()} —— 开始 CRI 轨迹执行 ——")
+        log_cri_protocol_reference(self._emit)
+        traj_stats = log_trajectory_summary(self._emit, self._cfg.traj_path, freq)
+        log_trajectory_z_diagnosis(
+            self._emit,
+            self._cfg.traj_path,
+            z_draw_mm=self._cfg.z_draw_mm,
+            z_safe_mm=self._cfg.z_safe_mm,
+        )
+        if start:
+            log_tcp_vs_trajectory_start(self._emit, start)
+        sample_count = int(traj_stats["sample_count"])
+        expected_dur = float(traj_stats["expected_duration_s"])
+
+        log_cri_stop_control(
+            self._emit, self._cm, trace, phase="pre",
+            should_stop=lambda: self._stop,
+        )
         time.sleep(0.5)
 
-        duration_ms = max(1, int(1000.0 / self._cfg.sample_rate_hz))
-        self.log.emit(
-            f"CRI StartControl: {self._cfg.sample_rate_hz} Hz, buffer={self._cfg.start_buffer}"
-        )
-        self._cri.start_control(
+        duration_ms = max(1, min(16, int(1000.0 / freq)))
+        log_cri_start_control(
+            self._emit,
+            self._cm,
+            trace,
             filter_type=self._cfg.filter_type,
             duration_ms=duration_ms,
             start_buffer=self._cfg.start_buffer,
+            frequency_hz=freq,
+            should_stop=lambda: self._stop,
         )
 
+        bind_ip = self._cfg.cri_data_push_ip or ""
         sender = CriMotionSender(
             robot_ip=self._cfg.robot_ip,
-            frequency_hz=self._cfg.sample_rate_hz,
+            frequency_hz=freq,
             cartesian=self._cfg.cartesian,
+            bind_local_ip=bind_ip,
         )
+        log_udp_target_and_packets(
+            self._emit,
+            sender,
+            self._cfg.traj_path,
+            cri_data_push_ip=self._cfg.cri_data_push_ip,
+            cri_data_push_port=self._cfg.cri_data_push_port,
+        )
+
+        pose_probe = _UdpPoseProbe(start)
+        sent = 0
+        interrupted = False
+        socket_err = False
+        log_udp_send_begin(
+            self._emit,
+            sample_count=sample_count,
+            frequency_hz=freq,
+            expected_duration_s=expected_dur,
+        )
+        udp_begin = time.perf_counter()
         try:
-            sent = sender.send_file(
-                self._cfg.traj_path,
+            try:
+                sent = sender.send_file(
+                    self._cfg.traj_path,
+                    should_stop=lambda: self._stop,
+                    on_elapsed=lambda el, _s, _t: pose_probe.tick(self._emit, el),
+                )
+                if self._stop and sent < sample_count:
+                    interrupted = True
+            except (socket.error, OSError) as exc:
+                socket_err = True
+                trace.socket_error = True
+                self._emit(f"{format_ts_ms()} UDP socket 错误: {exc}")
+                raise
+        finally:
+            udp_end = time.perf_counter()
+            actual_dur = max(udp_end - udp_begin, 1e-9)
+            sender.close()
+            log_udp_send_summary(
+                self._emit,
+                sent_count=sent,
+                actual_duration_s=actual_dur,
+                socket_error=socket_err,
+                interrupted=interrupted,
+            )
+            if pose_probe.max_dist_from_start < 0.1:
+                self._emit(
+                    f"{format_ts_ms()} 诊断: UDP 全程距起点 max={pose_probe.max_dist_from_start:.3f}mm "
+                    f"— 机器人可能未消费控制包"
+                )
+            else:
+                self._emit(
+                    f"{format_ts_ms()} 诊断: UDP 期间观测到位移 max={pose_probe.max_dist_from_start:.3f}mm"
+                )
+            time.sleep(0.5)
+            log_cri_stop_control(
+                self._emit, self._cm, trace, phase="post",
                 should_stop=lambda: self._stop,
             )
-            self.log.emit(f"UDP sent {sent} samples")
-            time.sleep(0.5)
-        finally:
-            sender.close()
-            self._cri.stop_control()
-            self.log.emit("CRI StopControl (post)")
+            log_execution_footer(self._emit, trace)
 
     def _pose_distance(self, current: tuple[float, ...], target: List[float]) -> tuple[float, float]:
         pos_d = math.sqrt(
@@ -136,8 +267,8 @@ class _WritingExecWorker(QObject):
             and not state.is_moving()
         )
         if log_mismatch and not ok:
-            self.log.emit(
-                f"not at start: dist={pos_d:.2f}mm orient={orient_d:.2f}° "
+            self._emit(
+                f"{format_ts_ms()} 未在起点: 距离={pos_d:.2f}mm 姿态差={orient_d:.2f}° "
                 f"moving={state.is_moving()}"
             )
         return ok
@@ -167,8 +298,8 @@ class _WritingExecWorker(QObject):
                     if stable >= self._cfg.start_stable_count:
                         cur = state.current_tcp_pose_mm_deg()
                         pos_d, _ = self._pose_distance(cur, target)
-                        self.log.emit(
-                            f"stable at start: dist={pos_d:.2f}mm, moving=false"
+                        self._emit(
+                            f"{format_ts_ms()} 起点稳定: 距离={pos_d:.2f}mm, moving=false"
                         )
                         return
                 else:
@@ -254,6 +385,15 @@ class WritingExecutionService(QObject):
     ):
         self._start("execute", cfg, cm, cri)
 
+    def run_minimal_test(
+        self,
+        cfg: WritingExecConfig,
+        cm: ConnectionManager,
+        cri: CriService,
+    ):
+        """CRI 最小 X±10mm 诊断（不依赖文字轨迹）。"""
+        self._start("minimal_test", cfg, cm, cri)
+
     def _start(
         self,
         task: str,
@@ -262,7 +402,7 @@ class WritingExecutionService(QObject):
         cri: CriService,
     ):
         if self._busy:
-            self.log_message.emit("execution busy")
+            self.log_message.emit(f"{format_ts_ms()} 执行任务繁忙，请稍候")
             return
 
         self._busy = True

@@ -1,267 +1,437 @@
-# Codroid 机器人控制终端 — 架构文档
+# Codroid 机器人控制终端 — 架构说明
 
-## 项目概述
+> 文档版本：2026-05（与当前源码同步）  
+> 机器人通信协议详见根目录 **`planAPI.md`**（唯一保留的 API 交接文档）。
 
-PySide6 桌面应用，通过 TCP/UDP 与 Codroid 协作机器人控制器通信。
-版本 v2.0.0，当前处于 Part 5 (TCP 9001 只读连接) 阶段。
+---
 
-## 目录结构
+## 1. 项目定位
 
-```
-robot_ui/
-├── main.py                          # 入口, 组装 LoginPage + MainWindow + ConnectionManager
-├── requirements.txt                 # PySide6, PyOpenGL, numpy, psutil, PyYAML
-├── config/
-│   └── robot_models.yaml            # 机器人型号配置(S20-180-ECO-V2 + default_6axis)
-├── app/
-│   ├── main_window.py               # 主窗口: TopTabBar + PageStack + Drawer + GlobalCommandBar
-│   ├── base_page.py                 # 页面基类 (on_enter/on_leave/on_connection_changed)
-│   ├── page_registry.py             # PageSpec + PAGE_REGISTRY (7个功能页)
-│   ├── page_router.py               # 懒加载路由器
-│   ├── styles/                      # 7套 QSS 主题
-│   ├── pages/
-│   │   ├── login_page.py            # 登录页: IP/网卡/UDP端口 → connect_requested Signal
-│   │   ├── home_page.py             # 首页 (占位)
-│   │   ├── welding_page.py          # 焊接页 (占位)
-│   │   ├── writing_page.py          # 写字页 (占位)
-│   │   ├── upload_page.py           # 上传页 (占位)
-│   │   ├── io_monitor.py            # IO 监控 (占位)
-│   │   ├── program_editor.py        # 程序编辑器 (占位)
-│   │   ├── settings.py             # 设置 (占位)
-│   │   ├── http_tools_page.py       # HTTP 工具 (占位)
-│   │   └── websocket_tools_page.py  # WebSocket 工具 (占位)
-│   └── widgets/
-│       ├── top_tab_bar.py           # 顶部标签栏 (滚轮横向滚动)
-│       ├── global_command_bar.py    # 底部操作栏 (椭圆开关/三挡位/圆形按钮)
-│       ├── robot_control_drawer.py  # 可收缩运动控制抽屉
-│       ├── status_bar.py            # 底部状态栏
-│       ├── reconnect_dialog.py      # 掉线重连弹窗
-│       ├── network_interface_selector.py  # 网卡下拉选择器
-│       ├── console_widget.py        # 日志窗口 (预留)
-│       ├── joint_slider.py          # 关节滑块 (预留)
-│       └── led_indicator.py         # LED 指示灯 (预留)
-├── core/
-│   ├── connection_config.py         # ConnectionConfig + LocalNetworkInterface
-│   ├── robot_state.py               # RobotStateRaw + RobotStateUi + StateConverter + Store
-│   ├── robot_model_config.py        # YAML 模型加载器
-│   ├── unit_converter.py            # rad↔deg, m↔mm
-│   ├── thread_manager.py            # TcpThread (QThread)
-│   ├── kinematics.py               # FK/IK (预留, 非实时链路)
-│   ├── event_bus.py                # 事件总线 (预留)
-│   └── logger.py                    # 彩色终端 + 文件日志, 1MB切分
-├── network/
-│   ├── tcp_adapter.py               # TcpAdapter: 纯网络层, @Slot 在 TcpThread 执行
-│   ├── connection_manager.py        # ConnectionManager: UI线程, 请求/响应/订阅分发
-│   ├── http_client.py              # HTTP 9198 (预留)
-│   ├── websocket_client.py         # WebSocket 9000 (预留)
-│   └── protocol/
-│       ├── json_stream.py           # JsonStreamParser: raw_decode, strict UTF-8
-│       ├── request.py               # RequestBuilder (线程安全, threading.Lock)
-│       ├── response.py              # ResponseDispatcher (当前未使用, TcpAdapter 不再持有)
-│       └── errors.py               # ProtocolError / RobotError / NetworkDisconnectedError
-├── services/
-│   ├── robot_service.py            # RobotService (部分废弃, 改用 cm.send_subscribe)
-│   ├── project_http_service.py     # 9198 REST (预留)
-│   ├── project_map_service.py      # 9000 WS (预留)
-│   ├── http_service.py             # (预留)
-│   └── websocket_service.py        # (预留)
-├── view3d/                          # OpenGL 3D 渲染 (后续 Part)
-└── log/                             # 日志文件 YYYYMMDD.txt
+本仓库是 **Codroid 六轴机器人上位机**：PySide6 桌面应用，集成：
+
+- 登录与 TCP/UDP/CRI 连接管理；
+- 全局示教器式点动、使能、工程控制；
+- **焊接页**：轮廓/骨架字 → Lua + 工艺段；
+- **绘图页**：轮廓/Hershey 拉丁骨架/汉字 medians/图片轮廓 → CRI 轨迹 UDP 下发；
+- **运动页**：节点连线式运动编排（类 ComfyUI）；
+- **上传页**：HTTP/WS 工程上传与槽位绑定；
+- IO / 寄存器监控。
+
+离线轨迹生成（`pipeline/`）与 Qt UI 分离，便于单测与批处理；**禁止**在 UI 线程直接操作 socket。
+
+---
+
+## 2. 技术栈
+
+| 类别 | 选型 |
+|------|------|
+| UI | PySide6 6.5+ |
+| 3D 预览 | PyOpenGL 2.1 Compatibility + pygltflib |
+| 数值/图像 | NumPy、OpenCV、Pillow、scikit-image、matplotlib |
+| 配置 | PyYAML、QSettings（`Codroid` / `RobotUI`） |
+| 单线字 | Hershey-Fonts（pypi） |
+| 汉字骨架 | MakeMeAHanzi `graphics.txt`（本地 `third_party/makemeahanzi/`） |
+| 上传 | requests + websocket-client → `RobotProjectSDK` |
+| Python | 建议 3.11（`.venv`） |
+
+---
+
+## 3. 目录结构
+
+```text
+UI/
+├── main.py                 # 入口：OpenGL、日志、服务、bind_all、事件循环
+├── planAPI.md              # 机器人 TCP/UDP/工程 API（勿删）
+├── requirements.txt
+├── app/                    # Qt 壳层
+│   ├── bootstrap.py        # Login + MainWindow 堆叠
+│   ├── main_window.py      # 顶栏/页面区/抽屉/命令栏/菜单
+│   ├── page_registry.py    # 页面注册表
+│   ├── page_router.py      # 懒加载、on_enter/on_leave
+│   ├── signal_binder.py    # 全部 UI↔网络 信号集中绑定
+│   ├── service_provider.py # cm + cri 注入页面
+│   ├── i18n.py             # 中英双语
+│   ├── pages/              # 功能页
+│   └── widgets/            # 顶栏、命令栏、抽屉、节点编辑器等
+├── core/                   # 无 Qt 依赖的类型、日志、单位、连接配置
+├── network/                # TCP 适配器、ConnectionManager、UDP CRI、CRI 发包
+├── services/               # 业务服务（焊接/绘图/执行/CRI/上传 SDK）
+├── pipeline/               # 离线轨迹：栅格→路径→映射→工艺/CRI 导出
+├── config/                 # 默认参数、字体预设、robot_models.yaml
+├── models/                 # 首页 3D 预览用 GLB（根目录，非 assets）
+├── view3d/                 # GLB 加载与 OpenGL 预览
+├── styles/                 # QSS 主题
+├── third_party/            # 大数据（gitignore）：makemeahanzi 等
+├── docs/                   # NOTICE、历史 HANDOFF
+├── tools/                  # mock_robot_server 等开发工具
+└── output/                 # 运行生成（预览、轨迹、Lua，通常不入库）
 ```
 
-## 线程模型
+---
 
-```
-┌─ UI Thread (主线程) ─────────────────────────────────────┐
-│  QApplication, MainWindow, LoginPage, 所有 QWidget        │
-│  ConnectionManager (请求管理/响应分发/订阅回调/重连/弹窗)   │
-│  RobotStateStore, PageRouter, 所有 Service                 │
-│                                                           │
-│  _sig_connect ──→ queued ──→ TcpAdapter.connect_to_host   │
-│  _sig_send    ──→ queued ──→ TcpAdapter.send_message      │
-│  _sig_shutdown──→ queued ──→ TcpAdapter.shutdown          │
-│                                                           │
-│  TcpAdapter.connected       ←── queued ──                 │
-│  TcpAdapter.disconnected    ←── queued ──                 │
-│  TcpAdapter.connection_error←── queued ──                 │
-│  TcpAdapter.data_received   ←── queued ──                 │
-│  TcpAdapter.shutdown_finished←── queued ──                │
-└───────────────────────────────────────────────────────────┘
-                         │
-┌─ TcpThread ──────────────────────────────────────────────┐
-│  TcpAdapter (QObject, moveToThread)                       │
-│    QTcpSocket (在此线程创建和操作)                          │
-│    JsonStreamParser (纯Python, 在此线程调用)               │
-│    QTimer (超时检查, 在此线程创建)                          │
-│                                                           │
-│  @Slot(str,int) connect_to_host  — 创建 QTcpSocket        │
-│  @Slot(str)    send_message      — socket.write           │
-│  @Slot()       shutdown          — stop/abort/deleteLater │
-│  @Slot()       disconnect_from_host                       │
-└───────────────────────────────────────────────────────────┘
+## 4. 启动与运行时对象
+
+```text
+main()
+  ├─ setup_logger("codroid")          → logs/YYYYMMDD.txt
+  ├─ create_app_stack()                 → QStackedWidget: LoginPage | MainWindow
+  ├─ ConnectionManager()                UI 线程，管理 TcpThread + 重连
+  ├─ CriService(cm)                     UDP 绑定 + Start/StopDataPush
+  ├─ RobotService(cm)                   薄封装（预留）
+  ├─ NodeEditorWidget.set_global_send_callback(cm.send_call)
+  ├─ ServiceProvider(cm, cri) → PageRouter
+  └─ bind_all(cm, cri, login, main_win, stack)
+       └─ aboutToQuit → cri.stop(), cm.disconnect(), 停止 Jog/moveTo 心跳
 ```
 
-### 线程安全铁律
+**页面访问后端**：`page._service_provider.cm` / `.cri`（在 `PageRouter.navigate` 首次注入）。
 
-1. **跨线程 Signal 全用 `Signal(object)`** — 禁止 `Signal(dict)`/`Signal(list)`。str/bool/int/无参除外
-2. **回调不入 TcpThread** — `on_response`/`on_error`/订阅回调全部在 ConnectionManager(UI线程) 保存和调用
-3. **socket/timer 清理在 @Slot** — `stop()`/`abort()`/`deleteLater()` 封装在 `TcpAdapter.shutdown()` @Slot
-4. **shutdown 必须等完成** — `shutdown()` 完成后 emit `shutdown_finished`，ConnectionManager 才 `thread.wait()`
-5. **每次重连清理旧连接** — `_cleanup_thread()` 断开旧 signal 再建新线程
+---
 
-## 数据流
+## 5. 线程与跨线程规则
 
-### TCP 连接建立
+| 组件 | 线程 | 说明 |
+|------|------|------|
+| 所有 QWidget | UI 主线程 | 禁止子线程直接改控件 |
+| `TcpThread` + `TcpAdapter` | 独立 QThread | connect/send 经 `@Slot`；`data_received` Signal → UI |
+| `UdpThread` + `UdpCriAdapter` | 独立 QThread | bind 本地 IP:port；308B 帧解析后 Signal → UI |
+| `ConnectionManager` | UI | pending 请求、订阅分发、重连退避 1→2→4→8s |
+| `WritingExecutionService` | QThread worker | CRI 轨迹 UDP 发送，日志 Signal 回 UI |
+| `WeldingServiceV2` / `WritingService` | 多在 UI 调 pipeline | pipeline 本身无 Qt |
 
-```
-LoginPage.connect_requested.emit(config)
-  → main.on_connect → cm.connect_to_robot(config)
-    → _do_connect
-      → _cleanup_thread (断开旧线程)
-      → new TcpThread + TcpAdapter, moveToThread
-      → wire signals (sig_xxx → adapter @Slots, adapter.signals → cm handlers)
-      → thread.started → _sig_connect.emit(ip, 9001)
-      → TcpAdapter.connect_to_host @Slot (TcpThread)
-        → QTcpSocket() 创建
-        → connectToHost
-```
+**硬性约定**（维护时勿破）：
 
-### 命令请求/响应
+1. UI → 网络：仅 `cm.send_call` / `send_raw` / `send_subscribe`。  
+2. 点动/RunTo：**按下**发 `Robot/jog` 或 `Robot/moveTo`，**500ms** `*Heartbeat`，**松开**停心跳并 `stopJog` 或 `moveTo type=-1`。  
+3. CRI 推送：连接成功后先 `CRI/StopDataPush`，再 `CRI/StartDataPush`（`duration=2` ms，500Hz）。  
+4. 绘图执行：先 TCP `CRI/StartControl`，再 UDP **64B** 包发到机器人 **:9030**（与本地 CRI 推送端口不同）。
 
-```
-cm.send_call(ty, db, on_response, on_error)
-  → UI线程: _seq++, 保存 PendingRequest{ty, on_response, on_error, created_at, timeout}
-  → json.dumps({id, ty, db})
-  → _sig_send.emit(msg)
-  → queued → TcpAdapter.send_message @Slot (TcpThread)
-    → socket.write(msg)
+---
 
-... 机器人响应到达 ...
+## 6. 通信架构
 
-TcpAdapter._on_ready_read (TcpThread)
-  → JsonStreamParser.feed → [msg, ...]
-  → data_received.emit(msg)
-  → queued → ConnectionManager._on_data_received (UI线程)
-    → msg 有 id → _dispatch_response
-      → _pending.pop(id) → req["on_response"](db) 或 req["on_error"](err)
-    → msg 无 id 且 ty=publish/* → _dispatch_publish
-      → named handler 或 _subscribe_callbacks[topic] 遍历
-```
-
-### 订阅推送
-
-```
-cm.send_subscribe(topic, callback)
-  → UI线程: _subscribe_callbacks[topic].append(callback)
-  → _sig_send.emit({"ty": topic, "tc": 0})
-  → queued → TcpAdapter.send_message @Slot (TcpThread)
-    → socket.write(...)
-
-... 机器人推送 publish/xxx ...
-
-TcpAdapter._on_ready_read → data_received.emit(msg)
-  → queued → ConnectionManager._on_data_received (UI线程)
-    → _dispatch_publish
-      → RobotStatus → _on_robot_status (named handler)
-      → 其他 → _subscribe_callbacks[topic] 遍历回调
+```text
+                    ┌─────────────────┐
+                    │   LoginPage     │
+                    │ robot_ip        │
+                    │ local_ip:port   │
+                    └────────┬────────┘
+                             │ ConnectionConfig
+                             ▼
+┌──────────────────────────────────────────────────────────────┐
+│ ConnectionManager (UI)                                        │
+│  TcpThread → TCP :9001  JSON 请求/响应/订阅                    │
+│  重连弹窗、pending、publish/* 分发                             │
+└────────────┬─────────────────────────────┬───────────────────┘
+             │                             │
+             ▼                             ▼
+┌────────────────────┐         ┌────────────────────┐
+│ CriService         │         │ 各页 send_call      │
+│ UdpThread bind     │         │ Jog/moveTo/IO/节点   │
+│ StartDataPush      │         └────────────────────┘
+│ 308B 状态入站       │
+└─────────┬──────────┘
+          │ RobotRealtimeState / 抽屉位姿
+          ▼
+┌────────────────────┐         ┌────────────────────┐
+│ WritingExecution   │         │ UploadPage          │
+│ CRI/StartControl   │         │ RobotProjectSDK     │
+│ UDP → :9030 轨迹    │         │ HTTP 9198 + WS 9000 │
+└────────────────────┘         └────────────────────┘
 ```
 
-### 超时检查
+- **协议细节**：见 `planAPI.md`（`ty` 字段、单位 mm+deg、错误码等）。  
+- **上传**：不单独顶栏页；`services/robot_project_sdk.py` 封装 REST + WebSocket，由 **上传页** 调用。
 
-```
-TcpAdapter QTimer(1000ms) → data_received.emit({"_internal": "check_timeouts"})
-  → queued → ConnectionManager._on_data_received
-    → _check_timeouts: time.monotonic() 对比, 超时 → req["on_error"](TimeoutError)
-```
+---
 
-### 断线清理
+## 7. UI 架构
 
-```
-cm.disconnect()
-  → _drain_pending(NetworkDisconnectedError)  // 失败所有 pending
-  → _sig_shutdown.emit()
-  → queued → TcpAdapter.shutdown @Slot (TcpThread)
-    → timer.stop/deleteLater
-    → socket.abort/deleteLater
-    → shutdown_finished.emit()
-  → queued → thread.quit()
-  → cm 等待 thread.wait(3000)
-```
+### 7.1 主窗口布局
 
-## 连接后自动化流程
-
-```
-TCP connected
-  → cm.send_call("Robot/toAuto", {}, ...)
-  → on_response → 100ms → cm.send_call("Robot/toRemote", {}, ...)
-  → on_response → 订阅5个主题 (100ms间隔):
-      publish/RobotStatus  (tc=0) → 状态栏+底部栏+型号加载
-      publish/RobotPosture  (tc=0) → 抽屉关节角+TCP位姿 (CRI前fallback)
-      publish/ProjectState  (tc=0) → 工程按钮组状态
-      publish/Error         (tc=0) → 状态栏showMessage (去重, 不弹窗)
-      publish/Log           (tc=0) → 日志收集
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ TopTabBar：首页 | 运动 | 焊接 | 绘图 | IO | 寄存器 | 程序 | 上传 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  QStackedWidget（PageRouter 懒加载页面）                      │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│ GlobalCommandBar：使能、模式、仿真、工程、停止运动…             │
+├─────────────────────────────────────────────────────────────┤
+│ StatusBar：连接、CRI、型号、模式…                             │
+└─────────────────────────────────────────────────────────────┘
+  RobotControlDrawer（左侧悬浮）：Jog、moveTo 预设、速度 70% 默认
 ```
 
-## UI 布局
+### 7.2 页面注册（`app/page_registry.py`）
 
+| key | 页面 | 说明 |
+|-----|------|------|
+| home | `HomePage` | 状态卡片 + GLB 模型预览 |
+| motion | `MotionPage` | `NodeEditorWidget` 全屏编排 |
+| welding | `WeldingPage` | 焊接生成 + moveTo 三点 + 送丝等 |
+| writing | `WritingPage` | **绘图**（类名历史遗留） |
+| io | `IoMonitorPage` | DI/DO/AI/AO 轮询 |
+| register | `RegisterMonitorPage` | 寄存器卡片 |
+| program | `ProgramEditorPage` | **占位**，未实现 |
+| upload | `UploadPage` | Lua 上传/绑定，需已连接 |
+
+已移除：独立 HTTP/WS/设置顶栏页（能力在上传页或主菜单语言/主题）。
+
+### 7.3 路由生命周期
+
+- `navigate(spec)`：旧页 `on_leave` → 懒加载 factory → 注入 `sp` → `on_enter`。  
+- 切页触发 `on_stop_jog_requested`（停止全局点动）。  
+- 退出：`persist_all_page_settings()` 调用各页 `_save_settings`（若存在）。
+
+### 7.4 信号绑定（`app/signal_binder.py`）
+
+集中绑定，避免 `main.py` 膨胀：
+
+- 登录流、连接成功/失败、订阅 5 主题、错误弹窗清错；  
+- 命令栏使能/模式/仿真/工程/停止运动；  
+- 抽屉 `jog_pressed/released`、`moveto_pressed/released`、速度滑条；  
+- CRI 帧 → `RobotRealtimeState` + 抽屉/首页位姿；  
+- 重连对话框。
+
+---
+
+## 8. 焊接子系统
+
+### 8.1 数据流
+
+```text
+WeldingPage._on_generate()
+  → WeldingServiceV2.generate()
+      → OfflinePipelineRunner.run(mode=contour|skeleton, ...)
+           Stage 0   字高 → font_size_px
+           Stage 1-2 栅格/轮廓或骨架提取
+           Stage 3-5 clean → refine → schedule（多行 multiline_layout）
+           5.5       layout_inset（左/上边距）
+           Stage 6   PoseMapper + 溢出检测
+           Stage 7   WeldingProcessPlanner → ProcessSegment
+           Stage 8   points.txt / job.json / LuaExporter / preview PNG
 ```
-┌──────────────────────────────────────────────────┐
-│ TopTabBar: 首页|焊接|写字|IO|程序|上传|设置        │
-├──────────────────────────────────────────────────┤
-│              PageStack (QStackedWidget)           │
-│   ┌──────────────────────┐                       │
-│   │ RobotControlDrawer   │ ← 可收缩悬浮抽屉       │
-│   └──────────────────────┘                       │
-├──────────────────────────────────────────────────┤
-│ GlobalCommandBar: [使能开关] [停止] [暂停/恢复]    │
-│   [启动] [暂停工程] [停止工程]  [仿真开关] [手动|自动|远程] │
-└──────────────────────────────────────────────────┘
+
+### 8.2 正式能力
+
+- **contour**：TTF 轮廓，支持 `\n` 多行、`char_spacing_mm` / `line_spacing_mm`。  
+- **latin_stroke**：Hershey 单线（焊接骨架数字字母）。  
+- **hanzi_stroke**：MakeMeAHanzi `medians`（`render_hanzi_text_to_strokes` → clean/refine/schedule → `WeldingProcessPlanner` → Lua），支持多行 `\n`。  
+- 三点标定：**LT / RT / LB**（禁止用 RB 作输入）；Z 用 `z_work` / `z_safe`，**无 y_flip**。  
+- 验收预览：**`preview_execution.png`**（纸面 UV，与 points/Lua 同源）。
+
+### 8.3 关键文件
+
+| 文件 | 职责 |
+|------|------|
+| `app/pages/welding_page.py` | UI、QSettings、生成、moveTo 三点、HoldButton 送气/送丝 |
+| `services/welding_service_v2.py` | Qt Signal 包装 OfflinePipelineRunner |
+| `pipeline/offline_runner.py` | 焊接离线主链 |
+| `pipeline/process/weld_process.py` | 引弧/焊/收弧/空行程段 |
+| `pipeline/output/lua_exporter.py` | `movL({cp={...}},{...})` + arcOn/Off |
+| `config/welding_defaults.py` | 默认工艺与布局常量 |
+
+---
+
+## 9. 绘图子系统（`WritingPage`）
+
+### 9.1 文字来源（`pipeline/text_pipeline.py`）
+
+| text_source | 焊接 | 绘图 | 渲染 |
+|-------------|------|------|------|
+| ttf_contour | ✅ | ✅ | TTF 轮廓 |
+| latin_stroke | ✅ | ✅ | Hershey medians |
+| hanzi_stroke | ✅ | ✅ | MakeMeAHanzi medians |
+| image_contour | — | ✅ | OpenCV 轮廓 |
+
+### 9.2 汉字骨架
+
+- 数据：`third_party/makemeahanzi/graphics.txt`（JSONL，字段 `medians`）。  
+- 加载：`pipeline/hanzi/hanzi_data_loader.py`。  
+- 渲染：`hanzi_stroke_renderer.py` → `Stroke`。  
+- 执行链：`drawing_hanzi_runner.py` → `DrawingProcessPlanner` → `trajectory_cri.txt`。  
+- **缺字硬错误**，无 TTF fallback。  
+- hanzi-writer-data 已验证与 graphics.txt 同源，**不切换**。
+
+### 9.3 CRI 执行
+
+```text
+WritingPage → WritingService.generate() → output/<ts>_.../
+WritingPage → WritingExecutionService
+  prepare: movL 到轨迹起点（TCP）
+  execute: CRI/StartControl → CriMotionSender UDP :9030
 ```
 
-### UI 区域职责矩阵
+诊断日志：`services/cri_execution_log.py`（毫秒中文、TCP 位姿 vs UDP 目标）。
 
-| 区域 | 放什么 | 不放什么 |
-|------|--------|----------|
-| TopTabBar | 功能页标签 | Jog 按钮 |
-| PageStack | 当前功能模块 | 全局急停 |
-| RobotControlDrawer | Jog/关节/TCP/坐标系/Jog速度 | 送气/送丝/退丝/试运行 |
-| GlobalCommandBar | 使能/清错/停止/模式切换/工程控制 | 焊接工艺按钮 |
-| WeldingPage | 试运行/送气/送丝/退丝/焊接参数 | 通用模式切换 |
+最小 Z 测试：`services/cri_minimal_test.py`（不经过文字 pipeline）。
 
-## 单位规范
+### 9.4 关键文件
 
-| 数据 | CRI(UDP) | publish/TCP | UI 显示 | TCP JSON 命令 |
-|------|----------|-------------|---------|---------------|
-| 关节角 | rad | deg | deg | deg |
-| TCP xyz | m | mm | mm | mm |
-| TCP rpy | rad | deg | deg | deg |
+| 文件 | 职责 |
+|------|------|
+| `app/pages/writing_page.py` | 绘图 UI、双模式文字/图片 |
+| `services/writing_service.py` | 生成入口（latin/hanzi/image） |
+| `services/writing_execution_service.py` | 后台执行 |
+| `pipeline/drawing_latin_runner.py` | Hershey → CRI |
+| `pipeline/drawing_hanzi_runner.py` | 汉字 medians → CRI |
+| `pipeline/image_runner.py` | 图片轮廓 → CRI |
+| `pipeline/process/drawing_process.py` | 落笔/抬笔 Z |
 
-CRI 是主实时源, publish/RobotPosture 是 fallback。
+---
 
-## 日志
+## 10. 运动节点编排
 
-- 终端: WARNING 级别 (只显错误/警告)
-- 文件: log/YYYYMMDD.txt, DEBUG 全量, `[send]`/`[recv]` 前缀, recv 原始 JSON
-- 启动分割线 `==== 2026-05-10 13:14:05 ====`
-- 超过 1MB 自动切 `_1.txt`, `_2.txt`
+- 入口：`app/pages/motion_page.py` → `NodeEditorWidget`。  
+- 模型：`widgets/node_editor/models.py`（`NODE_SPECS`、图 JSON）。  
+- 校验：`graph_validator.py`；序列化：`graph_serializer.py`。  
+- 执行：`execution_engine.py`（DryRun / 在线 MoveJ&L / IO / 寄存器 / If-For-While / Path-MoveC）。  
+- 插件：`plugins/registry.py`、`plugins/builtin/`、`plugins/user/`。  
+- TCP：经 `NodeEditorWidget.set_global_send_callback` → `cm.send_call`。  
+- 宏：`macro_storage.py`、`macro_editor_dialog.py`。
 
-## CRI UDP 固定配置 (Part 6 实现)
+**维护注意**：改节点类型需同步 `NODE_SPECS`、`node_catalog.LIBRARY_CATEGORIES`、执行引擎分支。
 
-| 参数 | 固定值 |
-|------|--------|
-| mask | 0xFFFF |
-| highPercision | true (注意拼写) |
-| axis_count | 6 |
-| external_axis_count | 0 |
-| 帧长 | 308 bytes |
+---
 
-## 关键设计决策记录
+## 11. 核心领域模型（`core/types.py`）
 
-1. **不用 concurrent.futures.Future** — 改为 UI 线程保存 dict + time.monotonic() 超时检查
-2. **TcpAdapter 是纯网络层** — 不持有 RequestBuilder/ResponseDispatcher, 不调用业务 callback
-3. **RequestBuilder/ResponseDispatcher 保留但未使用** — 连接管理器直接在 UI 线程管理 pending
-4. **登录页无离线模式** — 只允许 TCP 连接进入主界面
-5. **连接后自动 toAuto→toRemote→订阅** — 设计师要求的两步切换
-6. **订阅 tc=0** — 避免高频推送
-7. **订阅请求间隔 100ms** — QTimer.singleShot(i*100) 逐个发送
-8. **样式切换用 QSettings 持久化** — 7套主题 + 跟随系统
+- `RobotPoint`：mm + deg。  
+- `WorkPlane`：TL/TR/LB 三点平面。  
+- `Stroke` / `Path2D` / `Path3D`：笔画与路径。  
+- `ProcessSegment`：焊接或绘图工艺段。  
+- `PathConfig` / `WeldingProcessConfig` / `ImageDrawingConfig`：管线参数。  
+- `ConnectionConfig`：登录参数（`core/connection_config.py`）。
+
+单位转换：`core/unit_converter.py`（TCP/CRI rad/m ↔ UI mm/deg）。
+
+---
+
+## 12. 状态与配置持久化
+
+| 存储 | 用途 |
+|------|------|
+| QSettings `Codroid/RobotUI` | 登录 IP、各页参数、节点编辑器布局 |
+| `config/robot_models.yaml` | 机型名 → GLB/关节数 |
+| `projects/*.json` | 节点图工程（用户保存） |
+| `output/` | 每次生成的轨迹、预览、summary |
+
+焊接/绘图页：400ms 防抖 `_save_settings` + `on_leave` + `aboutToQuit`。
+
+---
+
+## 13. 日志
+
+- `core/logger.py`：文件 `logs/YYYYMMDD.txt`，>1MB 滚动；终端 WARNING+。  
+- UI 日志：`app/ui_log.py` 桥接到 `QPlainTextEdit`。  
+- CRI 执行：`cri_execution_log.py` 结构化中文轨迹诊断。
+
+---
+
+## 14. 扩展与修改指南
+
+### 14.1 新增顶栏功能页
+
+1. `app/pages/xxx_page.py` 继承 `BasePage`。  
+2. `page_registry.py` 增加 factory + `PageSpec`。  
+3. `top_tab_bar.py` 的 `TAB_I18N_KEYS` 增加 i18n key。  
+4. `i18n.py` 补文案。  
+5. 若需机器人 API：经 `self.sp.cm`，勿 new socket。
+
+### 14.2 新增焊接/绘图文字源
+
+1. `pipeline/text_pipeline.py` 增加常量与 `build_text_pipeline` 字段。  
+2. 实现独立 runner 或扩展 `offline_runner` / `writing_service`。  
+3. UI 下拉 `itemData` + QSettings。  
+4. `summary.json` 的 `text_pipeline` 段保持一致。
+
+### 14.3 新增节点类型
+
+1. `models.NODE_SPECS`  
+2. `execution_engine` 执行分支  
+3. `node_catalog` 分类  
+4. 可选：`plugins/` 自定义节点
+
+### 14.4 禁止事项（历史教训）
+
+- UI 线程操作 `QTcpSocket` / `QUdpSocket`。  
+- 子线程 `setText` / 改 QWidget。  
+- 点动/RunTo 做成单击而非按住。  
+- 焊接输入 `right_bottom` 或恢复 `y_flip`。  
+- 修改 Lua `movL` 为位置参数格式。  
+- 最小化窗口触发 `reset_to_home`（仅用户主动回首页/登出）。
+
+---
+
+## 15. 占位与后续可选项
+
+| 项 | 状态 |
+|----|------|
+| `program_editor` 顶栏页 | 占位 UI |
+| 焊接 Beta 排版（对齐/方向/流向） | 仅 UI，未进 pipeline |
+| 焊接 Beta：对齐/方向/流向 | 仅 UI，未进 pipeline |
+| TCP :9002 远程脚本独立页 | 未做 |
+| plan2 节点阶段 13–14（自定义节点完善、执行恢复增强） | 可按需继续 |
+
+---
+
+## 16. 相关文档
+
+| 文档 | 内容 |
+|------|------|
+| `planAPI.md` | 机器人接口全集 |
+| `README.md` | 安装、运行、功能概览 |
+| `docs/NOTICE.md` | Hershey 字体许可 |
+| `docs/HANDOFF_PHASE9.md` | 焊接 Phase 9 历史验收（部分测试脚本已删） |
+| `third_party/makemeahanzi/README.md` | graphics.txt 放置说明 |
+
+---
+
+## 17. 架构图（总览）
+
+```mermaid
+flowchart TB
+  subgraph UI["PySide6 UI"]
+    Login[LoginPage]
+    MW[MainWindow]
+    Pages[Welding / Writing / Motion / Upload / IO ...]
+    Drawer[RobotControlDrawer]
+    Cmd[GlobalCommandBar]
+  end
+
+  subgraph Svc["services/"]
+    WSV2[WeldingServiceV2]
+    WSvc[WritingService]
+    WExec[WritingExecutionService]
+    CRI[CriService]
+    SDK[RobotProjectSDK]
+  end
+
+  subgraph Net["network/"]
+    CM[ConnectionManager]
+    TCP[TcpAdapter :9001]
+    UDP[UdpCriAdapter CRI push]
+    Sender[CriMotionSender :9030]
+  end
+
+  subgraph Pipe["pipeline/"]
+    Offline[OfflinePipelineRunner]
+    DrawH[drawing_hanzi_runner]
+    DrawL[drawing_latin_runner]
+    Img[image_runner]
+  end
+
+  Login --> CM
+  MW --> Pages
+  Pages --> WSV2 --> Offline
+  Pages --> WSvc --> DrawH & DrawL & Img
+  Pages --> WExec --> Sender
+  CM --> TCP
+  CRI --> UDP
+  CM --> CRI
+  Pages --> SDK
+  Drawer --> CM
+  Cmd --> CM
+```

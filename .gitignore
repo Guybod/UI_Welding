@@ -13,19 +13,34 @@ __pycache__/
 .coverage
 htmlcov/
 
-# 测试产出与本地运行结果
-examples/output/
+# 运行产出与日志
 output/
 log/
+logs/
 
-# 测试脚本与素材（仅本地保留）
-examples/test_*.py
-tests/
+# npm（曾用于 hanzi-writer 探测，正式程序不依赖）
+node_modules/
+package-lock.json
+
+# 本机节点工程 / 寄存器配置（运行时数据）
+projects/register_cards.json
+projects/未命名.json
+projects/*_autosave*.json
 
 # 旧版参考工程（勿入库）
 write4.0/
 wledfont2_UI/
 
-# IDE / 本地配置
+# MakeMeAHanzi 大文件（本地放置，见 third_party/makemeahanzi/README.md）
+third_party/makemeahanzi/graphics.txt
+
+# chinese-hershey-font 黑体单线 JSON（见 third_party/chinese-hershey-font/README.md）
+third_party/chinese-hershey-font/STRK-Heiti.json
+
+# 可选：整包 third_party 仅保留 README 时取消下一行注释
+# third_party/
+
+# IDE / 本地 AI 配置
 .cursor/
+cursor.md
 .claude/settings.local.json

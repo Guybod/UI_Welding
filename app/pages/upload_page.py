@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from app.base_page import BasePage
 from app.i18n import tr
+from app.ui_log import append_ui_log
 from services.robot_project_sdk import RobotProjectSDK, RobotProjectSDKError
 
 _SETTINGS_PREFIX = "upload/"
@@ -216,7 +217,7 @@ class UploadPage(BasePage):
         return RobotProjectSDK.from_robot_ip(self._robot_ip(), debug=False)
 
     def _log_line(self, msg: str):
-        self._log.appendPlainText(msg)
+        append_ui_log(self._log, msg, source="Upload")
 
     def _is_connected(self) -> bool:
         return bool(self.sp and self.sp.cm.is_connected)

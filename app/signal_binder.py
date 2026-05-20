@@ -129,6 +129,7 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
         ))
 
     def _on_robot_status(db: dict):
+        RobotRealtimeState.instance().update_robot_status(db)
         robot_type = db.get("type", "")
         mode = db.get("mode", 0)
         state_num = db.get("state", 0)
@@ -200,6 +201,10 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
     def _on_error(db):
         if not db:
             return
+        try:
+            RobotRealtimeState.instance().set_last_error(str(db))
+        except Exception:
+            pass
         if _error_dialog_data[0] is None or not _error_dialog_data[0].isVisible():
             from app.widgets.global_command_bar import ErrorDialog
             _error_dialog_data[0] = ErrorDialog([str(db)], main_win)

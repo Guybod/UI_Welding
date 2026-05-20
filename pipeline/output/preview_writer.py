@@ -66,7 +66,9 @@ _STROKE_COLORS = {
 _TITLE_RAW = "Raw Strokes Preview"
 _TITLE_EXEC = "Execution Preview (paper-aligned)"
 _TITLE_WELD = "Weld Path Preview"
+_TITLE_DRAW = "Draw Path Preview"
 _TITLE_COMBINED = "Combined Preview"
+_DRAW_ONLY_TYPES = frozenset({"draw"})
 
 
 def _find_cjk_font() -> str | None:
@@ -134,6 +136,19 @@ def _set_mpl_suptitle(fig, title: str, *, preferred: str | None = None, **kwargs
 
 def _mpl_text(ax, x, y, s: str, *, preferred: str | None = None, **kwargs) -> None:
     ax.text(x, y, s, **_text_kw(preferred), **kwargs)
+
+
+def _stroke_close_for_display(stroke: Stroke) -> bool:
+    """预览层闭合线：Hershey 仅 glyph_stroke_closed 且首尾重合时画闭合。"""
+    meta = stroke.metadata or {}
+    if meta.get("extract_algorithm") != "hershey":
+        return bool(stroke.closed)
+    if not meta.get("glyph_stroke_closed", False):
+        return False
+    if not stroke.points_px or len(stroke.points_px) < 2:
+        return False
+    from pipeline.raster.hershey_font_renderer import endpoints_coincide_px
+    return endpoints_coincide_px(stroke.points_px)
 
 
 def _savefig(fig, output_path: str | _Path, **kwargs) -> None:
@@ -318,10 +333,11 @@ class DebugExporter:
             point_count += len(xs)
             color = _STROKE_COLORS.get(s.source_type, "black")
             linestyle = "--" if s.is_hole else "-"
-            if s.closed:
+            close_vis = _stroke_close_for_display(s)
+            if close_vis:
                 xs = xs + [xs[0]]
                 ys = ys + [ys[0]]
-            ax.plot(xs, ys, linestyle, color=color, lw=1.0,
+            ax.plot(xs, ys, linestyle, color=color, lw=1.2,
                     label=f"{s.source_type}" if i == 0 else None)
             if show_order and xs:
                 ax.annotate(str(i), (xs[0], ys[0]), fontsize=7, xytext=(3, 3),
@@ -444,6 +460,47 @@ class DebugExporter:
             segments, output_path, workplane=workplane, title=title, show_travel=show_travel)
 
     @staticmethod
+    def write_draw_only_preview(
+        segments: list[ProcessSegment],
+        output_path: str | _Path,
+        *,
+        workplane=None,
+        title: str = _TITLE_DRAW,
+    ) -> dict:
+        """绘图模式：仅落笔绘制段（不含 travel / retreat）。"""
+        _configure_cjk_font()
+        fig, ax = plt.subplots(figsize=(10, 10))
+        to_uv = _uv_projector(workplane) if workplane is not None else None
+        corners = _workplane_corners_uv(workplane)
+        if corners:
+            _draw_workplane_frame_uv(ax, corners)
+        visible, point_count = _plot_segments_on_ax(
+            ax,
+            segments,
+            to_uv=to_uv,
+            allowed_types=_DRAW_ONLY_TYPES,
+            show_travel=False,
+            legend=True,
+            seg_style=_DRAWING_SEG_STYLE,
+        )
+        _finalize_paper_ax(ax, title=title, workplane=workplane)
+        path = _Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _savefig(fig, path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return {
+            "output_path": str(path),
+            "file_size_bytes": path.stat().st_size,
+            "segment_count": visible,
+            "point_count": point_count,
+            "display_invert_yaxis": True,
+            "transform": "display_invert_y",
+            "types_shown": sorted(_DRAW_ONLY_TYPES),
+            "mode": "drawing",
+            "warnings": [],
+        }
+
+    @staticmethod
     def write_weld_only_preview(
         segments: list[ProcessSegment],
         output_path: str | _Path,
@@ -497,10 +554,11 @@ class DebugExporter:
                 continue
             xs = [p.x for p in s.points_px]
             ys = [p.y for p in s.points_px]
-            if s.closed:
+            close_vis = _stroke_close_for_display(s)
+            if close_vis:
                 xs = xs + [xs[0]]
                 ys = ys + [ys[0]]
-            ax0.plot(xs, ys, "-", color=_STROKE_COLORS.get(s.source_type, "black"), lw=0.9)
+            ax0.plot(xs, ys, "-", color=_STROKE_COLORS.get(s.source_type, "black"), lw=1.2)
         ax0.set_title("Raw Strokes")
         ax0.set_xlabel("px")
         ax0.set_ylabel("px")

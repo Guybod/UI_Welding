@@ -99,6 +99,7 @@ def classify_segments(
     pts: list[PixelPoint],
     corner_indices: list[int],
     straight_tol_px: float,
+    closed: bool = False,
 ) -> list[dict]:
     """将 corner 之间的段分类为直线或曲线。
 
@@ -109,22 +110,29 @@ def classify_segments(
         pts: 完整点序列
         corner_indices: 拐角索引列表（已排序）
         straight_tol_px: 弦偏差阈值 (px)
+        closed: 闭合路径才连接末 corner → 首 corner；开口路径禁止幻影闭合边
 
     Returns:
         list[dict]: 每段 {start_idx, end_idx, is_straight, max_deviation_px, points}
     """
     segments: list[dict] = []
     n_corners = len(corner_indices)
+    if n_corners < 2:
+        return segments
 
-    for k in range(n_corners):
+    n_segments = n_corners if closed else n_corners - 1
+
+    for k in range(n_segments):
         i_start = corner_indices[k]
-        i_end = corner_indices[(k + 1) % n_corners]
+        i_end = corner_indices[(k + 1) % n_corners] if closed else corner_indices[k + 1]
 
         # 取出 segment 内的点（含两端 corner）
         if i_end > i_start:
             seg_pts = pts[i_start:i_end + 1]
-        else:
+        elif closed:
             seg_pts = pts[i_start:] + pts[:i_end + 1]
+        else:
+            continue
 
         if len(seg_pts) <= 2:
             segments.append({
@@ -391,7 +399,7 @@ class AdaptivePathRefiner:
                 simplified = resample_uniform(simplified, curve_resample_px, closed=False)
             return simplified
 
-        segments = classify_segments(pts, corners, straight_tol_px)
+        segments = classify_segments(pts, corners, straight_tol_px, closed=closed)
 
         result: list[PixelPoint] = []
         for seg in segments:
@@ -516,11 +524,25 @@ class AdaptivePathRefiner:
             orig_pts = s.points_px
             n_before = len(orig_pts)
 
+            # Hershey 矢量折线保持 renderer 几何，不走拐角分段（避免开口路径幻影闭合边）
+            if (s.metadata or {}).get("extract_algorithm") == "hershey":
+                refined.append(s)
+                per_stroke_before_after.append({
+                    "stroke_id": s.id,
+                    "source_type": s.source_type,
+                    "closed": s.closed,
+                    "before": n_before,
+                    "after": n_before,
+                    "retention": 1.0,
+                    "hershey_preserve": True,
+                })
+                continue
+
             # 统计
             corners = detect_corners(orig_pts, corner_angle_deg, closed=s.closed)
             corners_total += len(corners)
             if len(corners) >= 2:
-                segs = classify_segments(orig_pts, corners, straight_tol_px)
+                segs = classify_segments(orig_pts, corners, straight_tol_px, closed=s.closed)
                 seg_straight += sum(1 for seg in segs if seg["is_straight"])
                 seg_curve += sum(1 for seg in segs if not seg["is_straight"])
 

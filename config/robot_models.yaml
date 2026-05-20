@@ -3,7 +3,7 @@ robots:
     display_name: "S20-180-ECO-V2"
     joint_count: 6
     model_type: "simple_chain"
-    mesh_dir: "assets/models/S20-180-ECO-V2"
+    # GLB 文件放在仓库根目录 models/，由 view3d/model_resolver.py 加载
     glb_file: "20kg-6axis-model-v2.glb"
     joint_axes: [z, y, y, y, z, y]
     joint_signs: [1, 1, 1, -1, -1, 1]

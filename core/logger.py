@@ -97,7 +97,7 @@ def setup_logger(name: str = "codroid") -> logging.Logger:
     logger.handlers.clear()
 
     tf = "[%(asctime)s.%(msecs)03d] %(message)s"
-    df = "%H:%M:%S"
+    df = "%Y-%m-%d %H:%M:%S"
 
     # 控制台: 只显示警告和错误, 收发日志去文件看
     ch = logging.StreamHandler(sys.stdout)

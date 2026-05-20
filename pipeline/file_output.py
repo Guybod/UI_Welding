@@ -116,7 +116,7 @@ def write_weld_json(
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def make_output_paths(text: str, output_dir: str = "examples/output") -> tuple[str, str]:
+def make_output_paths(text: str, output_dir: str = "output") -> tuple[str, str]:
     """生成带时间戳的输出文件路径。"""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_text = "".join(c if c.isalnum() else "_" for c in text)[:20]

@@ -1,5 +1,5 @@
 # 焊接骨架字 — Arial / Consolas（Win / Linux / macOS）
-# 修改字体：编辑 paths；自备 TTF 可放 assets/fonts/ 并用 paths.project
+# 修改字体：编辑各 preset 的 paths（系统字体路径）；无项目内 fonts 目录约定
 
 default_preset_id: arial
 
@@ -7,8 +7,8 @@ presets:
   - id: arial
     family: Arial
     label:
-      zh: "Arial（默认，骨架推荐）"
-      en: "Arial (default)"
+      zh: "Arial TTF 骨架 [Beta]"
+      en: "Arial TTF skeleton [Beta]"
     skeleton:
       raster_close_px: 0
       raster_dilate_px: 0
@@ -25,8 +25,8 @@ presets:
   - id: consolas
     family: Consolas
     label:
-      zh: "Consolas 等宽"
-      en: "Consolas monospace"
+      zh: "Consolas TTF 骨架 [Beta]"
+      en: "Consolas TTF skeleton [Beta]"
     skeleton:
       raster_close_px: 0
       raster_dilate_px: 0

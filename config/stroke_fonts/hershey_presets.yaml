@@ -1,0 +1,17 @@
+# Hershey 工业单线字体 — 焊接 skeleton 正式数据源（非 TTF）
+# PyPI: Hershey-Fonts (apshu/HersheyFonts)
+
+default_style: futural
+
+styles:
+  - id: futural
+    label:
+      zh: "Futural（推荐：工业单线 Sans）"
+      en: "Futural (recommended industrial single-line)"
+    hershey_jhf_name: futural
+
+  - id: rowmans
+    label:
+      zh: "Rowmans（备选：Roman Simplex）"
+      en: "Rowmans (Roman simplex)"
+    hershey_jhf_name: rowmans

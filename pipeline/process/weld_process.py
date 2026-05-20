@@ -79,12 +79,29 @@ class WeldingProcessPlanner:
         weld_pts_after = 0
         resample_warnings = 0
 
+        forced_close_count = 0
+        closed_stroke_indices: list[int] = []
+        process_closed_segment_count = 0
+
         prepared: list[tuple[Stroke, list[RobotPoint]]] = []
         for s in strokes:
+            if (s.metadata or {}).get("extract_algorithm") == "hershey":
+                from pipeline.raster.hershey_font_renderer import (
+                    enforce_hershey_stroke_semantics,
+                )
+                if enforce_hershey_stroke_semantics(s):
+                    forced_close_count += 1
+            if s.closed:
+                closed_stroke_indices.append(
+                    int(s.metadata.get("glyph_stroke_index", -1))
+                    if s.metadata.get("extract_algorithm") == "hershey"
+                    else len(closed_stroke_indices)
+                )
             robot_pts = _get_robot_points(s)
             pts_before = len(robot_pts)
+            use_closed_resample = _stroke_use_closed_semantics(s)
             robot_pts = _resample_robot_points(
-                robot_pts, process_cfg.weld_point_spacing_mm, closed=s.closed)
+                robot_pts, process_cfg.weld_point_spacing_mm, closed=use_closed_resample)
             pts_after = len(robot_pts)
             weld_pts_before += pts_before
             weld_pts_after += pts_after
@@ -121,6 +138,8 @@ class WeldingProcessPlanner:
             total_points += len(seg.points)
             if seg.metadata.get("weld_params"):
                 weld_param_segments += 1
+            if seg.type == "overlap":
+                process_closed_segment_count += 1
 
         stats = {
             "phase": "6.2",
@@ -163,6 +182,9 @@ class WeldingProcessPlanner:
             "inter_char_travel_length_mm": sk_extra.get(
                 "inter_char_travel_length_mm", 0.0,
             ),
+            "forced_close_count": forced_close_count,
+            "closed_stroke_indices": closed_stroke_indices,
+            "process_closed_segment_count": process_closed_segment_count,
             "warnings": warnings_list,
         }
 
@@ -253,11 +275,11 @@ class WeldingProcessPlanner:
                         _skeleton_stroke_gap_mm(stroke, pts, ns, np) <= merge_mm
                     )
 
-                if stroke.closed:
+                if _stroke_use_closed_semantics(stroke):
                     skip_entry_travel = False
                     if gi > 0 and i == 0:
                         ps, pp = char_groups[gi - 1][-1]
-                        prev_end = pp[0] if ps.closed else pp[-1]
+                        prev_end = pp[0] if _stroke_use_closed_semantics(ps) else pp[-1]
                         gap = _endpoint_gap_mm([prev_end], pts[:1])
                         if gap > 0.05:
                             inter_travel_len += gap
@@ -265,12 +287,12 @@ class WeldingProcessPlanner:
                             all_segments.append(_make_segment(
                                 "travel", stroke.id,
                                 _with_z([prev_end, pts[0]], z_safe),
-                                cfg.travel_speed_mm_s, False,
+                                cfg.travel_speed_mm_s, False, stroke=stroke,
                             ))
                         skip_entry_travel = True
                     elif continuous_prev and prev_stroke_pts:
                         ps, pp = prev_stroke_pts
-                        prev_end = pp[0] if ps.closed else pp[-1]
+                        prev_end = pp[0] if _stroke_use_closed_semantics(ps) else pp[-1]
                         gap = _endpoint_gap_mm([prev_end], pts[:1])
                         if gap > 0.05:
                             intra_travel_len += gap
@@ -278,7 +300,7 @@ class WeldingProcessPlanner:
                             all_segments.append(_make_segment(
                                 "travel", stroke.id,
                                 _with_z([prev_end, pts[0]], z_safe),
-                                cfg.travel_speed_mm_s, False,
+                                cfg.travel_speed_mm_s, False, stroke=stroke,
                             ))
                         skip_entry_travel = True
                     segs = WeldingProcessPlanner._plan_closed_skeleton(
@@ -306,7 +328,9 @@ class WeldingProcessPlanner:
                 elif is_first and gi > 0:
                     prev_stroke, prev_pts = char_groups[gi - 1][-1]
                     travel_from = (
-                        prev_pts[0] if prev_stroke.closed else prev_pts[-1]
+                        prev_pts[0]
+                        if _stroke_use_closed_semantics(prev_stroke)
+                        else prev_pts[-1]
                     )
                 elif not continuous_prev:
                     travel_from = group[i - 1][1][-1]
@@ -323,7 +347,7 @@ class WeldingProcessPlanner:
                         all_segments.append(_make_segment(
                             "travel", stroke.id,
                             _with_z([travel_from, pts[0]], z_safe),
-                            cfg.travel_speed_mm_s, False,
+                            cfg.travel_speed_mm_s, False, stroke=stroke,
                         ))
 
                 need_lead_in = (
@@ -339,12 +363,12 @@ class WeldingProcessPlanner:
                     if len(li_pts) >= 2:
                         all_segments.append(_make_segment(
                             "lead_in", stroke.id, _with_z(li_pts, z_work),
-                            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                         ))
 
                 all_segments.append(_make_segment(
                     "weld", stroke.id, _with_z(list(pts), z_work),
-                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                 ))
 
                 if is_last:
@@ -355,12 +379,12 @@ class WeldingProcessPlanner:
                     if len(lo_pts) >= 2:
                         all_segments.append(_make_segment(
                             "lead_out", stroke.id, _with_z(lo_pts, z_work),
-                            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                         ))
                     all_segments.append(_make_segment(
                         "retreat", stroke.id,
                         _with_z([pts[-1], pts[-1]], z_safe),
-                        cfg.travel_speed_mm_s, False,
+                        cfg.travel_speed_mm_s, False, stroke=stroke,
                     ))
                 elif continuous_next:
                     merged_pairs += 1
@@ -372,12 +396,12 @@ class WeldingProcessPlanner:
                     if len(lo_pts) >= 2:
                         all_segments.append(_make_segment(
                             "lead_out", stroke.id, _with_z(lo_pts, z_work),
-                            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                         ))
                     all_segments.append(_make_segment(
                         "retreat", stroke.id,
                         _with_z([pts[-1], pts[-1]], z_safe),
-                        cfg.travel_speed_mm_s, False,
+                        cfg.travel_speed_mm_s, False, stroke=stroke,
                     ))
 
         return all_segments, merged_pairs, {
@@ -399,7 +423,7 @@ class WeldingProcessPlanner:
         weld_params: dict,
         warnings_list: list[str],
     ) -> list[ProcessSegment]:
-        if stroke.closed:
+        if _stroke_use_closed_semantics(stroke):
             return WeldingProcessPlanner._plan_closed(
                 stroke, robot_pts, cfg, workplane, z_work, z_safe, weld_params, warnings_list)
         else:
@@ -418,29 +442,29 @@ class WeldingProcessPlanner:
             return segments
         segments.append(_make_segment(
             "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
-            cfg.travel_speed_mm_s, False))
+            cfg.travel_speed_mm_s, False, stroke=stroke))
         li_pts = _tangent_extend(pts, forward=False, length_mm=cfg.lead_in_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(li_pts) >= 2:
             segments.append(_make_segment(
                 "lead_in", stroke.id, _with_z(li_pts, z_work),
-                cfg.weld_speed_mm_s, True, 0.0, weld_params))
+                cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_in too short, skipped")
         segments.append(_make_segment(
             "weld", stroke.id, _with_z(list(pts), z_work),
-            cfg.weld_speed_mm_s, True, 0.0, weld_params))
+            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
         lo_pts = _tangent_extend(pts, forward=True, length_mm=cfg.lead_out_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(lo_pts) >= 2:
             segments.append(_make_segment(
                 "lead_out", stroke.id, _with_z(lo_pts, z_work),
-                cfg.weld_speed_mm_s, True, 0.0, weld_params))
+                cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_out too short, skipped")
         segments.append(_make_segment(
             "retreat", stroke.id, _with_z([pts[-1], pts[-1]], z_safe),
-            cfg.travel_speed_mm_s, False))
+            cfg.travel_speed_mm_s, False, stroke=stroke))
         return segments
 
     @staticmethod
@@ -465,7 +489,7 @@ class WeldingProcessPlanner:
         if not skip_entry_travel:
             segments.append(_make_segment(
                 "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
-                cfg.travel_speed_mm_s, False,
+                cfg.travel_speed_mm_s, False, stroke=stroke,
             ))
         if not skip_lead_in:
             li_pts = _tangent_extend(
@@ -475,11 +499,11 @@ class WeldingProcessPlanner:
             if len(li_pts) >= 2:
                 segments.append(_make_segment(
                     "lead_in", stroke.id, _with_z(li_pts, z_work),
-                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                 ))
         segments.append(_make_segment(
             "weld", stroke.id, _with_z(list(pts), z_work),
-            cfg.weld_speed_mm_s, True, 0.0, weld_params,
+            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
         ))
         path_len = _path_length(pts)
         effective_overlap = min(cfg.overlap_length_mm, path_len * 0.5)
@@ -488,7 +512,7 @@ class WeldingProcessPlanner:
             if len(ol_pts) >= 2:
                 segments.append(_make_segment(
                     "overlap", stroke.id, _with_z(ol_pts, z_work),
-                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                 ))
         if not skip_lead_out_retreat:
             lo_pts = _tangent_extend(
@@ -498,11 +522,11 @@ class WeldingProcessPlanner:
             if len(lo_pts) >= 2:
                 segments.append(_make_segment(
                     "lead_out", stroke.id, _with_z(lo_pts, z_work),
-                    cfg.weld_speed_mm_s, True, 0.0, weld_params,
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
                 ))
             segments.append(_make_segment(
                 "retreat", stroke.id, _with_z([pts[0], pts[0]], z_safe),
-                cfg.travel_speed_mm_s, False,
+                cfg.travel_speed_mm_s, False, stroke=stroke,
             ))
         return segments
 
@@ -518,18 +542,18 @@ class WeldingProcessPlanner:
             return segments
         segments.append(_make_segment(
             "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
-            cfg.travel_speed_mm_s, False))
+            cfg.travel_speed_mm_s, False, stroke=stroke))
         li_pts = _tangent_extend(pts, forward=False, length_mm=cfg.lead_in_length_mm,
                                   spacing_mm=cfg.weld_point_spacing_mm)
         if len(li_pts) >= 2:
             segments.append(_make_segment(
                 "lead_in", stroke.id, _with_z(li_pts, z_work),
-                cfg.weld_speed_mm_s, True, 0.0, weld_params))
+                cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_in too short, skipped")
         segments.append(_make_segment(
             "weld", stroke.id, _with_z(list(pts), z_work),
-            cfg.weld_speed_mm_s, True, 0.0, weld_params))
+            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
         path_len = _path_length(pts)
         effective_overlap = min(cfg.overlap_length_mm, path_len * 0.5)
         if effective_overlap < cfg.overlap_length_mm:
@@ -541,7 +565,7 @@ class WeldingProcessPlanner:
             if len(ol_pts) >= 2:
                 segments.append(_make_segment(
                     "overlap", stroke.id, _with_z(ol_pts, z_work),
-                    cfg.weld_speed_mm_s, True, 0.0, weld_params))
+                    cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
             else:
                 warnings_list.append(f"stroke {stroke.id[:6]}: overlap too short, skipped")
         lo_pts = _tangent_extend(pts, forward=True, length_mm=cfg.lead_out_length_mm,
@@ -549,12 +573,12 @@ class WeldingProcessPlanner:
         if len(lo_pts) >= 2:
             segments.append(_make_segment(
                 "lead_out", stroke.id, _with_z(lo_pts, z_work),
-                cfg.weld_speed_mm_s, True, 0.0, weld_params))
+                cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
         else:
             warnings_list.append(f"stroke {stroke.id[:6]}: lead_out too short, skipped")
         segments.append(_make_segment(
             "retreat", stroke.id, _with_z([pts[0], pts[0]], z_safe),
-            cfg.travel_speed_mm_s, False))
+            cfg.travel_speed_mm_s, False, stroke=stroke))
         return segments
 
 
@@ -576,6 +600,29 @@ def _get_robot_points(stroke: Stroke) -> list[RobotPoint]:
     return rp
 
 
+def _stroke_lua_meta(stroke: Stroke | None) -> dict:
+    """从笔画 metadata 提取 Lua 注释所需字段。"""
+    if stroke is None:
+        return {}
+    m = stroke.metadata or {}
+    out: dict = {}
+    ch = m.get("weld_char")
+    if ch is None:
+        ch = m.get("hanzi_char")
+    if ch is not None:
+        out["weld_char"] = ch
+    for key in (
+        "weld_char_index",
+        "layout_line_index",
+        "layout_line_text",
+        "glyph_stroke_index",
+        "extract_algorithm",
+    ):
+        if key in m:
+            out[key] = m[key]
+    return out
+
+
 def _make_segment(
     seg_type: str,
     stroke_id: str,
@@ -584,8 +631,10 @@ def _make_segment(
     arc_enabled: bool,
     normal_offset: float = 0.0,
     weld_params: dict | None = None,
+    *,
+    stroke: Stroke | None = None,
 ) -> ProcessSegment:
-    meta: dict = {}
+    meta = _stroke_lua_meta(stroke)
     if weld_params is not None:
         meta["weld_params"] = weld_params
     return ProcessSegment(
@@ -841,7 +890,7 @@ def _reorder_prepared_by_endpoint_chain(
     open_items: list[tuple[Stroke, list[RobotPoint]]] = []
     closed_items: list[tuple[Stroke, list[RobotPoint]]] = []
     for stroke, pts in group:
-        if stroke.closed:
+        if _stroke_use_closed_semantics(stroke):
             closed_items.append((stroke, pts))
         else:
             open_items.append((stroke, pts))
@@ -884,6 +933,22 @@ def _reorder_prepared_by_endpoint_chain(
     return ordered
 
 
+def _robot_pts_coincide(a: RobotPoint, b: RobotPoint, tol: float = 0.05) -> bool:
+    return (
+        abs(a.x - b.x) < tol
+        and abs(a.y - b.y) < tol
+        and abs(a.z - b.z) < tol
+    )
+
+
+def _stroke_use_closed_semantics(stroke: Stroke) -> bool:
+    """Hershey 仅当 glyph_stroke_closed 且首尾重合时才按闭合工艺处理。"""
+    meta = stroke.metadata or {}
+    if meta.get("extract_algorithm") != "hershey":
+        return bool(stroke.closed)
+    return bool(meta.get("glyph_stroke_closed", False))
+
+
 def _skeleton_stroke_gap_mm(
     stroke_a: Stroke,
     pts_a: list[RobotPoint],
@@ -893,7 +958,7 @@ def _skeleton_stroke_gap_mm(
     """骨架连续焊：上一 stroke 出口 → 下一 stroke 入口（闭合出口=起点）。"""
     if not pts_a or not pts_b:
         return float("inf")
-    exit_a = pts_a[0] if stroke_a.closed else pts_a[-1]
+    exit_a = pts_a[0] if _stroke_use_closed_semantics(stroke_a) else pts_a[-1]
     return _endpoint_gap_mm([exit_a], pts_b)
 
 

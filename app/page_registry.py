@@ -56,13 +56,7 @@ def _program():
     return ProgramEditorPage()
 
 
-def _settings():
-    from app.pages.settings import SettingsPage
-    return SettingsPage()
-
-
-# HTTP 和 WebSocket 是上传功能的通讯手段，不作为独立页面
-# 对应的 http_client / websocket_client 在 network/ 中后续实现
+# HTTP / WebSocket 调试能力已并入上传页（RobotProjectSDK），不设独立顶栏页。
 PAGE_REGISTRY = [
     PageSpec("home", "首页", "main", _home),
     PageSpec("motion", "运动", "robot", _motion),
@@ -72,5 +66,4 @@ PAGE_REGISTRY = [
     PageSpec("register", "寄存器", "robot", _register),
     PageSpec("program", "程序", "robot", _program),
     PageSpec("upload", "上传", "tools", _upload, requires_connection=True),
-    PageSpec("settings", "设置", "system", _settings),
 ]

@@ -2,7 +2,7 @@
 
 内部委托 OfflinePipelineRunner.run()，不依赖旧 pipeline 模块。
 不生成 Lua，不调用 CRI，不真实连接机器人。
-旧 WeldingService 保留不动。
+焊接页唯一使用的生成服务（原 V1 已移除）。
 """
 
 from PySide6.QtCore import QObject, Signal
@@ -55,6 +55,7 @@ class WeldingServiceV2(QObject):
         text: str,
         mode: str = "skeleton",
         *,
+        text_source: str | None = None,
         # 四点标定 (UI 三点 + 推导 right_top)
         left_top: RobotPoint | dict | None = None,
         right_top: RobotPoint | dict | None = None,
@@ -63,6 +64,8 @@ class WeldingServiceV2(QObject):
         # 可选配置
         font_path: str | None = None,
         font_preset_id: str | None = None,
+        skeleton_source: str = "hershey",
+        hershey_style: str = "futural",
         font_size_px: int = 600,
         px_per_mm: float = 10.0,
         char_spacing_mm: float = 2.0,
@@ -101,7 +104,8 @@ class WeldingServiceV2(QObject):
 
         Args:
             text: 输入文字
-            mode: "contour" | "skeleton"
+            mode: "contour" | "skeleton"（兼容；优先 text_source）
+            text_source: ttf_contour | latin_stroke | hanzi_stroke
             left_top: 左上示教点 (RobotPoint 或 dict)
             left_bottom: 左下示教点
             right_bottom: 右下示教点
@@ -129,14 +133,32 @@ class WeldingServiceV2(QObject):
                 lang=user_lang,
             ))
 
+            from pipeline.text_pipeline import (
+                TEXT_SOURCE_TTF_CONTOUR,
+                legacy_mode_from_text_source,
+                migrate_welding_text_source,
+                skeleton_source_for_text_source,
+            )
+
+            resolved_source = migrate_welding_text_source(
+                text_source=text_source,
+                legacy_mode=mode,
+            )
+
+            mode = legacy_mode_from_text_source(resolved_source)
+            sk_for_run = skeleton_source_for_text_source(resolved_source)
+
             self.progress.emit(20, 100)
             self.log_message.emit(pipeline_start_log(text, mode, lang=user_lang))
             from core.types import WeldingProcessConfig, WorkspaceConfig, LuaExportConfig
+            use_ttf_restrict = resolved_source == TEXT_SOURCE_TTF_CONTOUR
             runner = OfflinePipelineRunner(
                 output_dir=out,
                 font_path=font_path,
                 font_preset_id=font_preset_id,
-                restrict_weld_fonts=True,
+                restrict_weld_fonts=use_ttf_restrict,
+                skeleton_source=sk_for_run,
+                hershey_style=hershey_style,
                 font_size_px=font_size_px,
                 lua_config=LuaExportConfig(
                     acceleration=lua_accel,
@@ -169,7 +191,13 @@ class WeldingServiceV2(QObject):
                 ),
                 user_lang=user_lang,
             )
-            result = runner.run(text, mode=mode, workplane=wp)
+            result = runner.run(
+                text,
+                mode=mode,
+                workplane=wp,
+                text_source=resolved_source,
+                target_process="weld",
+            )
             self.progress.emit(90, 100)
 
             if not result.ok:

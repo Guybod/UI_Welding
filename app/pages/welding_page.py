@@ -1,6 +1,5 @@
 """焊接功能页 — 送气/送丝/退丝 + 文字输入 + 排版 + 工作空间标定 + 焊接参数 + 生成/预览/导出"""
 
-import logging
 import math
 import os
 import sys
@@ -30,8 +29,21 @@ from config.weld_font_presets import (
     is_allowed_weld_font_path,
     list_available_weld_font_presets,
 )
+from config.stroke_fonts.hershey_presets import (
+    build_hershey_style_item_data,
+    get_default_hershey_style_id,
+    list_hershey_style_presets,
+)
+from pipeline.text_pipeline import (
+    TEXT_SOURCE_HANZI_STROKE,
+    TEXT_SOURCE_LATIN_STROKE,
+    TEXT_SOURCE_TTF_CONTOUR,
+    build_text_pipeline,
+    migrate_welding_text_source,
+)
 
-_sys_log = logging.getLogger("codroid")
+from app.ui_log import append_ui_log
+from core.logger import log as _sys_log
 
 # 正式主线默认（Beta 检测用；与 pipeline 当前行为一致）
 _BETA_DEFAULT_ALIGN = "center"
@@ -74,25 +86,34 @@ def normalize_weld_text_input(raw: str) -> str:
 
 def detect_beta_features(
     *,
-    mode: str,
+    text_source: str | None = None,
+    mode: str | None = None,
     text: str,
     line_spacing_mm: float,
     align: str,
     direction: str,
     flow: str,
+    skeleton_source: str = "hershey",
     line_spacing_default: float = LINE_SPACING_MM,
 ) -> list[str]:
     """检测当前是否使用 Beta 排版/模式（纯函数，可供测试）。"""
+    if text_source is None:
+        if mode == "contour":
+            text_source = TEXT_SOURCE_TTF_CONTOUR
+        elif mode == "skeleton":
+            text_source = TEXT_SOURCE_LATIN_STROKE
+        else:
+            text_source = TEXT_SOURCE_TTF_CONTOUR
     beta: list[str] = []
-    if mode == "skeleton":
-        beta.append("骨架字")
+    if skeleton_source == "ttf_skeleton_beta":
+        beta.append("TTF骨架字")
     has_multiline = "\n" in text or "\r" in text
-    if has_multiline and mode == "skeleton":
+    if has_multiline and skeleton_source == "ttf_skeleton_beta":
         beta.append("多行文字")
     if abs(line_spacing_mm - line_spacing_default) > 0.01:
-        if mode == "skeleton" or (has_multiline and mode != "contour"):
+        if skeleton_source == "ttf_skeleton_beta":
             beta.append("行距")
-        # contour 多行：行距为正式参数，不标 Beta
+        # contour / Hershey 多行：行距为正式参数，不标 Beta
     if align != _BETA_DEFAULT_ALIGN:
         beta.append("对齐模式")
     if direction != _BETA_DEFAULT_DIRECTION:
@@ -316,26 +337,27 @@ class WeldingPage(BasePage):
         self._text_input.setTabChangesFocus(True)
         text_layout.addWidget(self._text_input)
 
-        font_row = QHBoxLayout()
-        font_row.addWidget(QLabel(tr("weld_font") + ":"))
-        self._font_combo = QComboBox()
-        self._font_combo.setToolTip(tr("weld_font_presets_tip"))
-        self._populate_weld_font_combo()
-        font_row.addWidget(self._font_combo)
-        font_row.addStretch()
-        text_layout.addLayout(font_row)
-
-        # Mode selector (skeleton primary / contour)
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel(tr("weld_mode") + ":"))
         self._mode_combo = QComboBox()
-        self._mode_combo.addItem(tr("weld_mode_skeleton_beta"), "skeleton")
-        self._mode_combo.addItem(tr("weld_mode_contour"), "contour")
-        self._mode_combo.setCurrentIndex(0)
+        self._mode_combo.addItem(tr("weld_mode_contour"), TEXT_SOURCE_TTF_CONTOUR)
+        self._mode_combo.addItem(tr("weld_mode_latin_stroke"), TEXT_SOURCE_LATIN_STROKE)
+        self._mode_combo.addItem(tr("weld_mode_hanzi_stroke"), TEXT_SOURCE_HANZI_STROKE)
+        self._mode_combo.setCurrentIndex(1)
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_row.addWidget(self._mode_combo)
         mode_row.addStretch()
         text_layout.addLayout(mode_row)
+
+        font_row = QHBoxLayout()
+        self._font_label = QLabel(tr("weld_font") + ":")
+        font_row.addWidget(self._font_label)
+        self._font_combo = QComboBox()
+        self._font_combo.setToolTip(tr("weld_font_presets_tip"))
+        font_row.addWidget(self._font_combo)
+        font_row.addStretch()
+        text_layout.addLayout(font_row)
+        self._populate_weld_font_combo()
 
         content_layout.addWidget(text_group)
 
@@ -777,7 +799,10 @@ class WeldingPage(BasePage):
                 s.setValue(p + "font_family", data.get("family", ""))
             if data.get("preset_id"):
                 s.setValue(p + "font_preset_id", data["preset_id"])
-            s.setValue(p + "mode", self._mode_combo.currentData())
+            s.setValue(p + "text_source", self._current_text_source())
+            s.setValue(p + "mode", self._legacy_mode_for_settings())
+            if data.get("hershey_style"):
+                s.setValue(p + "hershey_style", data["hershey_style"])
 
             # 排版
             s.setValue(p + "char_height_mm", self._spin_char_h.value())
@@ -869,6 +894,7 @@ class WeldingPage(BasePage):
                 w.blockSignals(False)
             self._on_blend_mode_changed(self._combo_blend_mode.currentIndex())
             self._on_wait_enabled_toggled(self._chk_wait_enabled.isChecked())
+            self._update_text_source_visibility()
 
     def _restore_settings_values(self, s: QSettings, p: str):
         def _str(key, default=""):
@@ -880,19 +906,33 @@ class WeldingPage(BasePage):
         if txt:
             self._text_input.setPlainText(normalize_weld_text_input(txt))
 
-        # Mode
-        mode_val = _str("mode", "skeleton")
-        idx = self._mode_combo.findData(mode_val)
+        # 文字模式（新 text_source + 旧 mode 迁移）
+        ts = migrate_welding_text_source(
+            text_source=_str("text_source", "") or None,
+            legacy_mode=_str("mode", "skeleton"),
+        )
+        idx = self._mode_combo.findData(ts)
         if idx >= 0:
             self._mode_combo.setCurrentIndex(idx)
+        self._populate_weld_font_combo()
+        self._update_text_source_visibility()
 
-        # 字体恢复：preset_id → path → family → 默认 preset
+        # 字体恢复：hershey_style / preset_id → path → family
         font_preset_id = _str("font_preset_id", "")
+        hershey_style = _str("hershey_style", "")
         font_path = _str("font_path", "")
         font_family = _str("font_family", "")
         selected = False
 
-        if font_preset_id:
+        if hershey_style:
+            for i in range(self._font_combo.count()):
+                data = self._font_combo.itemData(i)
+                if isinstance(data, dict) and data.get("hershey_style") == hershey_style:
+                    self._font_combo.setCurrentIndex(i)
+                    selected = True
+                    break
+
+        if not selected and font_preset_id:
             for i in range(self._font_combo.count()):
                 data = self._font_combo.itemData(i)
                 if isinstance(data, dict) and data.get("preset_id") == font_preset_id:
@@ -1028,23 +1068,54 @@ class WeldingPage(BasePage):
                 if v is not None:
                     self._ws_spins[row][col].setValue(_qsettings_float(v, 0.0))
 
+    def _current_text_source(self) -> str:
+        data = self._mode_combo.currentData()
+        if data in (TEXT_SOURCE_TTF_CONTOUR, TEXT_SOURCE_LATIN_STROKE, TEXT_SOURCE_HANZI_STROKE):
+            return str(data)
+        return migrate_welding_text_source(legacy_mode=str(data or "skeleton"))
+
+    def _legacy_mode_for_settings(self) -> str:
+        from pipeline.text_pipeline import legacy_mode_from_text_source
+
+        return legacy_mode_from_text_source(self._current_text_source())
+
     def _populate_weld_font_combo(self) -> None:
-        """焊接页字体：仅 config/weld_font_presets.yaml 白名单。"""
+        """latin_stroke → Hershey；ttf_contour → TTF 预设；hanzi → 无字体。"""
         self._font_combo.clear()
         lang = I18nManager.instance().lang
-        presets = list_available_weld_font_presets()
-        default_id = get_default_weld_font_preset_id()
-        for preset in presets:
-            data = build_weld_font_item_data(preset, lang=lang)
-            self._font_combo.addItem(data["display"], data)
+        text_source = self._current_text_source()
+
+        if text_source == TEXT_SOURCE_LATIN_STROKE:
+            default_id = get_default_hershey_style_id()
+            for preset in list_hershey_style_presets():
+                data = build_hershey_style_item_data(preset, lang=lang)
+                self._font_combo.addItem(data["display"], data)
+            match_key = "hershey_style"
+        elif text_source == TEXT_SOURCE_TTF_CONTOUR:
+            presets = list_available_weld_font_presets()
+            default_id = get_default_weld_font_preset_id()
+            for preset in presets:
+                data = build_weld_font_item_data(preset, lang=lang)
+                self._font_combo.addItem(data["display"], data)
+            match_key = "preset_id"
+        else:
+            self._font_combo.addItem(tr("weld_hanzi_no_font"), {
+                "path": "", "family": "", "display": "", "preset_id": "",
+                "hershey_style": "",
+            })
+            self._font_combo.setEnabled(False)
+            return
+
+        self._font_combo.setEnabled(True)
         if self._font_combo.count() == 0:
             self._font_combo.addItem(tr("weld_log_no_font_preset"), {
                 "path": "", "family": "", "display": "", "preset_id": "",
+                "hershey_style": "",
             })
             return
         for i in range(self._font_combo.count()):
             data = self._font_combo.itemData(i)
-            if isinstance(data, dict) and data.get("preset_id") == default_id:
+            if isinstance(data, dict) and data.get(match_key) == default_id:
                 self._font_combo.setCurrentIndex(i)
                 break
 
@@ -1055,9 +1126,27 @@ class WeldingPage(BasePage):
         data = self._font_combo.itemData(idx)
         return data if isinstance(data, dict) else {}
 
-    def _on_mode_changed(self, index: int):
-        if self._mode_combo.itemData(index) == "skeleton":
-            self._append_log(tr("weld_mode_skeleton_tip"))
+    def _on_mode_changed(self, index: int = 0):
+        self._populate_weld_font_combo()
+        self._update_text_source_visibility()
+        ts = self._mode_combo.itemData(index if index >= 0 else self._mode_combo.currentIndex())
+        if ts == TEXT_SOURCE_LATIN_STROKE:
+            self._append_log(tr("weld_mode_latin_stroke_tip"))
+        elif ts == TEXT_SOURCE_HANZI_STROKE:
+            self._append_log(tr("weld_mode_hanzi_stroke_tip"))
+        elif ts == TEXT_SOURCE_TTF_CONTOUR:
+            self._append_log(tr("weld_mode_contour_tip"))
+
+    def _update_text_source_visibility(self) -> None:
+        ts = self._current_text_source()
+        show_font = ts in (TEXT_SOURCE_TTF_CONTOUR, TEXT_SOURCE_LATIN_STROKE)
+        self._font_combo.setVisible(show_font)
+        if hasattr(self, "_font_label"):
+            self._font_label.setVisible(show_font)
+        if ts == TEXT_SOURCE_LATIN_STROKE:
+            self._font_label.setText(tr("weld_hershey_style") + ":")
+        elif ts == TEXT_SOURCE_TTF_CONTOUR:
+            self._font_label.setText(tr("weld_font") + ":")
 
     def _on_blend_mode_changed(self, index: int):
         mode = self._combo_blend_mode.itemData(index)
@@ -1073,8 +1162,7 @@ class WeldingPage(BasePage):
         self._spin_wait_duration_ms.setEnabled(checked)
 
     def _append_log(self, msg: str):
-        self._log.appendPlainText(msg)
-        _sys_log.info(f"[Welding] {msg}")
+        append_ui_log(self._log, msg, source="Welding")
 
     def _on_state_changed(self, state: str):
         self._btn_generate.setEnabled(state != "GENERATING")
@@ -1130,10 +1218,29 @@ class WeldingPage(BasePage):
         font_path = font_data.get("path", "") or ""
         font_preset_id = font_data.get("preset_id", "") or ""
 
+        text_source = self._current_text_source()
+        hershey_style = ""
+        if text_source == TEXT_SOURCE_LATIN_STROKE:
+            hershey_style = font_data.get("hershey_style") or get_default_hershey_style_id()
+
+        from pipeline.text_pipeline import (
+            legacy_mode_from_text_source,
+            skeleton_source_for_text_source,
+        )
+
         return {
             "text": normalize_weld_text_input(self._text_input.toPlainText()),
+            "text_source": text_source,
+            "text_pipeline": build_text_pipeline(
+                text_source,
+                hershey_style=hershey_style,
+                target_process="weld",
+            ),
+            "mode": legacy_mode_from_text_source(text_source),
             "font_path": font_path,
             "font_preset_id": font_preset_id,
+            "skeleton_source": skeleton_source_for_text_source(text_source),
+            "hershey_style": hershey_style,
             "char_height_mm": self._spin_char_h.value(),
             "margin_left_mm": self._spin_margin_left.value(),
             "margin_top_mm": self._spin_margin_top.value(),
@@ -1156,11 +1263,30 @@ class WeldingPage(BasePage):
         if not params["text"]:
             self._append_log(tr("weld_log_no_text"))
             return
-        if not params["font_path"] or not is_allowed_weld_font_path(params["font_path"]):
-            self._append_log(tr("weld_log_no_font_preset"))
-            return
-        mode = self._mode_combo.currentData() or "skeleton"
-        if mode == "skeleton":
+        text_source = params.get("text_source") or self._current_text_source()
+        mode = params.get("mode") or "skeleton"
+
+        if text_source == TEXT_SOURCE_HANZI_STROKE:
+            if params.get("char_height_mm", 0) <= 0:
+                self._append_log(
+                    "骨架汉字需要字高 (char_height_mm > 0)"
+                    if I18nManager.instance().lang == "zh"
+                    else "Hanzi stroke requires char_height_mm > 0"
+                )
+                return
+            try:
+                from pipeline.hanzi.hanzi_stroke_renderer import resolve_graphics_path
+                resolve_graphics_path()
+            except FileNotFoundError as exc:
+                self._append_log(str(exc))
+                return
+
+        if text_source == TEXT_SOURCE_TTF_CONTOUR:
+            if not params["font_path"] or not is_allowed_weld_font_path(params["font_path"]):
+                self._append_log(tr("weld_log_no_font_preset"))
+                return
+        if text_source == TEXT_SOURCE_LATIN_STROKE:
+            self._append_log(tr("weld_mode_latin_stroke_tip"))
             from pipeline.weld_skeleton_latin import validate_weld_skeleton_text
             sk_err = validate_weld_skeleton_text(
                 params["text"], lang=I18nManager.instance().lang,
@@ -1178,7 +1304,7 @@ class WeldingPage(BasePage):
         self._append_log(tr("weld_log_generate_header").format(
             ts=ts, text=text_log, mode=mode))
         beta_opts = detect_beta_features(
-            mode=str(mode),
+            text_source=str(text_source),
             text=params["text"],
             line_spacing_mm=params["line_spacing_mm"],
             align=params["align"],
@@ -1199,11 +1325,14 @@ class WeldingPage(BasePage):
         self._welding_service.generate(
             text=params["text"],
             mode=mode,
+            text_source=text_source,
             left_top=ws["left_top"],
             right_top=ws["right_top"],
             left_bottom=ws["left_bottom"],
             font_path=params["font_path"] or None,
             font_preset_id=params.get("font_preset_id") or None,
+            skeleton_source=params.get("skeleton_source") or "hershey",
+            hershey_style=params.get("hershey_style") or "futural",
             font_size_px=600,
             px_per_mm=10.0,
             char_height_mm=params["char_height_mm"],

@@ -23,6 +23,38 @@ _WIN_RESERVED = {
 # 非法文件名字符 (Windows + 通用)
 _ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+_SEGMENT_TYPE_CN = {
+    "weld": "焊接",
+    "travel": "空走",
+    "lead_in": "引入",
+    "lead_out": "引出",
+    "overlap": "搭接",
+    "retreat": "抬枪",
+    "approach": "接近",
+}
+
+_MODE_CN = {
+    "outline": "轮廓",
+    "skeleton": "骨架",
+    "fill": "填充",
+}
+
+
+def _as_lua_comment_lines(*blocks: str) -> list[str]:
+    """将多行文本转为 Lua 注释行，每行均以 ``--`` 开头。"""
+    out: list[str] = []
+    for block in blocks:
+        if block is None:
+            continue
+        text = str(block)
+        if not text:
+            out.append("--")
+            continue
+        for line in text.splitlines():
+            line = line.rstrip()
+            out.append("--" if line == "" else f"-- {line}")
+    return out
+
 
 def sanitize_lua_filename(text: str, fallback: str = "job") -> str:
     """将用户输入文字转为安全的 Lua 文件名。
@@ -100,7 +132,8 @@ class LuaExporter:
 
             # setWelderParam from first weld segment
             weld_params = self._extract_weld_params(segments, warnings)
-            f.write(f"-- setWelderParam\n")
+            for line in _as_lua_comment_lines("焊机参数"):
+                f.write(line + "\n")
             f.write(f"setWelderParam({{job={weld_params['job']},"
                     f"I={weld_params['I']},U={weld_params['U']},"
                     f"L={weld_params['L']}}})\n\n")
@@ -108,7 +141,8 @@ class LuaExporter:
             for line in lua_lines:
                 f.write(line + "\n")
 
-            f.write("-- end of script\n")
+            for line in _as_lua_comment_lines("脚本结束"):
+                f.write(line + "\n")
 
         size = path.stat().st_size
         return {
@@ -149,15 +183,34 @@ class LuaExporter:
 
     def _write_header(self, f, meta: dict):
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        f.write(f"-- Robot Weld Path Lua Script\n")
-        f.write(f"-- Generator: pipeline.output.lua_exporter\n")
-        f.write(f"-- Created: {ts}\n")
-        f.write(f"-- WARNING: 离线生成脚本，执行前必须仿真/低速空跑验证\n")
+        header: list[str] = [
+            "机器人焊接 Lua 脚本",
+            f"生成器: pipeline.output.lua_exporter",
+            f"生成时间: {ts}",
+            "警告: 离线生成脚本，执行前必须仿真/低速空跑验证",
+        ]
+        mode = meta.get("mode")
+        if mode:
+            mode_cn = _MODE_CN.get(str(mode), str(mode))
+            header.append(f"工艺模式: {mode_cn} ({mode})")
+        if meta.get("text_source"):
+            header.append(f"文字来源: {meta['text_source']}")
+        if meta.get("char_height_mm") not in (None, "", 0):
+            header.append(f"字高: {meta['char_height_mm']} mm")
+        header.append(f"焊点间距: {meta.get('point_spacing', 'N/A')} mm")
+        if meta.get("weld_speed_mm_s") is not None:
+            header.append(f"焊接速度: {meta['weld_speed_mm_s']} mm/s")
+        if meta.get("travel_speed_mm_s") is not None:
+            header.append(f"空走速度: {meta['travel_speed_mm_s']} mm/s")
+        line_count = meta.get("line_count")
+        if line_count is not None:
+            header.append(f"排版行数: {line_count}")
+        for line in _as_lua_comment_lines(*header):
+            f.write(line + "\n")
         if meta.get("text"):
-            f.write(f"-- Text: {meta['text']}\n")
-        if meta.get("mode"):
-            f.write(f"-- Mode: {meta['mode']}\n")
-        f.write(f"-- Point spacing: {meta.get('point_spacing', 'N/A')}\n")
+            f.write("\n")
+            for line in _as_lua_comment_lines("文字内容:", meta["text"]):
+                f.write(line + "\n")
 
     # ── Weld params ──
 
@@ -217,10 +270,8 @@ class LuaExporter:
             pts = seg.points
             speed = getattr(seg, "speed_mm_s", 30.0)
 
-            # Per-segment comment
             if self.cfg.include_comments:
-                lines.append(f"-- segment: {seg.id[:6]}, stroke: {seg.stroke_id[:6]}, "
-                             f"type: {seg_type}, points: {len(pts)}")
+                lines.extend(self._segment_comment_lines(seg))
 
             # Arc state transition BEFORE emitting segment points
             if seg.arc_enabled and not arc_on:
@@ -251,6 +302,39 @@ class LuaExporter:
             "warnings": arc_warnings,
             "wait_insert_count": wait_insert_count,
         }, dup_skipped
+
+    def _segment_comment_lines(self, seg: ProcessSegment) -> list[str]:
+        meta = seg.metadata or {}
+        type_cn = _SEGMENT_TYPE_CN.get(seg.type, seg.type)
+        arc_cn = "开弧" if seg.arc_enabled else "关弧"
+        speed = getattr(seg, "speed_mm_s", 0.0)
+        body = [
+            "── 工艺段 ──",
+            f"段ID: {seg.id[:8]}  笔画ID: {str(seg.stroke_id)[:8]}",
+            f"类型: {type_cn}  点数: {len(seg.points)}",
+            f"速度: {speed:.1f} mm/s  电弧: {arc_cn}",
+        ]
+        ch = meta.get("weld_char")
+        if ch is None:
+            ch = meta.get("hanzi_char")
+        if ch is not None and str(ch):
+            body.append(f"当前字符: {ch!r}")
+        if meta.get("weld_char_index") is not None:
+            body.append(f"字符序号: {int(meta['weld_char_index']) + 1}")
+        line_idx = meta.get("layout_line_index")
+        if line_idx is not None:
+            line_txt = meta.get("layout_line_text", "")
+            body.append(
+                f"排版行: {int(line_idx) + 1}"
+                + (f"  行内容: {line_txt!r}" if line_txt else "")
+            )
+        gi = meta.get("glyph_stroke_index")
+        if gi is not None:
+            body.append(f"字内笔画: {int(gi) + 1}")
+        algo = meta.get("extract_algorithm")
+        if algo:
+            body.append(f"提取算法: {algo}")
+        return _as_lua_comment_lines(*body)
 
     # ── Formatting ──
 

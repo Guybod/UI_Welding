@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from app.base_page import BasePage
 from app.i18n import I18nManager, tr
+from app.ui_log import append_ui_log
 from app.pages.welding_page import (
     _build_font_item_data,
     _find_system_fonts,
@@ -38,6 +39,21 @@ from app.pages.welding_page import (
     _qsettings_int,
     normalize_weld_text_input,
 )
+from config.stroke_fonts.hershey_presets import (
+    build_hershey_style_item_data,
+    get_default_hershey_style_id,
+    list_hershey_style_presets,
+)
+from config.stroke_fonts.hershey_presets import get_default_hershey_style_id
+from pipeline.text_pipeline import (
+    TEXT_SOURCE_HANZI_STROKE,
+    TEXT_SOURCE_IMAGE_CONTOUR,
+    TEXT_SOURCE_LATIN_STROKE,
+    TEXT_SOURCE_TTF_CONTOUR,
+    build_text_pipeline,
+    migrate_welding_text_source,
+)
+from pipeline.weld_skeleton_latin import validate_weld_skeleton_text
 from config.welding_defaults import (
     CHAR_HEIGHT_MM,
     CHAR_SPACING_MM,
@@ -127,23 +143,23 @@ class WritingPage(BasePage):
         self._text_input.setTabChangesFocus(True)
         text_layout.addWidget(self._text_input)
 
+        text_src_row = QHBoxLayout()
+        text_src_row.addWidget(QLabel(tr("draw_text_gen_mode") + ":"))
+        self._text_source_combo = QComboBox()
+        self._text_source_combo.addItem(tr("draw_mode_contour"), TEXT_SOURCE_TTF_CONTOUR)
+        self._text_source_combo.addItem(tr("draw_mode_latin_stroke"), TEXT_SOURCE_LATIN_STROKE)
+        self._text_source_combo.addItem(tr("draw_mode_hanzi_stroke"), TEXT_SOURCE_HANZI_STROKE)
+        self._text_source_combo.currentIndexChanged.connect(self._on_text_source_changed)
+        text_src_row.addWidget(self._text_source_combo, 1)
+        text_layout.addLayout(text_src_row)
+
         font_row = QHBoxLayout()
-        font_row.addWidget(QLabel(tr("draw_font") + ":"))
+        self._font_label = QLabel(tr("draw_font") + ":")
+        font_row.addWidget(self._font_label)
         self._font_combo = QComboBox()
-        for fp in _find_system_fonts():
-            self._font_combo.addItem(_build_font_item_data(fp)["display"], _build_font_item_data(fp))
-        if self._font_combo.count() == 0:
-            self._font_combo.addItem("(no font)", {"path": "", "display": "(no font)"})
         font_row.addWidget(self._font_combo, 1)
         text_layout.addLayout(font_row)
-
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel(tr("draw_mode") + ":"))
-        mode_lbl = QLabel(tr("draw_mode_contour"))
-        mode_lbl.setStyleSheet("font-weight: bold;")
-        mode_row.addWidget(mode_lbl)
-        mode_row.addStretch()
-        text_layout.addLayout(mode_row)
+        self._populate_draw_font_combo()
         content_layout.addWidget(text_group)
 
         self._image_group = self._build_image_group()
@@ -340,6 +356,14 @@ class WritingPage(BasePage):
         self._btn_execute.clicked.connect(self._on_execute)
         right_layout.addWidget(self._btn_execute)
 
+        self._btn_cri_minimal = QPushButton("CRI最小测试(Z±10mm)")
+        self._btn_cri_minimal.setMinimumHeight(32)
+        self._btn_cri_minimal.setToolTip(
+            "读取当前 TCP 为起点，生成 Z 轴 ±10mm 往返轨迹；先移至起点再 CRI 执行"
+        )
+        self._btn_cri_minimal.clicked.connect(self._on_cri_minimal_test)
+        right_layout.addWidget(self._btn_cri_minimal)
+
         self._btn_stop = QPushButton(tr("draw_stop_btn"))
         self._btn_stop.clicked.connect(self._on_stop)
         right_layout.addWidget(self._btn_stop)
@@ -392,7 +416,7 @@ class WritingPage(BasePage):
         self._update_action_buttons()
 
     def _append_log(self, msg: str):
-        self._log.appendPlainText(msg)
+        append_ui_log(self._log, msg, source="Drawing")
 
     def _is_connected(self) -> bool:
         return bool(self.sp and self.sp.cm.is_connected)
@@ -464,16 +488,28 @@ class WritingPage(BasePage):
         )
         return {"left_top": lt, "right_top": rt, "left_bottom": lb, "right_bottom": rb}
 
-    def _collect_font_path(self) -> str:
+    def _current_font_item(self) -> dict:
         idx = self._font_combo.currentIndex()
         if idx < 0:
-            return ""
+            return {}
         data = self._font_combo.itemData(idx)
-        if isinstance(data, dict):
-            return str(data.get("path", "") or "")
-        return str(data or "")
+        return data if isinstance(data, dict) else {}
+
+    def _collect_font_path(self) -> str:
+        return str(self._current_font_item().get("path", "") or "")
+
+    def _current_hershey_style(self) -> str:
+        if self._current_text_source() != TEXT_SOURCE_LATIN_STROKE:
+            return get_default_hershey_style_id()
+        return (
+            self._current_font_item().get("hershey_style")
+            or get_default_hershey_style_id()
+        )
 
     def _exec_config(self) -> WritingExecConfig:
+        cri_cfg = getattr(self.sp.cri, "_config", None)
+        push_ip = getattr(cri_cfg, "local_ip", "") if cri_cfg else ""
+        push_port = int(getattr(cri_cfg, "udp_port", 0) or 0) if cri_cfg else 0
         return WritingExecConfig(
             traj_path=self._last_traj_path,
             robot_ip=self._robot_ip(),
@@ -483,6 +519,10 @@ class WritingPage(BasePage):
             filter_type=self._spin_filter.value(),
             start_buffer=self._spin_buffer.value(),
             cartesian=True,
+            z_draw_mm=self._spin_z_work.value(),
+            z_safe_mm=self._spin_z_safe.value(),
+            cri_data_push_ip=push_ip,
+            cri_data_push_port=push_port,
         )
 
     def _on_generate_busy(self):
@@ -501,6 +541,19 @@ class WritingPage(BasePage):
         if not text:
             self._append_log(tr("draw_need_text"))
             return
+        text_source = self._current_text_source()
+        pipeline = build_text_pipeline(text_source, target_process="drawing")
+        self._append_log(
+            f"text_pipeline: text_source={pipeline['text_source']} "
+            f"target_process={pipeline.get('target_process', 'drawing')}"
+        )
+        if text_source == TEXT_SOURCE_LATIN_STROKE:
+            sk_err = validate_weld_skeleton_text(
+                text, lang=I18nManager.instance().lang,
+            )
+            if sk_err:
+                self._append_log(sk_err)
+                return
         self._save_settings()
         self._last_traj_path = ""
         self._last_points_path = ""
@@ -512,12 +565,12 @@ class WritingPage(BasePage):
         self._append_log(tr("draw_planning"))
         ws = self._read_workspace()
         z_safe = self._spin_z_safe.value()
-        self._writing_service.start_generate(
+        gen_kwargs = dict(
             text=text,
+            text_source=text_source,
             left_top=ws["left_top"],
             right_top=ws["right_top"],
             left_bottom=ws["left_bottom"],
-            font_path=self._collect_font_path() or None,
             char_height_mm=self._spin_char_h.value(),
             margin_left_mm=self._spin_margin_left.value(),
             margin_top_mm=self._spin_margin_top.value(),
@@ -528,9 +581,16 @@ class WritingPage(BasePage):
             z_safe_mm=z_safe,
             z_super_safe_mm=z_safe + self._spin_z_super.value(),
             write_speed_mm_s=self._spin_speed.value(),
+            travel_speed_mm_s=self._spin_speed.value(),
             sample_rate_hz=self._spin_sample_rate.value(),
+            px_per_mm=10.0,
             user_lang=I18nManager.instance().lang,
         )
+        if text_source == TEXT_SOURCE_TTF_CONTOUR:
+            gen_kwargs["font_path"] = self._collect_font_path() or None
+        if text_source == TEXT_SOURCE_LATIN_STROKE:
+            gen_kwargs["hershey_style"] = self._current_hershey_style()
+        self._writing_service.start_generate(**gen_kwargs)
         self._update_action_buttons()
 
     def _on_generate_finished(self, traj_path: str, points_path: str, preview_path: str):
@@ -597,6 +657,22 @@ class WritingPage(BasePage):
         self._update_action_buttons()
         self._exec_service.run_execute(self._exec_config(), self.sp.cm, self.sp.cri)
 
+    def _on_cri_minimal_test(self):
+        if not self._is_connected():
+            self._append_log(tr("draw_need_connect"))
+            return
+        if self._exec_service.is_busy:
+            self._append_log(tr("draw_busy"))
+            return
+        from services.robot_realtime_state import RobotRealtimeState
+
+        if not RobotRealtimeState.instance().is_valid():
+            self._append_log("CRI 最小测试需要实时位姿：请确认已连接且 CRI 数据推送已启动")
+            return
+        self._append_log("CRI 最小测试(Z±10mm, 先移至起点, 3s)...")
+        self._update_action_buttons()
+        self._exec_service.run_minimal_test(self._exec_config(), self.sp.cm, self.sp.cri)
+
     def _on_stop(self):
         self._exec_service.stop()
 
@@ -611,6 +687,8 @@ class WritingPage(BasePage):
             self._append_log(tr("draw_exec_prepare_done"))
         elif task == "execute":
             self._append_log(tr("draw_exec_done"))
+        elif task == "minimal_test":
+            self._append_log("CRI 最小测试(Z±10mm)完成")
         self._update_action_buttons()
 
     def _update_ws_from_current(self, row: int):
@@ -714,6 +792,51 @@ class WritingPage(BasePage):
         self._img_params.preset_selected.connect(self._on_image_preset_log)
         return group
 
+    def _current_text_source(self) -> str:
+        if self._is_image_mode():
+            return TEXT_SOURCE_IMAGE_CONTOUR
+        data = self._text_source_combo.currentData()
+        if data in (TEXT_SOURCE_TTF_CONTOUR, TEXT_SOURCE_LATIN_STROKE, TEXT_SOURCE_HANZI_STROKE):
+            return str(data)
+        return TEXT_SOURCE_TTF_CONTOUR
+
+    def _populate_draw_font_combo(self) -> None:
+        self._font_combo.clear()
+        lang = I18nManager.instance().lang
+        ts = self._current_text_source()
+        if ts == TEXT_SOURCE_LATIN_STROKE:
+            self._font_label.setText(tr("draw_hershey_style") + ":")
+            default_id = get_default_hershey_style_id()
+            for preset in list_hershey_style_presets():
+                data = build_hershey_style_item_data(preset, lang=lang)
+                self._font_combo.addItem(data["display"], data)
+            for i in range(self._font_combo.count()):
+                d = self._font_combo.itemData(i)
+                if isinstance(d, dict) and d.get("hershey_style") == default_id:
+                    self._font_combo.setCurrentIndex(i)
+                    break
+        elif ts == TEXT_SOURCE_TTF_CONTOUR:
+            self._font_label.setText(tr("draw_font") + ":")
+            for fp in _find_system_fonts():
+                item = _build_font_item_data(fp)
+                self._font_combo.addItem(item["display"], item)
+            if self._font_combo.count() == 0:
+                self._font_combo.addItem("(no font)", {"path": "", "display": "(no font)"})
+        else:
+            self._font_combo.addItem(tr("draw_hanzi_not_implemented"), {"path": "", "display": ""})
+
+    def _on_text_source_changed(self, _index: int = 0) -> None:
+        self._populate_draw_font_combo()
+        self._update_text_source_ui()
+
+    def _update_text_source_ui(self) -> None:
+        if self._is_image_mode():
+            return
+        ts = self._current_text_source()
+        show_font = ts in (TEXT_SOURCE_TTF_CONTOUR, TEXT_SOURCE_LATIN_STROKE)
+        self._font_combo.setVisible(show_font)
+        self._font_label.setVisible(show_font)
+
     def _on_draw_mode_changed(self):
         image = self._is_image_mode()
         self._text_group.setVisible(not image)
@@ -722,7 +845,11 @@ class WritingPage(BasePage):
         self._btn_generate.setVisible(not image)
         self._btn_image_preview.setVisible(image)
         self._btn_image_generate.setVisible(image)
+        if hasattr(self, "_text_source_combo"):
+            self._text_source_combo.parentWidget()
+            self._text_source_combo.setEnabled(not image)
         self._settings.setValue(_SETTINGS_PREFIX + "source_mode", self._mode_combo.currentData())
+        self._update_text_source_ui()
         self._update_action_buttons()
 
     def _on_pick_image(self):
@@ -926,6 +1053,10 @@ class WritingPage(BasePage):
     def _save_settings(self):
         p = _SETTINGS_PREFIX
         self._settings.setValue(p + "source_mode", self._mode_combo.currentData())
+        if hasattr(self, "_text_source_combo"):
+            self._settings.setValue(p + "text_source", self._text_source_combo.currentData())
+        if self._current_text_source() == TEXT_SOURCE_LATIN_STROKE:
+            self._settings.setValue(p + "hershey_style", self._current_hershey_style())
         self._settings.setValue(p + "text", self._text_input.toPlainText())
         self._settings.setValue(p + "font_index", self._font_combo.currentIndex())
         self._settings.setValue(p + "char_height_mm", self._spin_char_h.value())
@@ -951,12 +1082,20 @@ class WritingPage(BasePage):
         p = _SETTINGS_PREFIX
         mode = self._settings.value(p + "source_mode", "text")
         self._set_combo_by_data(self._mode_combo, str(mode))
+        if hasattr(self, "_text_source_combo"):
+            ts = migrate_welding_text_source(
+                text_source=str(self._settings.value(p + "text_source", "") or ""),
+                legacy_mode="contour",
+            )
+            self._set_combo_by_data(self._text_source_combo, ts)
+            self._populate_draw_font_combo()
         text = self._settings.value(p + "text")
         if text:
             self._text_input.setPlainText(str(text))
         fi = _qsettings_int(self._settings.value(p + "font_index"), 0)
         if 0 <= fi < self._font_combo.count():
             self._font_combo.setCurrentIndex(fi)
+        self._update_text_source_ui()
         self._spin_char_h.setValue(_qsettings_float(self._settings.value(p + "char_height_mm"), CHAR_HEIGHT_MM))
         self._spin_margin_left.setValue(_qsettings_float(self._settings.value(p + "margin_left_mm"), MARGIN_LEFT_MM))
         self._spin_margin_top.setValue(_qsettings_float(self._settings.value(p + "margin_top_mm"), MARGIN_TOP_MM))

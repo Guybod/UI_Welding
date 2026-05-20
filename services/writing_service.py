@@ -1,4 +1,4 @@
-"""WritingService — 轮廓字离线 pipeline + CRI 轨迹文件生成（后台线程）。"""
+"""WritingService — 轮廓字 / Hershey 英数字单线字离线 pipeline + CRI 轨迹（后台线程）。"""
 
 from __future__ import annotations
 
@@ -7,13 +7,21 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 
-from core.types import RobotPoint, WeldingProcessConfig, WorkspaceConfig
+from core.types import ImageDrawingConfig, RobotPoint, WeldingProcessConfig, WorkspaceConfig
 from pipeline.cri_trajectory_export import (
     TRAJECTORY_FILENAME,
     build_trajectory_from_points_file,
 )
+from pipeline.drawing_hanzi_runner import make_run_output_dir as make_hanzi_run_output_dir
+from pipeline.drawing_hanzi_runner import run_hanzi_stroke_to_cri
+from pipeline.drawing_latin_runner import make_run_output_dir, run_latin_stroke_to_cri
 from pipeline.mapping import WorkPlane
 from pipeline.offline_runner import OfflinePipelineRunner
+from pipeline.text_pipeline import (
+    TEXT_SOURCE_HANZI_STROKE,
+    TEXT_SOURCE_LATIN_STROKE,
+    TEXT_SOURCE_TTF_CONTOUR,
+)
 from pipeline.user_messages import (
     output_file_log,
     pipeline_done_log,
@@ -22,6 +30,7 @@ from pipeline.user_messages import (
     unexpected_error_log,
     workplane_log,
 )
+from pipeline.weld_skeleton_latin import validate_weld_skeleton_text
 from services.welding_service_v2 import _to_robot_point
 
 
@@ -47,7 +56,7 @@ class _GenerateWorker(QObject):
 
 
 class WritingService(QObject):
-    """绘图/写字轨迹生成 — 复用焊接 pipeline（轮廓字），输出 CRI 轨迹。"""
+    """绘图/写字轨迹生成 — 轮廓 TTF 或 Hershey latin_stroke，输出 CRI 轨迹。"""
 
     state_changed = Signal(str)
     progress = Signal(int, int)
@@ -128,6 +137,210 @@ class WritingService(QObject):
     def _generate_impl(
         self, log_fn: Callable[[str], None], **kwargs
     ) -> tuple[str, str, str]:
+        text_source = str(kwargs.get("text_source") or TEXT_SOURCE_TTF_CONTOUR)
+        if text_source == TEXT_SOURCE_LATIN_STROKE:
+            return self._generate_latin_stroke_impl(log_fn, **kwargs)
+        if text_source == TEXT_SOURCE_HANZI_STROKE:
+            return self._generate_hanzi_stroke_impl(log_fn, **kwargs)
+        return self._generate_contour_impl(log_fn, **kwargs)
+
+    def _generate_latin_stroke_impl(
+        self, log_fn: Callable[[str], None], **kwargs
+    ) -> tuple[str, str, str]:
+        text = kwargs["text"]
+        user_lang = kwargs.get("user_lang", "zh")
+        hershey_style = str(kwargs.get("hershey_style") or "futural")
+        self.progress.emit(0, 100)
+
+        sk_err = validate_weld_skeleton_text(text, lang=user_lang)
+        if sk_err:
+            raise RuntimeError(sk_err)
+
+        lt = _to_robot_point(
+            kwargs.get("left_top"),
+            default=RobotPoint(100, 200, 300, 180, 0, 90),
+        )
+        rt = _to_robot_point(
+            kwargs.get("right_top"),
+            default=RobotPoint(300, 200, 300, 180, 0, 90),
+        )
+        lb = _to_robot_point(
+            kwargs.get("left_bottom"),
+            default=RobotPoint(100, 400, 300, 180, 0, 90),
+        )
+        wp = WorkPlane(tl=lt, tr=rt, bl=lb)
+
+        self.progress.emit(10, 100)
+        log_fn(
+            workplane_log(
+                wp.width_mm, wp.height_mm,
+                wp.normal.x, wp.normal.y, wp.normal.z,
+                lang=user_lang,
+            )
+        )
+        log_fn(f"[Drawing] 使用英数字单线字：Hershey / {hershey_style}")
+        log_fn("[Drawing] 生成绘图 CRI 轨迹，不使用焊接工艺")
+
+        drawing_cfg = ImageDrawingConfig(
+            z_draw_mm=kwargs.get("z_work_mm", 305.0),
+            z_safe_mm=kwargs.get("z_safe_mm", 315.0),
+            point_spacing_mm=kwargs.get("point_spacing_mm", 0.5),
+            travel_speed_mm_s=kwargs.get("travel_speed_mm_s", 80.0),
+            draw_speed_mm_s=kwargs.get("write_speed_mm_s", 50.0),
+            margin_mm=0.0,
+            sample_rate_hz=int(kwargs.get("sample_rate_hz", 500)),
+        )
+
+        base_out = kwargs.get("output_dir") or self.output_dir
+        run_dir = make_run_output_dir(base_out, text)
+        self.progress.emit(25, 100)
+
+        result = run_latin_stroke_to_cri(
+            text,
+            wp,
+            hershey_style=hershey_style,
+            char_height_mm=float(kwargs.get("char_height_mm", 60.0)),
+            char_spacing_mm=float(kwargs.get("char_spacing_mm", 2.0)),
+            line_spacing_mm=float(kwargs.get("line_spacing_mm", 0.0)),
+            margin_left_mm=float(kwargs.get("margin_left_mm", 0.0)),
+            margin_top_mm=float(kwargs.get("margin_top_mm", 0.0)),
+            px_per_mm=float(kwargs.get("px_per_mm", 10.0)),
+            drawing_config=drawing_cfg,
+            output_dir=run_dir,
+            user_lang=user_lang,
+        )
+        self.progress.emit(85, 100)
+
+        if not result.ok:
+            raise RuntimeError(result.error or "latin_stroke run failed")
+
+        traj_path = result.files.get(TRAJECTORY_FILENAME, "")
+        if not traj_path:
+            raise RuntimeError("missing trajectory_cri.txt")
+
+        preview = (
+            result.files.get("preview_execution.png", "")
+            or result.files.get("preview_draw_only.png", "")
+        )
+        plan = result.stats.get("plan") or {}
+        log_fn(pipeline_done_log(
+            result.stats.get("extract", {}).get("strokes", 0),
+            plan.get("generated_segment_count", 0),
+            plan.get("total_robot_points", 0),
+            result.stats.get("duration_ms", 0),
+            lang=user_lang,
+        ))
+        log_fn(output_file_log("trajectory_cri.txt", traj_path, lang=user_lang))
+        if preview:
+            log_fn(output_file_log("preview_execution.png", preview, lang=user_lang))
+        draw_only = result.files.get("preview_draw_only.png", "")
+        if draw_only:
+            log_fn(output_file_log("preview_draw_only.png", draw_only, lang=user_lang))
+        for w in result.warnings:
+            log_fn(f"[warn] {w}")
+
+        self.progress.emit(100, 100)
+        return traj_path, "", preview
+
+    def _generate_hanzi_stroke_impl(
+        self, log_fn: Callable[[str], None], **kwargs
+    ) -> tuple[str, str, str]:
+        text = kwargs["text"]
+        user_lang = kwargs.get("user_lang", "zh")
+        self.progress.emit(0, 100)
+
+        lt = _to_robot_point(
+            kwargs.get("left_top"),
+            default=RobotPoint(100, 200, 300, 180, 0, 90),
+        )
+        rt = _to_robot_point(
+            kwargs.get("right_top"),
+            default=RobotPoint(300, 200, 300, 180, 0, 90),
+        )
+        lb = _to_robot_point(
+            kwargs.get("left_bottom"),
+            default=RobotPoint(100, 400, 300, 180, 0, 90),
+        )
+        wp = WorkPlane(tl=lt, tr=rt, bl=lb)
+
+        self.progress.emit(10, 100)
+        log_fn(
+            workplane_log(
+                wp.width_mm, wp.height_mm,
+                wp.normal.x, wp.normal.y, wp.normal.z,
+                lang=user_lang,
+            )
+        )
+        log_fn("[Drawing] 使用汉字骨架：MakeMeAHanzi medians")
+        log_fn("[Drawing] 生成绘图 CRI 轨迹，不使用焊接工艺")
+
+        drawing_cfg = ImageDrawingConfig(
+            z_draw_mm=kwargs.get("z_work_mm", 305.0),
+            z_safe_mm=kwargs.get("z_safe_mm", 315.0),
+            point_spacing_mm=kwargs.get("point_spacing_mm", 0.5),
+            travel_speed_mm_s=kwargs.get("travel_speed_mm_s", 80.0),
+            draw_speed_mm_s=kwargs.get("write_speed_mm_s", 50.0),
+            margin_mm=0.0,
+            sample_rate_hz=int(kwargs.get("sample_rate_hz", 500)),
+        )
+
+        base_out = kwargs.get("output_dir") or self.output_dir
+        run_dir = make_hanzi_run_output_dir(base_out, text)
+        self.progress.emit(25, 100)
+
+        result = run_hanzi_stroke_to_cri(
+            text,
+            wp,
+            graphics_path=kwargs.get("makemeahanzi_graphics"),
+            char_height_mm=float(kwargs.get("char_height_mm", 60.0)),
+            char_spacing_mm=float(kwargs.get("char_spacing_mm", 2.0)),
+            line_spacing_mm=float(kwargs.get("line_spacing_mm", 0.0)),
+            margin_left_mm=float(kwargs.get("margin_left_mm", 0.0)),
+            margin_top_mm=float(kwargs.get("margin_top_mm", 0.0)),
+            px_per_mm=float(kwargs.get("px_per_mm", 10.0)),
+            drawing_config=drawing_cfg,
+            output_dir=run_dir,
+            user_lang=user_lang,
+        )
+        self.progress.emit(85, 100)
+
+        if not result.ok:
+            raise RuntimeError(result.error or "hanzi_stroke run failed")
+
+        traj_path = result.files.get(TRAJECTORY_FILENAME, "")
+        if not traj_path:
+            raise RuntimeError("missing trajectory_cri.txt")
+
+        preview = (
+            result.files.get("preview_execution.png", "")
+            or result.files.get("preview_draw_only.png", "")
+        )
+        plan = result.stats.get("plan") or {}
+        log_fn(pipeline_done_log(
+            result.stats.get("extract", {}).get("strokes", 0),
+            plan.get("generated_segment_count", 0),
+            plan.get("total_robot_points", 0),
+            result.stats.get("duration_ms", 0),
+            lang=user_lang,
+        ))
+        log_fn(output_file_log("trajectory_cri.txt", traj_path, lang=user_lang))
+        if preview:
+            log_fn(output_file_log("preview_execution.png", preview, lang=user_lang))
+        strokes_png = result.files.get("preview_strokes.png", "")
+        if strokes_png:
+            log_fn(output_file_log("preview_strokes.png", strokes_png, lang=user_lang))
+        draw_only = result.files.get("preview_draw_only.png", "")
+        if draw_only:
+            log_fn(output_file_log("preview_draw_only.png", draw_only, lang=user_lang))
+        for w in result.warnings:
+            log_fn(f"[warn] {w}")
+
+        self.progress.emit(100, 100)
+        return traj_path, "", preview
+
+    def _generate_contour_impl(
+        self, log_fn: Callable[[str], None], **kwargs
+    ) -> tuple[str, str, str]:
         text = kwargs["text"]
         user_lang = kwargs.get("user_lang", "zh")
         self.progress.emit(0, 100)
@@ -190,7 +403,13 @@ class WritingService(QObject):
             export_lua=False,
             user_lang=user_lang,
         )
-        result = runner.run(text, mode="contour", workplane=wp)
+        result = runner.run(
+            text,
+            mode="contour",
+            workplane=wp,
+            text_source=TEXT_SOURCE_TTF_CONTOUR,
+            target_process="drawing",
+        )
         self.progress.emit(70, 100)
 
         if not result.ok:

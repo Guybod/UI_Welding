@@ -57,7 +57,7 @@ class OrbitCamera:
 
     def rotate(self, dx_px: float, dy_px: float, sensitivity: float = 0.4) -> None:
         self.yaw_deg -= dx_px * sensitivity
-        self.pitch_deg -= dy_px * sensitivity
+        self.pitch_deg += dy_px * sensitivity
         self.pitch_deg = max(
             self.min_pitch_deg, min(self.max_pitch_deg, self.pitch_deg)
         )

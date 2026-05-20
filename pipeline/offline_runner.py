@@ -197,9 +197,13 @@ class OfflinePipelineRunner:
         export_lua: bool = True,
         user_lang: str = "zh",
         restrict_weld_fonts: bool = False,
+        skeleton_source: str = "hershey",
+        hershey_style: str = "futural",
     ):
         self.output_dir = output_dir
         self.user_lang = user_lang if user_lang in ("zh", "en") else "zh"
+        self.skeleton_source = (skeleton_source or "hershey").strip().lower()
+        self.hershey_style = (hershey_style or "futural").strip()
         self.restrict_weld_fonts = restrict_weld_fonts
         if restrict_weld_fonts:
             try:
@@ -226,7 +230,9 @@ class OfflinePipelineRunner:
         self.lua_config = lua_config or LuaExportConfig()
         self.export_lua = export_lua
         base_path_cfg = path_config or PathConfig()
-        if restrict_weld_fonts:
+        base_path_cfg.skeleton_source = self.skeleton_source
+        base_path_cfg.hershey_style = self.hershey_style
+        if restrict_weld_fonts and self.skeleton_source == "ttf_skeleton_beta":
             self.path_config = apply_skeleton_tuning_to_path_config(
                 base_path_cfg, self.font_path, px_per_mm=self.px_per_mm,
             )
@@ -237,12 +243,37 @@ class OfflinePipelineRunner:
 
     def run(
         self, text: str, mode: str, workplane: Any,
-        *, extra_metadata: dict | None = None,
+        *,
+        extra_metadata: dict | None = None,
+        text_source: str | None = None,
+        target_process: str = "weld",
     ) -> RunResult:
         t_start = datetime.now()
         stage_stats: list[StageStats] = []
         warnings: list[str] = []
         errors: list[str] = []
+
+        from pipeline.text_pipeline import (
+            TEXT_SOURCE_HANZI_STROKE,
+            TEXT_SOURCE_LATIN_STROKE,
+            build_text_pipeline,
+            hanzi_not_implemented_message,
+            is_text_source_not_implemented,
+            legacy_mode_from_text_source,
+            migrate_welding_text_source,
+            skeleton_source_for_text_source,
+        )
+        from pipeline.text_stroke_extract import normalize_weld_text_mode
+
+        resolved_source = migrate_welding_text_source(
+            text_source=text_source,
+            legacy_mode=mode,
+        )
+        mode = normalize_weld_text_mode(legacy_mode_from_text_source(resolved_source))
+        use_hanzi_stroke = resolved_source == TEXT_SOURCE_HANZI_STROKE
+        if resolved_source in (TEXT_SOURCE_LATIN_STROKE, TEXT_SOURCE_HANZI_STROKE):
+            self.skeleton_source = skeleton_source_for_text_source(resolved_source)
+            self.path_config.skeleton_source = self.skeleton_source
 
         # 输出子目录
         # 过滤非法文件名字符（仅保留 alnum + _ - .）
@@ -252,10 +283,20 @@ class OfflinePipelineRunner:
         os.makedirs(run_dir, exist_ok=True)
         files: dict[str, str] = {}
 
-        from pipeline.text_stroke_extract import normalize_weld_text_mode
-        mode = normalize_weld_text_mode(mode)
+        text_pipeline_meta = build_text_pipeline(
+            resolved_source,
+            hershey_style=self.hershey_style,
+            target_process=target_process,
+        )
 
-        if mode == "skeleton":
+        if is_text_source_not_implemented(resolved_source, target_process=target_process):
+            errors.append(hanzi_not_implemented_message(lang=self.user_lang))
+            return _fail(
+                text, mode, run_dir, stage_stats, errors,
+                text_pipeline=text_pipeline_meta,
+            )
+
+        if mode == "skeleton" and not use_hanzi_stroke:
             from pipeline.weld_skeleton_latin import validate_weld_skeleton_text
 
             sk_err = validate_weld_skeleton_text(text, lang=self.user_lang)
@@ -263,8 +304,17 @@ class OfflinePipelineRunner:
                 errors.append(sk_err)
                 return _fail(text, mode, run_dir, stage_stats, errors)
 
-        # ── Stage 0: 字高 → font_size_px (二分 A 的 bbox 高度) ──
-        if self.char_height_mm > 0 and self.px_per_mm > 0:
+        use_hershey_skeleton = (
+            mode == "skeleton" and self.skeleton_source == "hershey"
+        )
+
+        # ── Stage 0: 字高 → font_size_px (TTF 骨架 Beta / contour；Hershey / 汉字 medians 跳过) ──
+        if (
+            not use_hershey_skeleton
+            and not use_hanzi_stroke
+            and self.char_height_mm > 0
+            and self.px_per_mm > 0
+        ):
             target_px = self.char_height_mm * self.px_per_mm
             try:
                 from PIL import ImageFont
@@ -301,16 +351,107 @@ class OfflinePipelineRunner:
             use_multiline = line_count >= 1 and mode == "contour"
             multiline_layout = use_multiline
 
-            if mode == "skeleton":
-                strokes_raw, extract_stats = layout_legacy_single_string(
-                    text.replace("\r\n", "\n").replace("\r", "\n").split("\n")[0],
-                    rasterizer=rasterizer,
-                    path_config=self.path_config,
-                    char_spacing_mm=self.char_spacing_mm,
-                    px_per_mm=self.px_per_mm,
-                    mode=mode,
-                )
-                extract_stats["skeleton_single_line_only"] = True
+            if use_hanzi_stroke:
+                if self.char_height_mm <= 0:
+                    errors.append(
+                        "骨架汉字需要字高 (char_height_mm > 0)"
+                        if self.user_lang == "zh"
+                        else "Hanzi stroke requires char_height_mm > 0"
+                    )
+                    return _fail(text, mode, run_dir, stage_stats, errors)
+                try:
+                    from pipeline.hanzi.hanzi_stroke_renderer import (
+                        RENDERER_MODULE,
+                        render_hanzi_text_to_strokes,
+                    )
+                    strokes_raw, extract_stats, _glyphs = render_hanzi_text_to_strokes(
+                        text,
+                        char_height_mm=self.char_height_mm,
+                        char_spacing_mm=self.char_spacing_mm,
+                        line_spacing_mm=self.line_spacing_mm,
+                        px_per_mm=self.px_per_mm,
+                        user_lang=self.user_lang,
+                    )
+                except (FileNotFoundError, ValueError) as exc:
+                    errors.append(str(exc))
+                    return _fail(text, mode, run_dir, stage_stats, errors)
+                extract_stats["renderer"] = RENDERER_MODULE
+                multiline_layout = bool(extract_stats.get("multiline_enabled"))
+                if extract_stats.get("ttf_fallback_used"):
+                    errors.append(
+                        "骨架汉字不允许 TTF fallback"
+                        if self.user_lang == "zh"
+                        else "TTF fallback not allowed for hanzi stroke"
+                    )
+                    return _fail(text, mode, run_dir, stage_stats, errors)
+            elif mode == "skeleton":
+                if self.skeleton_source == "hershey":
+                    try:
+                        from pipeline.raster.hershey_font_renderer import (
+                            RENDERER_MODULE,
+                            render_hershey_multiline_to_strokes,
+                            render_hershey_text_to_strokes,
+                        )
+                    except ImportError as exc:
+                        errors.append(str(exc))
+                        return _fail(text, mode, run_dir, stage_stats, errors)
+
+                    if self.char_height_mm <= 0:
+                        errors.append(
+                            "骨架字需要字高 (char_height_mm > 0)"
+                            if self.user_lang == "zh"
+                            else "Skeleton mode requires char_height_mm > 0"
+                        )
+                        return _fail(text, mode, run_dir, stage_stats, errors)
+                    sk_multiline = len(lines) > 1
+                    multiline_layout = sk_multiline
+                    if sk_multiline:
+                        strokes_raw, extract_stats = render_hershey_multiline_to_strokes(
+                            lines,
+                            char_height_mm=self.char_height_mm,
+                            char_spacing_mm=self.char_spacing_mm,
+                            line_spacing_mm=self.line_spacing_mm,
+                            style=self.hershey_style,
+                            px_per_mm=self.px_per_mm,
+                        )
+                    else:
+                        single_line = lines[0] if lines else ""
+                        strokes_raw, extract_stats = render_hershey_text_to_strokes(
+                            single_line,
+                            char_height_mm=self.char_height_mm,
+                            char_spacing_mm=self.char_spacing_mm,
+                            style=self.hershey_style,
+                            px_per_mm=self.px_per_mm,
+                        )
+                    extract_stats["renderer"] = RENDERER_MODULE
+                    if extract_stats.get("ttf_fallback_used"):
+                        errors.append(
+                            "Hershey skeleton 不允许 TTF fallback"
+                            if self.user_lang == "zh"
+                            else "TTF fallback not allowed for Hershey skeleton"
+                        )
+                        return _fail(text, mode, run_dir, stage_stats, errors)
+                elif self.skeleton_source == "ttf_skeleton_beta":
+                    single_line = (
+                        text.replace("\r\n", "\n").replace("\r", "\n").split("\n")[0]
+                    )
+                    strokes_raw, extract_stats = layout_legacy_single_string(
+                        single_line,
+                        rasterizer=rasterizer,
+                        path_config=self.path_config,
+                        char_spacing_mm=self.char_spacing_mm,
+                        px_per_mm=self.px_per_mm,
+                        mode=mode,
+                    )
+                    extract_stats["skeleton_single_line_only"] = True
+                    extract_stats["skeleton_source"] = "ttf_skeleton_beta"
+                else:
+                    errors.append(
+                        f"未知 skeleton_source: {self.skeleton_source!r}"
+                        if self.user_lang == "zh"
+                        else f"Unknown skeleton_source: {self.skeleton_source!r}"
+                    )
+                    return _fail(text, mode, run_dir, stage_stats, errors)
             elif mode == "contour" and use_multiline:
                 strokes_raw, extract_stats = layout_contour_multiline(
                     lines,
@@ -378,7 +519,13 @@ class OfflinePipelineRunner:
         # ── Stage 5: schedule ──
         try:
             from pipeline.path import PathScheduler
-            if mode == "skeleton":
+            if mode == "skeleton" and (
+                use_hanzi_stroke or extract_stats.get("multiline_enabled")
+            ):
+                strokes_sc, s5 = PathScheduler.schedule_by_line_groups(
+                    strokes_rf, strategy="nearest", allow_reverse=True,
+                )
+            elif mode == "skeleton":
                 strokes_sc, s5 = PathScheduler.schedule_char_order_nearest_endpoint(
                     strokes_rf,
                     char_key="weld_char_index",
@@ -514,8 +661,14 @@ class OfflinePipelineRunner:
             s6["workspace_width_mm"] = round(getattr(workplane, "width_mm", 0), 1)
             s6["workspace_height_mm"] = round(getattr(workplane, "height_mm", 0), 1)
 
-            # 骨架模式 baseline 安全网：用字符 pixel x 范围分组后检查跨字符基线
-            if mode == "skeleton" and strokes_mp and linebox_h > 0 and not multiline_layout:
+            # 骨架模式 baseline 安全网（仅 TTF 骨架 Beta）
+            if (
+                mode == "skeleton"
+                and self.skeleton_source == "ttf_skeleton_beta"
+                and strokes_mp
+                and linebox_h > 0
+                and not multiline_layout
+            ):
                 glyphs = rasterizer.render_text_linebox(text)
                 char_x_ranges_px = []
                 spacing_px = self.char_spacing_mm * self.px_per_mm
@@ -591,8 +744,14 @@ class OfflinePipelineRunner:
                 stage_stats={s.name: s.stats for s in stage_stats},
                 metadata=extra_metadata,
             )
+            preview_strokes_input = (
+                strokes_raw
+                if mode == "skeleton"
+                and self.skeleton_source in ("hershey", "makemeahanzi")
+                else strokes_sc
+            )
             preview_results = DebugExporter.write_run_preview(
-                strokes_sc, segs, run_dir,
+                preview_strokes_input, segs, run_dir,
                 title_prefix=f"{text} ({mode})",
                 workplane=workplane,
                 show_travel_in_execution=True,
@@ -611,9 +770,16 @@ class OfflinePipelineRunner:
                     lua_filename = self.lua_config.lua_filename
                 lua_path = str(Path(run_dir) / lua_filename)
                 lua_exporter = LuaExporter(config=self.lua_config)
+                line_count = text.count("\n") + 1 if text else 0
                 lua_stats = lua_exporter.export(segs, lua_path, metadata={
-                    "text": text, "mode": mode,
-                    "point_spacing": str(self.process_config.weld_point_spacing_mm),
+                    "text": text,
+                    "mode": mode,
+                    "text_source": resolved_source,
+                    "point_spacing": self.process_config.weld_point_spacing_mm,
+                    "char_height_mm": self.char_height_mm,
+                    "weld_speed_mm_s": self.process_config.weld_speed_mm_s,
+                    "travel_speed_mm_s": self.process_config.travel_speed_mm_s,
+                    "line_count": line_count,
                 })
                 files["lua_script"] = lua_path
 
@@ -674,8 +840,49 @@ class OfflinePipelineRunner:
                 (s.stats for s in stage_stats if s.name == "schedule"), {},
             )
             px_per_mm = self.px_per_mm or 10.0
+            sk_source = extract_s.get(
+                "skeleton_source", self.skeleton_source,
+            )
             skeleton_summary = {
-                "skeleton_font_preset": preset_id,
+                "skeleton_source": sk_source,
+                "hershey_style": extract_s.get(
+                    "hershey_style", self.hershey_style if sk_source == "hershey" else "",
+                ),
+                "renderer": extract_s.get("renderer", ""),
+                "renderer_version": extract_s.get("renderer_version", ""),
+                "ttf_fallback_used": bool(
+                    extract_s.get("ttf_fallback_used", sk_source == "ttf_skeleton_beta")
+                ),
+                "raw_bbox_before_normalize_px": extract_s.get(
+                    "raw_bbox_before_normalize_px",
+                ),
+                "normalized_bbox_px": extract_s.get("normalized_bbox_px"),
+                "text_bbox_px": extract_s.get("text_bbox_px"),
+                "text_bbox_mm": extract_s.get("text_bbox_mm"),
+                "y_flip_applied": extract_s.get("y_flip_applied", False),
+                "y_shift_px": extract_s.get("y_shift_px", 0.0),
+                "scale_factor": extract_s.get("scale_factor"),
+                "stroke_font_dataset": extract_s.get(
+                    "stroke_font_dataset",
+                    (
+                        "Hershey-Fonts"
+                        if sk_source == "hershey"
+                        else "MakeMeAHanzi"
+                        if sk_source == "makemeahanzi"
+                        else "TTF"
+                    ),
+                ),
+                "graphics_path": extract_s.get("graphics_path", ""),
+                "used_field": extract_s.get("used_field", ""),
+                "missing_chars": extract_s.get("missing_chars", []),
+                "total_loaded_chars": extract_s.get("total_loaded_chars", 0),
+                "lowercase_policy": extract_s.get("lowercase_policy", ""),
+                "unsupported_chars": extract_s.get("unsupported_chars", []),
+                "glyph_count": extract_s.get("glyph_count", extract_s.get("chars", 0)),
+                "char_bboxes_mm": extract_s.get("char_bboxes_mm"),
+                "char_offsets_mm": extract_s.get("char_offsets_mm"),
+                "char_advances_mm": extract_s.get("char_advances_mm"),
+                "skeleton_font_preset": preset_id if sk_source == "ttf_skeleton_beta" else "",
                 "skeleton_allowed_charset": skeleton_charset_descriptor(),
                 "skeleton_scheduler": sched_s.get(
                     "skeleton_scheduler", sched_s.get("strategy", ""),
@@ -716,6 +923,20 @@ class OfflinePipelineRunner:
                 "phantom_loops_opened": extract_s.get(
                     "skeleton_phantom_loops_opened", 0,
                 ),
+                "hershey_open_stroke_count": extract_s.get(
+                    "hershey_open_stroke_count", 0,
+                ),
+                "hershey_closed_stroke_count": extract_s.get(
+                    "hershey_closed_stroke_count", 0,
+                ),
+                "glyph_stroke_closed_per_stroke": extract_s.get(
+                    "glyph_stroke_closed_per_stroke", [],
+                ),
+                "process_closed_segment_count": plan_stats.get(
+                    "process_closed_segment_count", 0,
+                ),
+                "forced_close_count": plan_stats.get("forced_close_count", 0),
+                "closed_stroke_indices": plan_stats.get("closed_stroke_indices", []),
             }
 
         summary = {
@@ -724,6 +945,7 @@ class OfflinePipelineRunner:
             "mode": mode,
             "ok": True,
             "duration_ms": round(dur, 1),
+            "text_pipeline": text_pipeline_meta,
             "layout": layout_summary,
             "preview": preview_meta,
             "baseline": {
@@ -912,7 +1134,7 @@ def _baseline_sanity_check(strokes, *, layout_w_px, map_w,
     }
 
 
-def _fail(text, mode, run_dir, stages, errors):
+def _fail(text, mode, run_dir, stages, errors, *, text_pipeline: dict | None = None):
     from pipeline.output.preview_writer import DebugExporter, PREVIEW_META_DEFAULTS
 
     map_stats = _map_stats_from_stages(stages)
@@ -939,6 +1161,8 @@ def _fail(text, mode, run_dir, stages, errors):
          "preview": preview_meta,
          "stage_stats": _stage_stats_to_json(stages),
          "warnings": [], "errors": errors}
+    if text_pipeline:
+        s["text_pipeline"] = text_pipeline
     sp = str(Path(run_dir) / SUMMARY_FILENAME)
     with open(sp, "w", encoding="utf-8") as f:
         _json.dump(s, f, ensure_ascii=False, indent=2)

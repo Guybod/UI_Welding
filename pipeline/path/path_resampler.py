@@ -251,11 +251,18 @@ def clean_and_resample_strokes(
     result: list[Stroke] = []
     for s in strokes:
         pts = s.points_px
+        is_hershey = (s.metadata or {}).get("extract_algorithm") == "hershey"
 
         # 2a. 连续去重（Zhang-Suen 锯齿第一步清理）
         pts = remove_duplicate_points(pts, eps=0.5)
         if len(pts) < 2:
             dropped_count += 1
+            continue
+
+        # Hershey 已是稀疏矢量折线，勿按骨架图做 RDP/密采样（否则预览与样张严重偏离）
+        if is_hershey:
+            s.points_px = pts
+            result.append(s)
             continue
 
         # 2b. 闭合状态重检测

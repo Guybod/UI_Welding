@@ -294,27 +294,26 @@ class NodeEditorWidget(QWidget):
     def _run_graph(self, online: bool):
         r = self._compile_graph()
         if not r.ok:
-            log = self._log._log
-            log.clear()
-            log.appendPlainText(f"{tr('node_compile_fail')} ({len(r.errors)})")
+            self._log.clear()
+            self._log.append_line(f"{tr('node_compile_fail')} ({len(r.errors)})")
             for err in r.errors:
-                log.appendPlainText(f"  - {err}")
+                self._log.append_line(f"  - {err}")
             self._focus_error_node(r.error_node_ids)
             return
-        self._log._log.clear()
+        self._log.clear()
         data = self._scene.to_graph_data()
         data.variables = list(self._library.variables())
         data.positions = list(self._library.positions())
         if online:
             if self._connection_check is not None and not self._connection_check():
-                self._log._log.appendPlainText(tr("node_not_connected"))
+                self._log.append_line(tr("node_not_connected"))
                 return
             self._engine.run_online(data)
         else:
             self._engine.run_dry(data)
 
     def _on_engine_log(self, msg: str):
-        self._log._log.appendPlainText(msg)
+        self._log.append_line(msg)
 
     def _on_node_highlight(self, node_id: str, on: bool):
         for item in self._scene.items():
@@ -324,17 +323,16 @@ class NodeEditorWidget(QWidget):
 
     def _on_compile(self):
         r = self._compile_graph()
-        log = self._log._log
-        log.clear()
+        self._log.clear()
         if r.ok:
-            log.appendPlainText(tr("node_compile_pass"))
+            self._log.append_line(tr("node_compile_pass"))
         else:
-            log.appendPlainText(f"{tr('node_compile_fail')} ({len(r.errors)})")
+            self._log.append_line(f"{tr('node_compile_fail')} ({len(r.errors)})")
             for err in r.errors:
-                log.appendPlainText(f"  - {err}")
+                self._log.append_line(f"  - {err}")
             self._focus_error_node(r.error_node_ids)
         for w in r.warnings:
-            log.appendPlainText(f"  ⚠ {w}")
+            self._log.append_line(f"  ⚠ {w}")
 
     def _on_macro_call_requested(self, macro_id: str, name: str) -> None:
         view_center = self._view.mapToScene(self._view.viewport().rect().center())
@@ -585,7 +583,7 @@ class NodeEditorWidget(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
             self._current_path = path
-            self._log._log.appendPlainText(f"{tr('node_saved')} {path}")
+            self._log.append_line(f"{tr('node_saved')} {path}")
         except Exception as e:
             QMessageBox.critical(self, tr("node_save_failed"), str(e))
 
@@ -606,7 +604,7 @@ class NodeEditorWidget(QWidget):
             self._current_path = path
             name = os.path.splitext(os.path.basename(path))[0]
             self._project_name.setText(name)
-            self._log._log.appendPlainText(f"{tr('node_loaded')} {path}")
+            self._log.append_line(f"{tr('node_loaded')} {path}")
         except Exception as e:
             QMessageBox.critical(self, tr("node_load_failed"), str(e))
 

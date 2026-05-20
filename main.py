@@ -12,6 +12,10 @@ def _configure_opengl() -> None:
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
     QSurfaceFormat.setDefaultFormat(fmt)
 
+from core.logger import setup_logger
+
+setup_logger("codroid")
+
 from network.connection_manager import ConnectionManager
 from services.cri_service import CriService
 from services.robot_service import RobotService

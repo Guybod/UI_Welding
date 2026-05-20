@@ -1,5 +1,7 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPlainTextEdit
+
 from app.i18n import I18nManager, tr
+from app.ui_log import append_ui_log
 
 
 class ExecutionLogPanel(QWidget):
@@ -24,6 +26,12 @@ class ExecutionLogPanel(QWidget):
         layout.addWidget(self._log)
 
         I18nManager.instance().language_changed.connect(self._on_language_changed)
+
+    def clear(self) -> None:
+        self._log.clear()
+
+    def append_line(self, msg: str, *, source: str = "Node") -> str:
+        return append_ui_log(self._log, msg, source=source)
 
     def _on_language_changed(self, lang: str):
         self._title.setText(tr("node_log_title"))

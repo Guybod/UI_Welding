@@ -22,6 +22,13 @@ class RobotRealtimeState(QObject):
         self._is_moving: bool = False
         self._is_enabled: bool = False
         self._is_emergency: bool = False
+        self._robot_mode: int = -1
+        self._robot_state: int = -1
+        self._last_error: str = ""
+        self._status1: int = 0
+        self._status2: int = 0
+        self._cri_rt_mode: bool = False
+        self._cri_error_code: int = 0
 
     @classmethod
     def instance(cls):
@@ -43,6 +50,10 @@ class RobotRealtimeState(QObject):
         self._is_moving = frame.get("is_moving", False)
         self._is_enabled = frame.get("is_enabled", False)
         self._is_emergency = frame.get("is_emergency_stop", False)
+        self._status1 = int(frame.get("status1", 0))
+        self._status2 = int(frame.get("status2", 0))
+        self._cri_rt_mode = bool(self._status2 & 0x01)
+        self._cri_error_code = (self._status2 >> 8) & 0xFF
 
     def is_valid(self) -> bool:
         return self._valid
@@ -60,6 +71,39 @@ class RobotRealtimeState(QObject):
 
     def is_emergency_stop(self) -> bool:
         return self._is_emergency
+
+    def update_robot_status(self, db: dict) -> None:
+        """由 publish/RobotStatus 更新（模式/状态）。"""
+        if "mode" in db:
+            self._robot_mode = int(db.get("mode", -1))
+        if "state" in db:
+            self._robot_state = int(db.get("state", -1))
+
+    def set_last_error(self, text: str) -> None:
+        self._last_error = text or ""
+
+    def robot_mode(self) -> int:
+        return self._robot_mode
+
+    def robot_state(self) -> int:
+        return self._robot_state
+
+    def last_error(self) -> str:
+        return self._last_error
+
+    def cri_realtime_mode(self) -> bool:
+        """statusData2 低字节 bit0：是否处于 CRI 实时控制模式。"""
+        return self._cri_rt_mode
+
+    def cri_error_code(self) -> int:
+        """statusData2 高字节：CRI 实时控制错误码。"""
+        return self._cri_error_code
+
+    def status1(self) -> int:
+        return self._status1
+
+    def status2(self) -> int:
+        return self._status2
 
     def current_joint_rad(self) -> list[float]:
         return list(self._joint_rad)
