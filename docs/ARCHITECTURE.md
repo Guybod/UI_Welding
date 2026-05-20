@@ -1,7 +1,7 @@
 # Codroid 机器人控制终端 — 架构说明
 
-> 文档版本：2026-05（与当前源码同步）  
-> 机器人通信协议详见根目录 **`planAPI.md`**（唯一保留的 API 交接文档）。
+> 文档版本：2026-05-20（与当前 master 源码对齐）  
+> 机器人通信协议详见同目录 **[planAPI.md](planAPI.md)**。
 
 ---
 
@@ -41,7 +41,7 @@
 ```text
 UI/
 ├── main.py                 # 入口：OpenGL、日志、服务、bind_all、事件循环
-├── planAPI.md              # 机器人 TCP/UDP/工程 API（勿删）
+├── README.md               # 安装与使用（根目录唯一 Markdown）
 ├── requirements.txt
 ├── app/                    # Qt 壳层
 │   ├── bootstrap.py        # Login + MainWindow 堆叠
@@ -51,18 +51,25 @@ UI/
 │   ├── signal_binder.py    # 全部 UI↔网络 信号集中绑定
 │   ├── service_provider.py # cm + cri 注入页面
 │   ├── i18n.py             # 中英双语
+│   ├── ui_log.py           # 文件日志 → QPlainTextEdit 桥接
+│   ├── styles/             # QSS 主题（theme*.qss）
 │   ├── pages/              # 功能页
 │   └── widgets/            # 顶栏、命令栏、抽屉、节点编辑器等
 ├── core/                   # 无 Qt 依赖的类型、日志、单位、连接配置
 ├── network/                # TCP 适配器、ConnectionManager、UDP CRI、CRI 发包
 ├── services/               # 业务服务（焊接/绘图/执行/CRI/上传 SDK）
 ├── pipeline/               # 离线轨迹：栅格→路径→映射→工艺/CRI 导出
-├── config/                 # 默认参数、字体预设、robot_models.yaml
-├── models/                 # 首页 3D 预览用 GLB（根目录，非 assets）
-├── view3d/                 # GLB 加载与 OpenGL 预览
-├── styles/                 # QSS 主题
+├── config/                 # 默认参数、robot_models.yaml、weld_font_presets
+│   └── stroke_fonts/       # Hershey 预设（hershey_presets.yaml）
+├── models/                 # 首页 3D 预览用 GLB（根目录）
+├── view3d/                 # GLB 加载与 OpenGL 预览（shaders/）
 ├── third_party/            # 大数据（gitignore）：makemeahanzi 等
-├── docs/                   # NOTICE、历史 HANDOFF
+├── projects/               # 节点图 JSON（用户保存，部分样例入库）
+├── pic/                    # README 用界面截图
+├── docs/                   # 项目文档（除 README 外）
+│   ├── ARCHITECTURE.md     # 本文件
+│   ├── planAPI.md          # 机器人 TCP/UDP/工程 API
+│   └── NOTICE.md           # 第三方许可
 ├── tools/                  # mock_robot_server 等开发工具
 └── output/                 # 运行生成（预览、轨迹、Lua，通常不入库）
 ```
@@ -73,7 +80,7 @@ UI/
 
 ```text
 main()
-  ├─ setup_logger("codroid")          → logs/YYYYMMDD.txt
+  ├─ setup_logger("codroid")          → log/YYYYMMDD.txt（>1MB 滚动）
   ├─ create_app_stack()                 → QStackedWidget: LoginPage | MainWindow
   ├─ ConnectionManager()                UI 线程，管理 TcpThread + 重连
   ├─ CriService(cm)                     UDP 绑定 + Start/StopDataPush
@@ -141,7 +148,7 @@ main()
 ```
 
 - **协议细节**：见 `planAPI.md`（`ty` 字段、单位 mm+deg、错误码等）。  
-- **上传**：不单独顶栏页；`services/robot_project_sdk.py` 封装 REST + WebSocket，由 **上传页** 调用。
+- **上传**：顶栏 **上传页** 调用 `services/robot_project_sdk.py`（HTTP :9198 + WebSocket :9000）；原独立 HTTP/WS 调试页已删除。
 
 ---
 
@@ -207,18 +214,18 @@ WeldingPage._on_generate()
       → OfflinePipelineRunner.run(mode=contour|skeleton, ...)
            Stage 0   字高 → font_size_px
            Stage 1-2 栅格/轮廓或骨架提取
-           Stage 3-5 clean → refine → schedule（多行 multiline_layout）
-           5.5       layout_inset（左/上边距）
-           Stage 6   PoseMapper + 溢出检测
+           Stage 3-5 clean → refine → schedule（多行按行组 / 字序）
+           （schedule 后）layout_inset：margin_left_mm / margin_top_mm 平移
+           Stage 6   PoseMapper + 工作平面溢出检测
            Stage 7   WeldingProcessPlanner → ProcessSegment
-           Stage 8   points.txt / job.json / LuaExporter / preview PNG
+           Stage 8   points.txt / job.json / LuaExporter（中文多行 -- 注释）/ preview PNG
 ```
 
 ### 8.2 正式能力
 
 - **contour**：TTF 轮廓，支持 `\n` 多行、`char_spacing_mm` / `line_spacing_mm`。  
-- **latin_stroke**：Hershey 单线（焊接骨架数字字母）。  
-- **hanzi_stroke**：MakeMeAHanzi `medians`（`render_hanzi_text_to_strokes` → clean/refine/schedule → `WeldingProcessPlanner` → Lua），支持多行 `\n`。  
+- **latin_stroke**：`pipeline/raster/hershey_font_renderer.py`（Hershey-Fonts），焊接/绘图共用。  
+- **hanzi_stroke**：`pipeline/hanzi/hanzi_stroke_renderer.py`（MakeMeAHanzi `medians`）→ clean/refine/schedule → `WeldingProcessPlanner` → Lua；支持多行 `\n`。  
 - 三点标定：**LT / RT / LB**（禁止用 RB 作输入）；Z 用 `z_work` / `z_safe`，**无 y_flip**。  
 - 验收预览：**`preview_execution.png`**（纸面 UV，与 points/Lua 同源）。
 
@@ -228,9 +235,12 @@ WeldingPage._on_generate()
 |------|------|
 | `app/pages/welding_page.py` | UI、QSettings、生成、moveTo 三点、HoldButton 送气/送丝 |
 | `services/welding_service_v2.py` | Qt Signal 包装 OfflinePipelineRunner |
-| `pipeline/offline_runner.py` | 焊接离线主链 |
-| `pipeline/process/weld_process.py` | 引弧/焊/收弧/空行程段 |
-| `pipeline/output/lua_exporter.py` | `movL({cp={...}},{...})` + arcOn/Off |
+| `pipeline/offline_runner.py` | 焊接离线主链（text_source 分流） |
+| `pipeline/text_pipeline.py` | text_source 常量、迁移、summary 字段 |
+| `pipeline/raster/hershey_font_renderer.py` | Hershey 拉丁骨架笔画 |
+| `pipeline/hanzi/*` | graphics.txt 加载、汉字 medians 渲染与校验 |
+| `pipeline/process/weld_process.py` | 引弧/焊/收弧/空行程段（段 metadata 供 Lua 注释） |
+| `pipeline/output/lua_exporter.py` | `movL` + arcOn/Off；中文段注释与多行文件头 |
 | `config/welding_defaults.py` | 默认工艺与布局常量 |
 
 ---
@@ -324,7 +334,7 @@ WritingPage → WritingExecutionService
 
 ## 13. 日志
 
-- `core/logger.py`：文件 `logs/YYYYMMDD.txt`，>1MB 滚动；终端 WARNING+。  
+- `core/logger.py`：文件 `log/YYYYMMDD.txt`，>1MB 滚动；终端 WARNING+。  
 - UI 日志：`app/ui_log.py` 桥接到 `QPlainTextEdit`。  
 - CRI 执行：`cri_execution_log.py` 结构化中文轨迹诊断。
 
@@ -371,9 +381,8 @@ WritingPage → WritingExecutionService
 |----|------|
 | `program_editor` 顶栏页 | 占位 UI |
 | 焊接 Beta 排版（对齐/方向/流向） | 仅 UI，未进 pipeline |
-| 焊接 Beta：对齐/方向/流向 | 仅 UI，未进 pipeline |
 | TCP :9002 远程脚本独立页 | 未做 |
-| plan2 节点阶段 13–14（自定义节点完善、执行恢复增强） | 可按需继续 |
+| 节点执行恢复 / 自定义节点增强 | 可按需继续 |
 
 ---
 
@@ -381,10 +390,9 @@ WritingPage → WritingExecutionService
 
 | 文档 | 内容 |
 |------|------|
-| `planAPI.md` | 机器人接口全集 |
-| `README.md` | 安装、运行、功能概览 |
-| `docs/NOTICE.md` | Hershey 字体许可 |
-| `docs/HANDOFF_PHASE9.md` | 焊接 Phase 9 历史验收（部分测试脚本已删） |
+| [planAPI.md](planAPI.md) | 机器人接口全集 |
+| [../README.md](../README.md) | 安装、运行、功能概览 |
+| [NOTICE.md](NOTICE.md) | Hershey 字体许可 |
 | `third_party/makemeahanzi/README.md` | graphics.txt 放置说明 |
 
 ---
