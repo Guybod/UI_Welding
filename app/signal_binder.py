@@ -9,17 +9,35 @@ from PySide6.QtWidgets import QMessageBox
 
 from core.logger import log
 from core.robot_model_config import get_model_config
-from core.unit_converter import deg_list_to_rad, rad_list_to_deg, m_to_mm, rad_to_deg
+from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
+from app.i18n import tr
 from services.cri_service import CriService
-from services.robot_realtime_state import RobotRealtimeState
+from services.robot_realtime_state import PoseSource, RobotRealtimeState
 
 
 def _cri_pose_active(state: dict) -> bool:
-    """CRI 已启用且收到过有效关节帧时，位姿以 CRI 为准。"""
+    """CRI 推送已开且 UDP 为位姿权威。"""
     cri_svc = state.get("cri_svc")
     if not isinstance(cri_svc, CriService) or not cri_svc.is_enabled:
         return False
-    return RobotRealtimeState.instance().is_valid()
+    return RobotRealtimeState.instance().is_cri_primary()
+
+
+def _pose_source_bar_text(rt: RobotRealtimeState) -> str:
+    if not rt.has_pose():
+        return ""
+    if rt.is_cri_primary():
+        return tr("status_pose_line_cri")
+    if rt.pose_source() == PoseSource.TCP_SUBSCRIBE:
+        return tr("status_pose_line_subscribe")
+    return ""
+
+
+def _refresh_pose_source_ui(main_win, state: dict | None = None) -> None:
+    rt = RobotRealtimeState.instance()
+    main_win._status_bar.set_pose_source(_pose_source_bar_text(rt))
+    if state is not None:
+        main_win.update_home_cri(_cri_pose_active(state))
 
 
 def _bind_login_flow(cm, login, main_win, stack, state):
@@ -35,9 +53,13 @@ def _bind_login_flow(cm, login, main_win, stack, state):
         stop = state.get("stop_all_motion")
         if stop:
             stop()
+        cri_svc = state.get("cri_svc")
+        if isinstance(cri_svc, CriService):
+            cri_svc.stop()
         main_win.reset_to_home(reason="logout")
         cm.disconnect()
         main_win._status_bar.set_connection_status("未连接")
+        main_win._status_bar.set_pose_source("")
         main_win.update_home_connection(False)
         main_win.update_home_cri(False)
         main_win._drawer.set_jog_enabled(False)
@@ -67,9 +89,13 @@ def _bind_connection_state(cm, login, main_win, stack, state):
             stop = state.get("stop_all_motion")
             if stop:
                 stop()
+            cri_svc = state.get("cri_svc")
+            if isinstance(cri_svc, CriService):
+                cri_svc.disarm_watchdog()
             main_win._command_bar.set_all_enabled(False)
             main_win._drawer.set_jog_enabled(False)
             main_win.update_home_cri(False)
+            main_win._status_bar.set_pose_source("")
 
     def on_connection_failed(error_msg: str):
         QMessageBox.critical(login, "连接失败",
@@ -83,47 +109,54 @@ def _bind_connection_state(cm, login, main_win, stack, state):
 
 
 def _bind_subscriptions(cm, cri_svc, main_win, state):
-    """连接成功后：toAuto→toRemote→订阅 5 个 topic→默认速度 70%"""
+    """TCP 连接成功即订阅；toAuto/toRemote 仅切模式。CRI 正常时不使用订阅位姿。"""
     _last_robot_type = [""]
     _last_robot_mode = [None]
+    _subscribed = [False]
+
+    def _subscribe_all():
+        if _subscribed[0]:
+            return
+        _subscribed[0] = True
+        subs = [
+            ("publish/RobotStatus", _on_robot_status),
+            ("publish/RobotPosture", _on_robot_posture),
+            ("publish/ProjectState", _on_project_state),
+            ("publish/Error", _on_error, 500),
+            ("publish/Log", _on_log),
+        ]
+        log.info(
+            "[Login] subscriptions on connect: %s",
+            ", ".join(item[0] for item in subs),
+        )
+        for i, item in enumerate(subs):
+            topic, cb = item[0], item[1]
+            tc = item[2] if len(item) > 2 else 0
+            QTimer.singleShot(
+                i * 100,
+                lambda t=topic, c=cb, ms=tc: cm.send_subscribe(t, c, interval_ms=ms),
+            )
+
+    def _after_to_auto(_db):
+        log.info("[Login] Robot/toRemote")
+        cm.send_call(
+            "Robot/toRemote", {},
+            on_response=lambda d2: None,
+            on_error=lambda e2: log.info("[Login] Robot/toRemote failed: %s", e2),
+        )
 
     def on_connected(sub_state: str):
+        if sub_state in ("disconnected", "reconnecting", "connecting"):
+            _subscribed[0] = False
         if sub_state != "connected":
             return
 
-        def _do_subscribe():
-            subs = [
-                ("publish/RobotStatus", _on_robot_status),
-                ("publish/RobotPosture", _on_robot_posture),
-                ("publish/ProjectState", _on_project_state),
-                ("publish/Error", _on_error, 500),
-                ("publish/Log", _on_log),
-            ]
-            log.info(
-                "[Login] subscriptions: %s",
-                ", ".join(item[0] for item in subs),
-            )
-            for i, item in enumerate(subs):
-                topic, cb = item[0], item[1]
-                tc = item[2] if len(item) > 2 else 0
-                QTimer.singleShot(
-                    i * 100,
-                    lambda t=topic, c=cb, ms=tc: cm.send_subscribe(t, c, interval_ms=ms),
-                )
-
-        def _do_remote():
-            log.info("[Login] Robot/toRemote")
-            cm.send_call(
-                "Robot/toRemote", {},
-                on_response=lambda db: QTimer.singleShot(100, _do_subscribe),
-                on_error=lambda e: QTimer.singleShot(100, _do_subscribe),
-            )
-
+        _subscribe_all()
         log.info("[Login] Robot/toAuto")
         cm.send_call(
             "Robot/toAuto", {},
-            on_response=lambda db: QTimer.singleShot(100, _do_remote),
-            on_error=lambda e: QTimer.singleShot(100, _do_remote),
+            on_response=_after_to_auto,
+            on_error=lambda e: log.info("[Login] Robot/toAuto failed: %s", e),
         )
 
         # 连接后下发默认速度 70%
@@ -184,27 +217,22 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
         main_win._command_bar.set_project_paused(state_num == 3)
 
     def _on_robot_posture(db: dict):
-        """fallback：仅 CRI 未就绪时更新 3D；CRI 在线时只刷新标签，避免与笛卡尔 TCP 不一致。"""
-        joint = db.get("joint", [])
-        cri_ok = _cri_pose_active(state)
-        if joint:
+        """CRI 解析正常时不驱动显示；始终缓存订阅供「更新」按钮使用。"""
+        rt = RobotRealtimeState.instance()
+        rt.remember_posture(db)
+        if _cri_pose_active(state):
+            return
+        if not rt.update_from_robot_posture(db):
+            return
+        if rt.has_pose():
             main_win.update_joint_display(
-                joint,
-                joint_rad=deg_list_to_rad(joint) if not cri_ok else None,
-                drive_model=not cri_ok,
+                rt.current_joints_deg(),
+                joint_rad=rt.current_joint_rad(),
+                drive_model=True,
             )
-        end = db.get("end", {})
-        if end and not cri_ok:
-            main_win.update_tcp_display(
-                end.get("x", 0),
-                end.get("y", 0),
-                end.get("z", 0),
-                end.get("a", 0),
-                end.get("b", 0),
-                end.get("c", 0),
-            )
-        if not cri_ok:
-            main_win.update_home_cri(False)
+            x, y, z, a, b, c = rt.current_tcp_pose_mm_deg()
+            main_win.update_tcp_display(x, y, z, a, b, c)
+        _refresh_pose_source_ui(main_win, state)
 
     _error_dialog_data = [None]
 
@@ -395,9 +423,22 @@ def _bind_cri(cri_svc, main_win, state):
     """CRI 实时数据 → 抽屉 + RobotRealtimeState（3D 模型仅由此关节角驱动）"""
     def _on_cri_stopped():
         RobotRealtimeState.instance().invalidate()
+        main_win._status_bar.set_pose_source("")
         main_win.update_home_cri(False)
 
+    def _on_cri_udp_stale():
+        RobotRealtimeState.instance().invalidate_cri_primary(
+            reason="10 consecutive incomplete/missing CRI frames",
+        )
+        _refresh_pose_source_ui(main_win, state)
+
+    def _on_bind_error(msg: str):
+        RobotRealtimeState.instance().invalidate_cri_primary(reason=f"UDP bind: {msg}")
+        _refresh_pose_source_ui(main_win, state)
+
     cri_svc.cri_stopped.connect(_on_cri_stopped)
+    cri_svc.cri_udp_stale.connect(_on_cri_udp_stale)
+    cri_svc.bind_error.connect(_on_bind_error)
 
     def _on_cri_frame(frame: dict):
         RobotRealtimeState.instance().update_from_cri_frame(frame)
@@ -419,7 +460,7 @@ def _bind_cri(cri_svc, main_win, state):
             rad_to_deg(frame.get("tcp_ry", 0)),
             rad_to_deg(frame.get("tcp_rz", 0)),
         )
-        main_win.update_home_cri(_cri_pose_active(state))
+        _refresh_pose_source_ui(main_win, state)
         main_win.update_home_runtime(
             enabled=rt.is_enabled(),
             moving=rt.is_moving(),
@@ -427,11 +468,6 @@ def _bind_cri(cri_svc, main_win, state):
         )
 
     cri_svc.cri_frame_received.connect(_on_cri_frame)
-
-    def _on_cri_started():
-        main_win.update_home_cri(True)
-
-    cri_svc.cri_started.connect(_on_cri_started)
 
     # 连接后 3 秒自动启动 CRI
     def _auto_start_cri(sub_state: str):

@@ -278,7 +278,7 @@ class HomePage(BasePage):
         self._glb_hint.setText(self._preview.loaded_glb_name())
         self._preview.refresh()
         rt = RobotRealtimeState.instance()
-        if rt.is_valid():
+        if rt.has_pose():
             self.update_cri_status(True)
             self.update_runtime_flags(
                 enabled=rt.is_enabled(),

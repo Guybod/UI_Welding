@@ -666,8 +666,8 @@ class WritingPage(BasePage):
             return
         from services.robot_realtime_state import RobotRealtimeState
 
-        if not RobotRealtimeState.instance().is_valid():
-            self._append_log("CRI 最小测试需要实时位姿：请确认已连接且 CRI 数据推送已启动")
+        if not RobotRealtimeState.instance().is_cri_primary():
+            self._append_log("CRI 最小测试需要 CRI UDP 实时位姿：请确认数据推送正常")
             return
         self._append_log("CRI 最小测试(Z±10mm, 先移至起点, 3s)...")
         self._update_action_buttons()
@@ -692,13 +692,25 @@ class WritingPage(BasePage):
         self._update_action_buttons()
 
     def _update_ws_from_current(self, row: int):
-        from services.robot_realtime_state import RobotRealtimeState
+        from services.robot_realtime_state import PoseSource, RobotRealtimeState
+
+        if not self._is_connected():
+            self._append_log(tr("draw_need_connect"))
+            return
 
         state = RobotRealtimeState.instance()
-        if not state.is_valid():
-            self._append_log(tr("weld_log_cri_no_data"))
+        read = state.read_pose_for_workspace_update()
+        if read is None:
+            self._append_log(tr("weld_log_no_pose_wait_subscribe"))
             return
-        x, y, z, rx, ry, rz = state.current_tcp_pose_mm_deg()
+        pose, source = read
+        if source != PoseSource.CRI_UDP:
+            ts = state.last_switch_to_subscribe_at()
+            if ts:
+                self._append_log(f"{tr('weld_log_cri_pose_subscribe')} ({ts})")
+            else:
+                self._append_log(tr("weld_log_cri_pose_subscribe"))
+        x, y, z, rx, ry, rz = pose
         for j, v in enumerate((x, y, z, rx, ry, rz)):
             self._ws_spins[row][j].setValue(round(v, 3))
         self._append_log(tr("weld_log_ws_updated").format(

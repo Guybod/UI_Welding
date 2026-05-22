@@ -9,6 +9,7 @@ class UdpCriAdapter(QObject):
     """UDP 9030 CRI 实时数据接收 — 在 UdpThread 内创建和使用"""
 
     datagram_received = Signal(object)   # CriFrame dict
+    frame_incomplete = Signal(str)       # 非 308B 或解析失败
     bind_error = Signal(str)
     dropped_count_changed = Signal(int)
 
@@ -51,6 +52,7 @@ class UdpCriAdapter(QObject):
             if len(data) != CriParser.EXPECTED_SIZE:
                 self._dropped += 1
                 self.dropped_count_changed.emit(self._dropped)
+                self.frame_incomplete.emit(f"size={len(data)}")
                 continue
 
             try:
@@ -59,6 +61,7 @@ class UdpCriAdapter(QObject):
             except Exception as e:
                 self._dropped += 1
                 self.dropped_count_changed.emit(self._dropped)
+                self.frame_incomplete.emit(str(e))
                 log.debug(f"CRI parse error: {e}")
 
     @Slot()

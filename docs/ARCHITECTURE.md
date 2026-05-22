@@ -200,7 +200,10 @@ main()
 - 命令栏使能/模式/仿真/工程/停止运动；  
 - 抽屉 `jog_pressed/released`、`moveto_pressed/released`、速度滑条；  
 - CRI 帧 → `RobotRealtimeState` + 抽屉/首页位姿；  
+- **`publish/RobotPosture` 兜底**：CRI 未就绪时仅驱动 3D/标签（见 [plan.md §2](plan.md#2-当前进行中criudp-预警与订阅位姿兜底)）；  
 - 重连对话框。
+
+**进行中（未编码）**：CRI UDP 超时预警、订阅写入 `RobotRealtimeState`、`has_pose` / `is_cri_primary` 分级 — 详见 **[plan.md](plan.md)**。
 
 ---
 
@@ -379,6 +382,7 @@ WritingPage → WritingExecutionService
 
 | 项 | 状态 |
 |----|------|
+| **CRI/UDP 预警 + 订阅位姿兜底** | **规划中**，见 [plan.md §2](plan.md#2-当前进行中criudp-预警与订阅位姿兜底) |
 | `program_editor` 顶栏页 | 占位 UI |
 | 焊接 Beta 排版（对齐/方向/流向） | 仅 UI，未进 pipeline |
 | TCP :9002 远程脚本独立页 | 未做 |
@@ -390,6 +394,7 @@ WritingPage → WritingExecutionService
 
 | 文档 | 内容 |
 |------|------|
+| [plan.md](plan.md) | 功能规划、分 part 验收、进行中特性 |
 | [planAPI.md](planAPI.md) | 机器人接口全集 |
 | [../README.md](../README.md) | 安装、运行、功能概览 |
 | [NOTICE.md](NOTICE.md) | Hershey 字体许可 |

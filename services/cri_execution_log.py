@@ -375,8 +375,8 @@ def log_tcp_vs_trajectory_start(
 ) -> bool:
     """执行前对比 CRI 当前 TCP 与轨迹首点，返回是否基本一致。"""
     rt = RobotRealtimeState.instance()
-    if not rt.is_valid():
-        emit(f"{format_ts_ms()} 警告: 无 CRI 数据，无法核对当前 TCP 与轨迹首点")
+    if not rt.is_cri_primary():
+        emit(f"{format_ts_ms()} 警告: 无 CRI UDP 数据，无法核对当前 TCP 与轨迹首点")
         return False
     cur = rt.current_tcp_pose_mm_deg()
     pos_d = math.sqrt(
@@ -449,7 +449,7 @@ class _UdpPoseProbe:
 
     def tick(self, emit: Callable[[str], None], elapsed_s: float) -> None:
         rt = RobotRealtimeState.instance()
-        if not rt.is_valid():
+        if not rt.is_cri_primary():
             emit(f"{format_ts_ms()} [{elapsed_s:.1f}s] CRI状态无效(无UDP推送数据)")
             return
 

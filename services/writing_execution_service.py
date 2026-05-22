@@ -107,8 +107,8 @@ class _WritingExecWorker(QObject):
     def _run_minimal_test(self):
         """最小 Z±10mm 诊断：读当前 TCP → 生成轨迹 → 移至起点 → CRI 执行。"""
         rt = RobotRealtimeState.instance()
-        if not rt.is_valid():
-            raise RuntimeError("无 CRI 实时数据，无法读取当前 TCP 位姿")
+        if not rt.is_cri_primary():
+            raise RuntimeError("无 CRI UDP 实时数据，无法读取当前 TCP 位姿")
         start_pose = list(rt.current_tcp_pose_mm_deg())
         out_dir = Path("output/cri_minimal_test")
         traj_path = out_dir / TRAJECTORY_FILENAME
@@ -261,7 +261,7 @@ class _WritingExecWorker(QObject):
 
     def _check_at_start(self, target: List[float], *, log_mismatch: bool = False) -> bool:
         state = RobotRealtimeState.instance()
-        if not state.is_valid():
+        if not state.is_cri_primary():
             return False
         cur = state.current_tcp_pose_mm_deg()
         pos_d, orient_d = self._pose_distance(cur, target)
@@ -288,7 +288,7 @@ class _WritingExecWorker(QObject):
                 raise RuntimeError("cancelled")
 
             state = RobotRealtimeState.instance()
-            if not state.is_valid():
+            if not state.is_cri_primary():
                 time.sleep(interval)
                 continue
 
@@ -314,14 +314,14 @@ class _WritingExecWorker(QObject):
             time.sleep(interval)
 
         state = RobotRealtimeState.instance()
-        if state.is_valid():
+        if state.is_cri_primary():
             cur = state.current_tcp_pose_mm_deg()
             pos_d, orient_d = self._pose_distance(cur, target)
             raise TimeoutError(
                 f"start point timeout: dist={pos_d:.2f}mm orient={orient_d:.2f}° "
                 f"moving={state.is_moving()} seen_moving={seen_moving}"
             )
-        raise TimeoutError("start point timeout: no CRI data")
+        raise TimeoutError("start point timeout: no CRI UDP data")
 
     def _send_movL_sync(self, cp: list[float]):
         done = {"ok": False, "err": None}

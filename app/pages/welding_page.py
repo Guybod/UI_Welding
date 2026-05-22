@@ -1376,13 +1376,27 @@ class WeldingPage(BasePage):
             self._append_log(tr("weld_log_preview_first"))
 
     def _update_ws_from_current(self, row: int):
-        """从 RobotRealtimeState 读取当前 TCP 位姿，填入工作空间第 row 行。"""
-        from services.robot_realtime_state import RobotRealtimeState
-        state = RobotRealtimeState.instance()
-        if not state.is_valid():
-            self._append_log(tr("weld_log_cri_no_data"))
+        """从 CRI 或订阅位姿填入工作空间标定点（无 CRI 时可用订阅）。"""
+        from services.robot_realtime_state import PoseSource, RobotRealtimeState
+
+        sp = self.sp
+        if sp is None or sp.cm is None or not sp.cm.is_connected:
+            self._append_log(tr("weld_log_not_connected"))
             return
-        x, y, z, rx, ry, rz = state.current_tcp_pose_mm_deg()
+
+        state = RobotRealtimeState.instance()
+        read = state.read_pose_for_workspace_update()
+        if read is None:
+            self._append_log(tr("weld_log_no_pose_wait_subscribe"))
+            return
+        pose, source = read
+        if source != PoseSource.CRI_UDP:
+            ts = state.last_switch_to_subscribe_at()
+            if ts:
+                self._append_log(f"{tr('weld_log_cri_pose_subscribe')} ({ts})")
+            else:
+                self._append_log(tr("weld_log_cri_pose_subscribe"))
+        x, y, z, rx, ry, rz = pose
         self._ws_spins[row][0].setValue(round(x, 3))
         self._ws_spins[row][1].setValue(round(y, 3))
         self._ws_spins[row][2].setValue(round(z, 3))

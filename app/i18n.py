@@ -82,6 +82,14 @@ _STRINGS = {
     "status_disconnected": {"zh": "未连接",     "en": "Disconnected"},
     "status_connected":    {"zh": "已连接",     "en": "Connected"},
     "status_reconnecting": {"zh": "重连中...",  "en": "Reconnecting..."},
+    "status_pose_line_cri": {
+        "zh": "位姿: CRI",
+        "en": "Pose: CRI",
+    },
+    "status_pose_line_subscribe": {
+        "zh": "位姿: 订阅",
+        "en": "Pose: Subscribe",
+    },
 
     # 抽屉
     "drawer_motion":        {"zh": "运动",       "en": "Motion"},
@@ -442,8 +450,8 @@ _STRINGS = {
     "weld_ws_moveto":   {"zh": "移动至",     "en": "Move To"},
     "weld_ws_copy":     {"zh": "复制",       "en": "Copy"},
     "weld_ws_update_tip": {
-        "zh": "更新为当前 TCP 位姿",
-        "en": "Set to current TCP pose",
+        "zh": "更新为当前 TCP 位姿（优先 CRI，无 CRI 时用订阅）",
+        "en": "Set to current TCP (CRI first, else subscription)",
     },
     "weld_ws_moveto_tip": {
         "zh": "按住移动到标定点，松开停止",
@@ -573,6 +581,14 @@ _STRINGS = {
     "weld_log_cri_no_data": {
         "zh": "警告: CRI 无数据，无法获取当前位置",
         "en": "Warning: no CRI data; cannot read current pose",
+    },
+    "weld_log_cri_pose_subscribe": {
+        "zh": "提示: 当前位置来自订阅 publish/RobotPosture",
+        "en": "Note: pose from publish/RobotPosture subscription",
+    },
+    "weld_log_no_pose_wait_subscribe": {
+        "zh": "尚无位姿数据，请确认已连接并等待 publish/RobotPosture 推送",
+        "en": "No pose yet; connect and wait for publish/RobotPosture",
     },
     "weld_log_moveto_stop": {
         "zh": "运动到{corner} 停止{reason}",
