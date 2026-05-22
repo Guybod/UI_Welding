@@ -983,6 +983,10 @@ _STRINGS = {
     "draw_busy":        {"zh": "任务进行中…", "en": "Task in progress…"},
     "draw_exec_prepare_done": {"zh": "已移至轨迹起点", "en": "At trajectory start"},
     "draw_exec_done":   {"zh": "CRI 书写完成", "en": "CRI writing finished"},
+    "draw_exec_done_need_prepare": {
+        "zh": "CRI 书写完成，请重新「移至起点」后再执行",
+        "en": "CRI writing finished — use Move to Start before running again",
+    },
     "draw_exec_failed": {"zh": "执行失败: {err}", "en": "Execution failed: {err}"},
     "draw_restore_ws":  {"zh": "恢复默认标定", "en": "Restore Default Calibration"},
     "draw_ws_update":   {"zh": "更新",       "en": "Update"},

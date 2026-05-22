@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, Qt, QSize
 from app.i18n import I18nManager, tr
+from app.robot_mode import ROBOT_MODE_UNKNOWN, normalize_robot_mode
 
 
 class _ToggleSwitch(QPushButton):
@@ -66,7 +67,7 @@ class _ThreeWaySwitch(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(QSize(180, 34))
-        self._current = 1  # default auto
+        self._current = ROBOT_MODE_UNKNOWN  # 仅由 RobotStatus 更新显示
         self.setCursor(Qt.PointingHandCursor)
 
     def paintEvent(self, event):
@@ -85,10 +86,11 @@ class _ThreeWaySwitch(QWidget):
         p.setBrush(QColor("#2a2a3e"))
         p.drawRect(r)
 
-        # active segment
-        px = self._current * w
-        p.setBrush(QColor("#e94560"))
-        p.drawRect(int(px), 0, int(w), r.height())
+        # active segment（未知时不高亮任何挡位）
+        if 0 <= self._current <= 2:
+            px = self._current * w
+            p.setBrush(QColor("#e94560"))
+            p.drawRect(int(px), 0, int(w), r.height())
 
         # text
         p.setPen(QColor("white"))
@@ -107,10 +109,10 @@ class _ThreeWaySwitch(QWidget):
         w = self.width() / 3
         idx = int(event.position().x() // w)
         idx = max(0, min(2, idx))
-        if idx != self._current:
-            self._current = idx
-            self.mode_changed.emit(idx)
-            self.update()
+        # 仅发送切换请求；高亮由 publish/RobotStatus 回调 set_mode 更新
+        if self._current >= 0 and idx == self._current:
+            return
+        self.mode_changed.emit(idx)
 
 
 class ErrorDialog(QDialog):
@@ -286,7 +288,13 @@ class GlobalCommandBar(QWidget):
         self._btn_enable.set_checked_silent(enabled)
 
     def set_mode(self, mode: int):
-        self._mode_switch._current = mode
+        """由 publish/RobotStatus 驱动；无效值视为未知。"""
+        self._mode_switch._current = normalize_robot_mode(mode)
+        self._mode_switch.update()
+
+    def clear_mode(self):
+        """断线后清除挡位显示，避免沿用上次连接的模式。"""
+        self._mode_switch._current = ROBOT_MODE_UNKNOWN
         self._mode_switch.update()
 
     def set_simulation(self, sim: bool):

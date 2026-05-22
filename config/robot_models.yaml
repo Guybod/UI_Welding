@@ -6,7 +6,7 @@ robots:
     # GLB 文件放在仓库根目录 models/，由 view3d/model_resolver.py 加载
     glb_file: "20kg-6axis-model-v2.glb"
     joint_axes: [z, y, y, y, z, y]
-    joint_signs: [1, 1, 1, -1, -1, 1]
+    joint_signs: [1, 1, 1, 1, 1, 1]
     joint_order: [J1, J2, J3, J4, J5, J6]
     raw_joint_unit: "rad"
     raw_tcp_position_unit: "m"
@@ -24,6 +24,8 @@ robots:
     joint_count: 6
     model_type: "simple_chain"
     glb_file: "10kg-6axis-model-v2.glb"
+    joint_axes: [z, y, y, y, z, y]
+    joint_signs: [1, 1, 1, -1, -1, 1]
     joint_order: [J1, J2, J3, J4, J5, J6]
     raw_joint_unit: "rad"
     raw_tcp_position_unit: "m"

@@ -77,7 +77,7 @@ class RobotModelGLWidget(QOpenGLWidget):
         self._glb_name: str = ""
         self._model: ArticulatedModel | None = None
         self._joint_axes: list[str] = ["z", "y", "y", "y", "z", "y"]
-        self._joint_signs: list[float] = [1.0, 1.0, 1.0, -1.0, -1.0, 1.0]
+        self._joint_signs: list[float] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         self._joint_rad: list[float] = [0.0] * 6
         self._gpu_parts: list[_GpuPart] = []
         self._program = None

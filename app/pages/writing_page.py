@@ -353,6 +353,7 @@ class WritingPage(BasePage):
 
         self._btn_execute = QPushButton(tr("draw_execute_btn"))
         self._btn_execute.setMinimumHeight(36)
+        self._btn_execute.setToolTip(tr("draw_need_at_start"))
         self._btn_execute.clicked.connect(self._on_execute)
         right_layout.addWidget(self._btn_execute)
 
@@ -443,8 +444,10 @@ class WritingPage(BasePage):
         else:
             self._btn_generate.setEnabled(not busy)
         self._btn_prepare.setEnabled(conn and has_traj and not busy)
-        self._btn_execute.setEnabled(
-            conn and has_traj and self._at_start_ready and not busy
+        can_execute = conn and has_traj and self._at_start_ready and not busy
+        self._btn_execute.setEnabled(can_execute)
+        self._btn_execute.setToolTip(
+            "" if can_execute or not has_traj else tr("draw_need_at_start")
         )
         self._btn_stop.setEnabled(busy_exec or busy_gen)
         if self._is_image_mode():
@@ -686,9 +689,13 @@ class WritingPage(BasePage):
             self._at_start_ready = True
             self._append_log(tr("draw_exec_prepare_done"))
         elif task == "execute":
+            self._at_start_ready = False
             self._append_log(tr("draw_exec_done"))
+            self._append_log(tr("draw_exec_done_need_prepare"))
         elif task == "minimal_test":
+            self._at_start_ready = False
             self._append_log("CRI 最小测试(Z±10mm)完成")
+            self._append_log(tr("draw_exec_done_need_prepare"))
         self._update_action_buttons()
 
     def _update_ws_from_current(self, row: int):

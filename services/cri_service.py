@@ -9,7 +9,8 @@ from network.connection_manager import ConnectionManager
 
 # 与 StartDataPush duration=2ms 对齐；连续 N 次无完整帧则切换订阅
 _CRI_FRAME_TICK_MS = 2
-_CRI_MISS_FRAMES_THRESHOLD = 10
+_CRI_MISS_FRAMES_THRESHOLD = 50
+_CRI_RECOVERY_FRAMES = 10  # 从 stale 恢复须连续 10 帧完整 CRI，避免偶发 1 帧导致反复切换
 _CRI_STARTUP_GRACE_S = 0.8
 
 
@@ -38,6 +39,7 @@ class CriService(QObject):
         self._config = None
         self._enabled = False
         self._miss_streak = 0
+        self._recovery_streak = 0
         self._stale_notified = False
         self._grace_until_mono = 0.0
         self._got_frame_since_tick = False
@@ -52,12 +54,14 @@ class CriService(QObject):
     def disarm_watchdog(self) -> None:
         self._frame_tick.stop()
         self._miss_streak = 0
+        self._recovery_streak = 0
         self._stale_notified = False
         self._grace_until_mono = 0.0
         self._got_frame_since_tick = False
 
     def _arm_watchdog(self) -> None:
         self._miss_streak = 0
+        self._recovery_streak = 0
         self._stale_notified = False
         self._got_frame_since_tick = False
         self._grace_until_mono = time.monotonic() + _CRI_STARTUP_GRACE_S
@@ -78,6 +82,7 @@ class CriService(QObject):
     def _record_miss(self, detail: str) -> None:
         if not self._enabled or time.monotonic() < self._grace_until_mono:
             return
+        self._recovery_streak = 0
         self._miss_streak += 1
         self._emit_stale_if_needed(detail)
 
@@ -98,11 +103,19 @@ class CriService(QObject):
             return
         self._miss_streak = 0
         self._got_frame_since_tick = True
-        was_stale = self._stale_notified
-        self._stale_notified = False
+
+        if self._stale_notified:
+            self._recovery_streak += 1
+            if self._recovery_streak < _CRI_RECOVERY_FRAMES:
+                return
+            log.info(
+                "[CRI] UDP 恢复: 连续 %d 帧完整 CRI 数据，重新启用 CRI 位姿",
+                self._recovery_streak,
+            )
+            self._stale_notified = False
+            self._recovery_streak = 0
+
         self.cri_frame_received.emit(frame)
-        if was_stale:
-            log.info("[CRI] complete frame resumed after stale period")
 
     def start(self, config):
         self.disarm_watchdog()

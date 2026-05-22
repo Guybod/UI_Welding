@@ -44,6 +44,7 @@ class RobotRealtimeState(QObject):
         self._cri_error_code: int = 0
         self._last_switch_to_subscribe_at: str = ""
         self._last_switch_to_cri_at: str = ""
+        self._cri_stale_announced: bool = False
         self._last_posture_db: dict | None = None
         self._tcp_pose_valid: bool = False
 
@@ -123,6 +124,7 @@ class RobotRealtimeState(QObject):
             and self._pose_source == PoseSource.TCP_SUBSCRIBE
         )
         self._cri_primary_valid = True
+        self._cri_stale_announced = False
         self._pose_source = PoseSource.CRI_UDP
         if was_subscribe_primary:
             ts = self._now_ts()
@@ -175,7 +177,8 @@ class RobotRealtimeState(QObject):
         """连续无完整 CRI 帧：放弃 CRI 权威，保留缓存直至订阅更新。"""
         was_primary = self._cri_primary_valid
         self._cri_primary_valid = False
-        if was_primary:
+        if was_primary and not self._cri_stale_announced:
+            self._cri_stale_announced = True
             ts = self._now_ts()
             self._last_switch_to_subscribe_at = ts
             detail = f" ({reason})" if reason else ""
@@ -194,6 +197,7 @@ class RobotRealtimeState(QObject):
     def invalidate(self) -> None:
         """CRI 停止或登出：清空位姿缓存。"""
         self._cri_primary_valid = False
+        self._cri_stale_announced = False
         self._pose_source = PoseSource.NONE
         self._last_switch_to_subscribe_at = ""
         self._last_switch_to_cri_at = ""

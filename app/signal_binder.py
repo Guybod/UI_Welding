@@ -11,6 +11,7 @@ from core.logger import log
 from core.robot_model_config import get_model_config
 from core.unit_converter import rad_list_to_deg, m_to_mm, rad_to_deg
 from app.i18n import tr
+from app.robot_mode import ROBOT_MODE_UNKNOWN, normalize_robot_mode
 from services.cri_service import CriService
 from services.robot_realtime_state import PoseSource, RobotRealtimeState
 
@@ -93,9 +94,12 @@ def _bind_connection_state(cm, login, main_win, stack, state):
             if isinstance(cri_svc, CriService):
                 cri_svc.disarm_watchdog()
             main_win._command_bar.set_all_enabled(False)
+            main_win._command_bar.clear_mode()
             main_win._drawer.set_jog_enabled(False)
             main_win.update_home_cri(False)
             main_win._status_bar.set_pose_source("")
+            main_win.update_home_runtime(mode_text="—", state_text="")
+            main_win._page_router.notify_robot_mode(ROBOT_MODE_UNKNOWN)
 
     def on_connection_failed(error_msg: str):
         QMessageBox.critical(login, "连接失败",
@@ -148,6 +152,7 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
     def on_connected(sub_state: str):
         if sub_state in ("disconnected", "reconnecting", "connecting"):
             _subscribed[0] = False
+            _last_robot_mode[0] = None
         if sub_state != "connected":
             return
 
@@ -173,8 +178,12 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
     def _on_robot_status(db: dict):
         RobotRealtimeState.instance().update_robot_status(db)
         robot_type = db.get("type", "")
-        mode = db.get("mode", 0)
         state_num = db.get("state", 0)
+        mode = (
+            normalize_robot_mode(db["mode"])
+            if "mode" in db
+            else _last_robot_mode[0]
+        )
 
         if robot_type and robot_type != _last_robot_type[0]:
             _last_robot_type[0] = robot_type
@@ -189,15 +198,22 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
             0: "未使能", 1: "使能中", 2: "空闲",
             3: "点动中", 4: "RunTo", 5: "拖动中",
         }
+        mode_label = (
+            mode_names.get(mode, str(mode))
+            if mode is not None and mode != ROBOT_MODE_UNKNOWN
+            else "—"
+        )
         main_win._status_bar.set_connection_status(
             f"已连接 | 型号: {robot_type} | "
-            f"{mode_names.get(mode, str(mode))} | "
+            f"{mode_label} | "
             f"{state_names.get(state_num, str(state_num))}"
         )
-        main_win._command_bar.set_mode(mode)
-        if _last_robot_mode[0] != mode:
-            _last_robot_mode[0] = mode
-            main_win._page_router.notify_robot_mode(mode)
+        if "mode" in db:
+            main_win._command_bar.set_mode(mode)
+            if _last_robot_mode[0] != mode:
+                _last_robot_mode[0] = mode
+                if mode != ROBOT_MODE_UNKNOWN:
+                    main_win._page_router.notify_robot_mode(mode)
         main_win._command_bar.set_enable_state(state_num != 0)
         main_win._command_bar.set_simulation(db.get("isSimulation", False))
         main_win.update_coordinates(
@@ -205,7 +221,7 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
             f"工具{db.get('ToolId', 0)}",
         )
         main_win.update_home_runtime(
-            mode_text=mode_names.get(mode, str(mode)),
+            mode_text=mode_label,
             state_text=state_names.get(state_num, str(state_num)),
         )
 
@@ -428,7 +444,7 @@ def _bind_cri(cri_svc, main_win, state):
 
     def _on_cri_udp_stale():
         RobotRealtimeState.instance().invalidate_cri_primary(
-            reason="10 consecutive incomplete/missing CRI frames",
+            reason="50 consecutive incomplete/missing CRI frames",
         )
         _refresh_pose_source_ui(main_win, state)
 
