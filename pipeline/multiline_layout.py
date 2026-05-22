@@ -131,24 +131,21 @@ def _layout_multiline(
                 descent = glyphs[0].descent
 
             x_cursor_px = 0.0
+            line_baseline_y = max((g.baseline_y for g in glyphs), default=baseline_px)
             for ch, glyph in zip(line, glyphs):
                 binary = glyph.image
                 strokes, gmeta = extract_glyph_strokes(binary, mode_n, path_config)
                 for k in cleanup_agg:
                     cleanup_agg[k] += int(gmeta.get(k, 0) or 0)
-                if x_cursor_px > 0 or y_off > 0:
+                y_shift = y_off + (line_baseline_y - glyph.baseline_y)
+                if x_cursor_px > 0 or y_shift != 0:
                     for s in strokes:
                         s.points_px = [
-                            PixelPoint(x=p.x + x_cursor_px, y=p.y + y_off)
+                            PixelPoint(x=p.x + x_cursor_px, y=p.y + y_shift)
                             for p in s.points_px
                         ]
-                elif y_off > 0:
-                    for s in strokes:
-                        s.points_px = [
-                            PixelPoint(x=p.x, y=p.y + y_off) for p in s.points_px
-                        ]
 
-                char_w_px = float(binary.shape[1]) if binary.size else float(glyph.width_px)
+                char_w_px = float(binary.shape[1]) if binary.size else float(glyph.char_w_px)
                 for s in strokes:
                     meta = {
                         **s.metadata,
@@ -256,21 +253,26 @@ def layout_legacy_single_string(
         "skeleton_phantom_loops_opened": 0,
     }
 
+    line_baseline_y = max((g.baseline_y for g in glyphs), default=baseline_px) if glyphs else baseline_px
     for char_idx, (ch, glyph) in enumerate(zip(text, glyphs)):
         binary = glyph.image
         strokes, gmeta = extract_glyph_strokes(binary, mode_n, path_config)
         for k in cleanup_agg:
             cleanup_agg[k] += int(gmeta.get(k, 0) or 0)
-        if x_cursor_px > 0:
+        y_shift = line_baseline_y - glyph.baseline_y
+        if x_cursor_px > 0 or y_shift != 0:
             for s in strokes:
-                s.points_px = [PixelPoint(x=p.x + x_cursor_px, y=p.y) for p in s.points_px]
+                s.points_px = [
+                    PixelPoint(x=p.x + x_cursor_px, y=p.y + y_shift)
+                    for p in s.points_px
+                ]
         for s in strokes:
             meta = {**s.metadata, "extract_algorithm": mode_n}
             if mode_n == "skeleton":
                 meta["weld_char_index"] = char_idx
                 meta["weld_char"] = ch
             s.metadata = meta
-        char_w_px = binary.shape[1] if binary.size else max(glyph.width_px, 1)
+        char_w_px = binary.shape[1] if binary.size else max(glyph.char_w_px, 1)
         spacing_px = char_spacing_mm * px_per_mm
         x_cursor_px += char_w_px + spacing_px
         strokes_raw.extend(strokes)

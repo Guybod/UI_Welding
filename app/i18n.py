@@ -90,6 +90,14 @@ _STRINGS = {
         "zh": "位姿: 订阅",
         "en": "Pose: Subscribe",
     },
+    "status_pose_line_subscribe_wait": {
+        "zh": "位姿: 订阅(等待推送)",
+        "en": "Pose: Subscribe (waiting)",
+    },
+    "chip_pose_subscribe": {
+        "zh": "订阅位姿",
+        "en": "Subscribed",
+    },
 
     # 抽屉
     "drawer_motion":        {"zh": "运动",       "en": "Motion"},

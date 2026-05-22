@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.base_page import BasePage
+from app.i18n import tr
 from services.robot_realtime_state import RobotRealtimeState
 from view3d.model_resolver import resolve_glb_name
 from view3d.preview_frame import RobotPreviewFrame
@@ -279,7 +280,10 @@ class HomePage(BasePage):
         self._preview.refresh()
         rt = RobotRealtimeState.instance()
         if rt.has_pose():
-            self.update_cri_status(True)
+            from services.robot_realtime_state import PoseSource
+            self.update_cri_ui_mode(
+                "udp" if rt.pose_source() == PoseSource.CRI_UDP else "subscribe"
+            )
             self.update_runtime_flags(
                 enabled=rt.is_enabled(),
                 moving=rt.is_moving(),
@@ -315,7 +319,23 @@ class HomePage(BasePage):
         self._apply_chip(self._chip_conn, "已连接" if connected else "未连接", connected)
 
     def update_cri_status(self, active: bool) -> None:
-        self._apply_chip(self._chip_cri, "CRI" if active else "CRI关", active)
+        """兼容旧调用；True 等同 CRI UDP 权威。"""
+        self.update_cri_ui_mode("udp" if active else "off")
+
+    def update_cri_ui_mode(self, mode: str) -> None:
+        """CRI 位姿 UI：off | pending | udp | subscribe | bind_fail。"""
+        if mode == "udp":
+            self._apply_chip(self._chip_cri, "CRI", True)
+        elif mode == "subscribe":
+            self._apply_chip(
+                self._chip_cri, tr("chip_pose_subscribe"), False, caution=True
+            )
+        elif mode == "pending":
+            self._apply_chip(self._chip_cri, "CRI…", False)
+        elif mode == "bind_fail":
+            self._apply_chip(self._chip_cri, "CRI绑定失败", False, warn=True)
+        else:
+            self._apply_chip(self._chip_cri, "CRI关", False)
 
     def update_runtime_flags(
         self,
@@ -437,11 +457,18 @@ class HomePage(BasePage):
 
     @staticmethod
     def _apply_chip(
-        chip: QLabel, text: str, active: bool, *, warn: bool = False
+        chip: QLabel,
+        text: str,
+        active: bool,
+        *,
+        warn: bool = False,
+        caution: bool = False,
     ) -> None:
         chip.setText(text)
         if warn:
             bg, fg = "#5c2a2a", "#ff8a8a"
+        elif caution:
+            bg, fg = "#4a3a18", "#ffcc66"
         elif active:
             bg, fg = "#1e4a32", "#6dffb0"
         else:

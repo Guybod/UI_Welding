@@ -7,10 +7,10 @@ from core.thread_manager import UdpThread
 from network.udp_cri_adapter import UdpCriAdapter
 from network.connection_manager import ConnectionManager
 
-# 与 StartDataPush duration=2ms 对齐；连续 N 次无完整帧则切换订阅
-_CRI_FRAME_TICK_MS = 2
-_CRI_MISS_FRAMES_THRESHOLD = 50
-_CRI_RECOVERY_FRAMES = 10  # 从 stale 恢复须连续 10 帧完整 CRI，避免偶发 1 帧导致反复切换
+# 与 StartDataPush duration=4ms 对齐；连续 N 次无完整帧则切换订阅（直至下次连接）
+_CRI_FRAME_TICK_MS = 4
+_CRI_MISS_FRAMES_THRESHOLD = 125
+_CRI_START_DATA_PUSH_TIMEOUT_S = 3.0
 _CRI_STARTUP_GRACE_S = 0.8
 
 
@@ -39,7 +39,6 @@ class CriService(QObject):
         self._config = None
         self._enabled = False
         self._miss_streak = 0
-        self._recovery_streak = 0
         self._stale_notified = False
         self._grace_until_mono = 0.0
         self._got_frame_since_tick = False
@@ -54,14 +53,12 @@ class CriService(QObject):
     def disarm_watchdog(self) -> None:
         self._frame_tick.stop()
         self._miss_streak = 0
-        self._recovery_streak = 0
         self._stale_notified = False
         self._grace_until_mono = 0.0
         self._got_frame_since_tick = False
 
     def _arm_watchdog(self) -> None:
         self._miss_streak = 0
-        self._recovery_streak = 0
         self._stale_notified = False
         self._got_frame_since_tick = False
         self._grace_until_mono = time.monotonic() + _CRI_STARTUP_GRACE_S
@@ -82,7 +79,6 @@ class CriService(QObject):
     def _record_miss(self, detail: str) -> None:
         if not self._enabled or time.monotonic() < self._grace_until_mono:
             return
-        self._recovery_streak = 0
         self._miss_streak += 1
         self._emit_stale_if_needed(detail)
 
@@ -104,16 +100,9 @@ class CriService(QObject):
         self._miss_streak = 0
         self._got_frame_since_tick = True
 
+        # 已切换订阅兜底：同一次连接内不再恢复 CRI 位姿（直至下次连接）
         if self._stale_notified:
-            self._recovery_streak += 1
-            if self._recovery_streak < _CRI_RECOVERY_FRAMES:
-                return
-            log.info(
-                "[CRI] UDP 恢复: 连续 %d 帧完整 CRI 数据，重新启用 CRI 位姿",
-                self._recovery_streak,
-            )
-            self._stale_notified = False
-            self._recovery_streak = 0
+            return
 
         self.cri_frame_received.emit(frame)
 
@@ -156,22 +145,46 @@ class CriService(QObject):
         )
         self._udp_thread.start()
 
-        def _do_start():
-            self._cm.send_raw({
-                "id": 0, "ty": "CRI/StartDataPush",
-                "db": {
-                    "ip": config.local_ip, "port": config.udp_port,
-                    "duration": 2, "mask": 65535, "highPercision": True,
-                }
-            })
+        def _on_start_push_ok(_db):
             self._enabled = True
             self._cm.set_cri_push_enabled(True)
-            log.info("[CRI] StartDataPush sent enabled=True")
+            log.info("[CRI] StartDataPush ok enabled=True")
             self.cri_started.emit()
             self._arm_watchdog()
 
-        self._cm.send_raw({"id": 0, "ty": "CRI/StopDataPush"})
-        QTimer.singleShot(200, _do_start)
+        def _on_start_push_fail(exc: Exception):
+            log.warning("[CRI] StartDataPush failed or timeout: %s", exc)
+            self._miss_streak = _CRI_MISS_FRAMES_THRESHOLD
+            self._stale_notified = True
+            self.cri_udp_stale.emit()
+
+        def _request_start_push():
+            self._cm.send_call(
+                "CRI/StartDataPush",
+                {
+                    "ip": config.local_ip,
+                    "port": config.udp_port,
+                    "duration": 4,
+                    "mask": 65535,
+                    "highPercision": True,
+                },
+                on_response=_on_start_push_ok,
+                on_error=_on_start_push_fail,
+                timeout=_CRI_START_DATA_PUSH_TIMEOUT_S,
+                log_traffic=True,
+            )
+
+        def _after_stop(_db):
+            QTimer.singleShot(200, _request_start_push)
+
+        self._cm.send_call(
+            "CRI/StopDataPush",
+            {},
+            on_response=_after_stop,
+            on_error=lambda _e: QTimer.singleShot(200, _request_start_push),
+            timeout=2.0,
+            log_traffic=False,
+        )
 
     def _on_bind_error(self, msg: str):
         log.warning("[CRI] bind_error: %s", msg)

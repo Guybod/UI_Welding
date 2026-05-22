@@ -45,6 +45,7 @@ class RobotRealtimeState(QObject):
         self._last_switch_to_subscribe_at: str = ""
         self._last_switch_to_cri_at: str = ""
         self._cri_stale_announced: bool = False
+        self._cri_session_locked: bool = False
         self._last_posture_db: dict | None = None
         self._tcp_pose_valid: bool = False
 
@@ -117,8 +118,15 @@ class RobotRealtimeState(QObject):
         """兼容旧调用：等同 has_pose()。"""
         return self.has_pose()
 
+    def prepare_new_connection(self) -> None:
+        """新 TCP 连接：允许再次尝试 CRI 为位姿权威（上次会话的订阅锁定解除）。"""
+        self._cri_session_locked = False
+        self._cri_stale_announced = False
+
     def update_from_cri_frame(self, frame: dict):
         """CRI UDP 帧：关节 rad，TCP m/rad。"""
+        if self._cri_session_locked:
+            return
         was_subscribe_primary = (
             not self._cri_primary_valid
             and self._pose_source == PoseSource.TCP_SUBSCRIBE
@@ -174,10 +182,10 @@ class RobotRealtimeState(QObject):
         return updated
 
     def invalidate_cri_primary(self, *, reason: str = "") -> None:
-        """连续无完整 CRI 帧：放弃 CRI 权威，保留缓存直至订阅更新。"""
-        was_primary = self._cri_primary_valid
+        """连续无完整 CRI 帧 / StartDataPush 失败：放弃 CRI 权威，本连接内保持订阅。"""
+        self._cri_session_locked = True
         self._cri_primary_valid = False
-        if was_primary and not self._cri_stale_announced:
+        if not self._cri_stale_announced:
             self._cri_stale_announced = True
             ts = self._now_ts()
             self._last_switch_to_subscribe_at = ts
@@ -188,16 +196,21 @@ class RobotRealtimeState(QObject):
                 detail,
             )
         if self._pose_source == PoseSource.CRI_UDP:
-            self._pose_source = (
-                PoseSource.TCP_SUBSCRIBE
-                if self.has_pose()
-                else PoseSource.NONE
-            )
+            self._pose_source = PoseSource.TCP_SUBSCRIBE
+        elif self._pose_source == PoseSource.NONE:
+            self._pose_source = PoseSource.TCP_SUBSCRIBE
+
+    def apply_cached_posture_if_available(self) -> bool:
+        """CRI 失效后尝试用最近 publish/RobotPosture 刷新缓存（不覆盖 CRI 权威）。"""
+        if self._cri_primary_valid or not self._last_posture_db:
+            return False
+        return self.update_from_robot_posture(self._last_posture_db)
 
     def invalidate(self) -> None:
         """CRI 停止或登出：清空位姿缓存。"""
         self._cri_primary_valid = False
         self._cri_stale_announced = False
+        self._cri_session_locked = False
         self._pose_source = PoseSource.NONE
         self._last_switch_to_subscribe_at = ""
         self._last_switch_to_cri_at = ""
@@ -221,11 +234,15 @@ class RobotRealtimeState(QObject):
         return self._is_emergency
 
     def update_robot_status(self, db: dict) -> None:
-        """由 publish/RobotStatus 更新（模式/状态）。"""
+        """由 publish/RobotStatus 更新（模式/状态/运动）。"""
         if "mode" in db:
             self._robot_mode = int(db.get("mode", -1))
         if "state" in db:
             self._robot_state = int(db.get("state", -1))
+            # state=0 未使能，其余视为已使能（与首页状态名一致）
+            self._is_enabled = self._robot_state != 0
+        if "isMoving" in db:
+            self._is_moving = bool(db.get("isMoving"))
 
     def set_last_error(self, text: str) -> None:
         self._last_error = text or ""

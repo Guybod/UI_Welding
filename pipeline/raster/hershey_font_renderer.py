@@ -13,7 +13,7 @@ from core.types import PixelPoint, Stroke
 from config.stroke_fonts.hershey_presets import resolve_hershey_jhf_name
 
 RENDERER_MODULE = "pipeline.raster.hershey_font_renderer"
-RENDERER_VERSION = "1.2.0"
+RENDERER_VERSION = "1.3.0"
 
 _HERSHEY_IMPORT_ERROR_ZH = "缺少 Hershey-Fonts 依赖，请执行: pip install Hershey-Fonts"
 _HERSHEY_IMPORT_ERROR_EN = "Missing Hershey-Fonts; install with: pip install Hershey-Fonts"
@@ -133,6 +133,7 @@ def render_hershey_text_to_strokes(
     坐标约定（与 raw preview / WorkPlane 一致）：
     - 排版后 min_x >= 0, min_y >= 0
     - Y 向下为正（pixel 空间）
+    - 同行字符按底线（ymax）基线对齐，与 TTF linebox 一致；非顶线齐平
     """
     del line_spacing_mm
     if char_height_mm <= 0 or px_per_mm <= 0:
@@ -162,6 +163,10 @@ def render_hershey_text_to_strokes(
     ch_counts: dict[str, int] = {}
     glyph_count = 0
 
+    # 行内底线对齐：Hershey 归一化后各字顶线常齐平，需按 ymax 对齐到同一基线（与 TTF linebox 一致）
+    planned_glyphs: list[dict[str, Any]] = []
+    glyph_ymaxs: list[float] = []
+
     for char_idx, ch in enumerate(text):
         ck = _char_key(char_idx, ch)
         char_offsets_px[ck] = x_cursor_px
@@ -183,13 +188,39 @@ def render_hershey_text_to_strokes(
         glyph_count += 1
         xmin, ymin, xmax, ymax = _bbox_strokes_local(local)
         w_px = max(xmax - xmin, 1.0)
-        char_bboxes_px[ck] = [x_cursor_px, ymin, x_cursor_px + w_px, ymax]
         adv_px = w_px + spacing_px
         char_advances_px[ck] = adv_px
+        glyph_ymaxs.append(ymax)
+        planned_glyphs.append({
+            "char_idx": char_idx,
+            "ch": ch,
+            "ck": ck,
+            "local": local,
+            "xmin": xmin,
+            "ymin": ymin,
+            "xmax": xmax,
+            "ymax": ymax,
+            "w_px": w_px,
+            "x_cursor_px": x_cursor_px,
+        })
+        ch_counts[ch] = ch_counts.get(ch, 0) + len(local)
+        x_cursor_px += adv_px
 
-        for stroke_idx, st in enumerate(local):
+    line_baseline_px = max(glyph_ymaxs) if glyph_ymaxs else char_height_px
+
+    for g in planned_glyphs:
+        y_base_shift = line_baseline_px - g["ymax"]
+        ymin = g["ymin"] + y_base_shift
+        ymax = g["ymax"] + y_base_shift
+        char_bboxes_px[g["ck"]] = [
+            g["x_cursor_px"], ymin, g["x_cursor_px"] + g["w_px"], ymax,
+        ]
+        for stroke_idx, st in enumerate(g["local"]):
             pts_px = [
-                PixelPoint(x=round(x + x_cursor_px - xmin, 3), y=round(y, 3))
+                PixelPoint(
+                    x=round(x + g["x_cursor_px"] - g["xmin"], 3),
+                    y=round(y + y_base_shift, 3),
+                )
                 for x, y in st
             ]
             glyph_closed = _stroke_closed(st)
@@ -203,16 +234,30 @@ def render_hershey_text_to_strokes(
                         "extract_algorithm": "hershey",
                         "hershey_style": style,
                         "hershey_jhf_name": jhf_name,
-                        "weld_char": ch,
-                        "weld_char_index": char_idx,
+                        "weld_char": g["ch"],
+                        "weld_char_index": g["char_idx"],
                         "glyph_stroke_index": stroke_idx,
                         "glyph_stroke_closed": glyph_closed,
                         "closed": glyph_closed,
                     },
                 )
             )
-        ch_counts[ch] = ch_counts.get(ch, 0) + len(local)
-        x_cursor_px += adv_px
+
+    # 空格字框：底线与行基线齐平
+    for char_idx, ch in enumerate(text):
+        if ch != " ":
+            continue
+        ck = _char_key(char_idx, ch)
+        box = char_bboxes_px.get(ck)
+        if not box:
+            continue
+        adv = box[2] - box[0]
+        char_bboxes_px[ck] = [
+            box[0],
+            line_baseline_px - char_height_px,
+            box[0] + adv,
+            line_baseline_px,
+        ]
 
     raw_bbox_px = _bbox_from_stroke_list(strokes_out)
 
@@ -231,6 +276,7 @@ def render_hershey_text_to_strokes(
                 char_bboxes_px[ck] = [
                     box[0], box[1] + y_shift_px, box[2], box[3] + y_shift_px,
                 ]
+            line_baseline_px += y_shift_px
 
     layout_w_px = x_cursor_px
     normalized_bbox_px = _bbox_from_stroke_list(strokes_out)
@@ -274,7 +320,10 @@ def render_hershey_text_to_strokes(
         "layout_w_px": round(layout_w_px, 1),
         "layout_h_px": round(layout_h_px, 1),
         "linebox_height_px": int(round(layout_h_px)),
-        "baseline_px": int(round(layout_h_px)),
+        "baseline_px": int(round(line_baseline_px)) if strokes_out else 0,
+        "vertical_align": "baseline_bottom",
+        "line_baseline_px": round(line_baseline_px, 3),
+        "baseline_align_shift_px": round(y_shift_px, 3),
         "char_height_px": round(char_height_px, 3),
         "char_spacing_px": round(spacing_px, 3),
         "scale_factor": round(scale_factor, 3),

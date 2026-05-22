@@ -46,6 +46,7 @@ class ConnectionManager(QObject):
 
         # ── 订阅回调 (UI 线程) ──
         self._subscribe_callbacks: dict[str, list] = {}
+        self._logged_publish_recv: set[str] = set()
 
     @property
     def adapter(self) -> TcpAdapter | None:
@@ -140,6 +141,7 @@ class ConnectionManager(QObject):
             self._connect_timeout.stop()
         self._reconnect_timer.stop()
         self._subscribe_callbacks.clear()
+        self._logged_publish_recv.clear()
         self._drain_pending(NetworkDisconnectedError("连接断开"))
         if self._adapter:
             # 断开业务信号（不参与 shutdown 流程）
@@ -240,14 +242,14 @@ class ConnectionManager(QObject):
 
         ty = msg.get("ty", "")
 
-        # 命令响应: 有 id
-        if "id" in msg:
-            self._dispatch_response(msg)
-            return
-
-        # 推送: publish/*
+        # 推送: publish/*（控制器推送常带 "id": null，不能走命令响应分支）
         if ty.startswith("publish/"):
             self._dispatch_publish(msg)
+            return
+
+        # 命令响应: 有效 id
+        if msg.get("id") is not None:
+            self._dispatch_response(msg)
 
     def _traffic_log_filter(self, msg: dict, direction: str) -> bool:
         """返回 True 表示写入系统日志（log/ 文件）。"""
@@ -284,7 +286,19 @@ class ConnectionManager(QObject):
 
     def _dispatch_publish(self, msg: dict):
         ty = msg.get("ty", "")
-        db = msg.get("db", {})
+        err = msg.get("err")
+        if err:
+            log.warning("[Connection] publish rejected topic=%s err=%s", ty, err)
+            return
+        db = msg.get("db") or {}
+
+        if ty not in self._logged_publish_recv:
+            self._logged_publish_recv.add(ty)
+            db_keys = list(db.keys()) if isinstance(db, dict) else []
+            log.info(
+                "[Connection] publish recv topic=%s db_keys=%s",
+                ty, db_keys[:12],
+            )
 
         if ty == "publish/RobotStatus":
             self._on_robot_status(db)
@@ -350,6 +364,7 @@ class ConnectionManager(QObject):
                 self._subscribe_callbacks[topic] = []
             self._subscribe_callbacks[topic].append(callback)
         msg = json.dumps({"ty": topic, "tc": interval_ms}, ensure_ascii=False)
+        log.info("[Connection] subscribe send topic=%s tc=%s", topic, interval_ms)
         self._sig_send.emit(msg)
 
     def send_raw(self, obj: dict):

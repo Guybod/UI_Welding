@@ -240,6 +240,13 @@ class MainWindow(QMainWindow):
             if callable(updater):
                 updater(active)
 
+    def update_home_cri_ui_mode(self, mode: str) -> None:
+        home = self._page_router.get_cached_page("home")
+        if home is not None:
+            updater = getattr(home, "update_cri_ui_mode", None)
+            if callable(updater):
+                updater(mode)
+
     def update_home_runtime(
         self,
         *,

@@ -322,9 +322,21 @@ class WeldingProcessPlanner:
                 is_first = i == 0
                 is_last = i == n - 1
 
+                need_lead_in = (
+                    (is_first and gi == 0)
+                    or (is_first and gi > 0)
+                    or (not continuous_prev)
+                )
+                li_pts = _lead_in_path(pts, cfg) if need_lead_in else []
+                travel_to = li_pts[0] if li_pts else pts[0]
+
                 travel_from: RobotPoint | None = None
                 if gi == 0 and is_first:
-                    travel_from = pts[0]
+                    all_segments.append(_make_segment(
+                        "travel", stroke.id,
+                        _with_z([travel_to, travel_to], z_safe),
+                        cfg.travel_speed_mm_s, False, stroke=stroke,
+                    ))
                 elif is_first and gi > 0:
                     prev_stroke, prev_pts = char_groups[gi - 1][-1]
                     travel_from = (
@@ -336,7 +348,7 @@ class WeldingProcessPlanner:
                     travel_from = group[i - 1][1][-1]
 
                 if travel_from is not None:
-                    gap = _endpoint_gap_mm([travel_from], pts[:1])
+                    gap = _endpoint_gap_mm([travel_from], [travel_to])
                     if gap > 0.05:
                         if is_first and gi > 0:
                             inter_travel_len += gap
@@ -346,25 +358,15 @@ class WeldingProcessPlanner:
                             intra_travel_count += 1
                         all_segments.append(_make_segment(
                             "travel", stroke.id,
-                            _with_z([travel_from, pts[0]], z_safe),
+                            _with_z([travel_from, travel_to], z_safe),
                             cfg.travel_speed_mm_s, False, stroke=stroke,
                         ))
 
-                need_lead_in = (
-                    (is_first and gi == 0)
-                    or (is_first and gi > 0)
-                    or (not continuous_prev)
-                )
-                if need_lead_in:
-                    li_pts = _tangent_extend(
-                        pts, forward=False, length_mm=cfg.lead_in_length_mm,
-                        spacing_mm=cfg.weld_point_spacing_mm,
-                    )
-                    if len(li_pts) >= 2:
-                        all_segments.append(_make_segment(
-                            "lead_in", stroke.id, _with_z(li_pts, z_work),
-                            cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
-                        ))
+                if li_pts:
+                    all_segments.append(_make_segment(
+                        "lead_in", stroke.id, _with_z(li_pts, z_work),
+                        cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
+                    ))
 
                 all_segments.append(_make_segment(
                     "weld", stroke.id, _with_z(list(pts), z_work),
@@ -440,12 +442,12 @@ class WeldingProcessPlanner:
         if len(pts) < 2:
             warnings_list.append(f"stroke {stroke.id[:6]}: <2 robot_points, skipped")
             return segments
+        entry = _arc_entry_robot_point(pts, cfg)
         segments.append(_make_segment(
-            "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+            "travel", stroke.id, _with_z([entry, entry], z_safe),
             cfg.travel_speed_mm_s, False, stroke=stroke))
-        li_pts = _tangent_extend(pts, forward=False, length_mm=cfg.lead_in_length_mm,
-                                  spacing_mm=cfg.weld_point_spacing_mm)
-        if len(li_pts) >= 2:
+        li_pts = _lead_in_path(pts, cfg)
+        if li_pts:
             segments.append(_make_segment(
                 "lead_in", stroke.id, _with_z(li_pts, z_work),
                 cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
@@ -487,16 +489,14 @@ class WeldingProcessPlanner:
             warnings_list.append(f"stroke {stroke.id[:6]}: <3 robot_points, skipped")
             return segments
         if not skip_entry_travel:
+            entry = _arc_entry_robot_point(pts, cfg)
             segments.append(_make_segment(
-                "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+                "travel", stroke.id, _with_z([entry, entry], z_safe),
                 cfg.travel_speed_mm_s, False, stroke=stroke,
             ))
         if not skip_lead_in:
-            li_pts = _tangent_extend(
-                pts, forward=False, length_mm=cfg.lead_in_length_mm,
-                spacing_mm=cfg.weld_point_spacing_mm,
-            )
-            if len(li_pts) >= 2:
+            li_pts = _lead_in_path(pts, cfg)
+            if li_pts:
                 segments.append(_make_segment(
                     "lead_in", stroke.id, _with_z(li_pts, z_work),
                     cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke,
@@ -540,12 +540,12 @@ class WeldingProcessPlanner:
         if len(pts) < 3:
             warnings_list.append(f"stroke {stroke.id[:6]}: <3 robot_points, skipped")
             return segments
+        entry = _arc_entry_robot_point(pts, cfg)
         segments.append(_make_segment(
-            "travel", stroke.id, _with_z([pts[0], pts[0]], z_safe),
+            "travel", stroke.id, _with_z([entry, entry], z_safe),
             cfg.travel_speed_mm_s, False, stroke=stroke))
-        li_pts = _tangent_extend(pts, forward=False, length_mm=cfg.lead_in_length_mm,
-                                  spacing_mm=cfg.weld_point_spacing_mm)
-        if len(li_pts) >= 2:
+        li_pts = _lead_in_path(pts, cfg)
+        if li_pts:
             segments.append(_make_segment(
                 "lead_in", stroke.id, _with_z(li_pts, z_work),
                 cfg.weld_speed_mm_s, True, 0.0, weld_params, stroke=stroke))
@@ -672,6 +672,25 @@ def _path_length(pts: list[RobotPoint]) -> float:
     return total
 
 
+def _lead_in_path(pts: list[RobotPoint], cfg: WeldingProcessConfig) -> list[RobotPoint]:
+    """引入段：起弧点 → 笔画起点（与 weld_path_planner 一致）。"""
+    raw = _tangent_extend(
+        pts,
+        forward=False,
+        length_mm=cfg.lead_in_length_mm,
+        spacing_mm=cfg.weld_point_spacing_mm,
+    )
+    if len(raw) < 2:
+        return []
+    return list(reversed(raw))
+
+
+def _arc_entry_robot_point(pts: list[RobotPoint], cfg: WeldingProcessConfig) -> RobotPoint:
+    """开弧接近点：有引入段时为起弧点，否则为笔画起点。"""
+    li = _lead_in_path(pts, cfg)
+    return li[0] if li else pts[0]
+
+
 def _tangent_extend(
     pts: list[RobotPoint],
     forward: bool,
@@ -688,6 +707,7 @@ def _tangent_extend(
 
     Returns:
         延伸点列表（含端点）。点数不足时返回空列表。
+        forward=False 时顺序为 [笔画端点, …, 延伸末端]；引入段请用 _lead_in_path。
     """
     if len(pts) < 2 or length_mm < 0.01:
         return []

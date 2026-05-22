@@ -245,13 +245,17 @@ class LuaExporter:
 
         prev_point: RobotPoint | None = None
 
-        def emit_movl(p: RobotPoint, spd: float) -> bool:
+        def emit_movl(p: RobotPoint, spd: float, *, force: bool = False) -> bool:
             """返回 True 表示输出了 movL"""
             nonlocal prev_point, dup_skipped, movl_since_wait, wait_insert_count
-            if self.cfg.skip_duplicate_points and prev_point is not None:
-                if self._is_duplicate(prev_point, p):
-                    dup_skipped += 1
-                    return False
+            if (
+                not force
+                and self.cfg.skip_duplicate_points
+                and prev_point is not None
+                and self._is_duplicate(prev_point, p)
+            ):
+                dup_skipped += 1
+                return False
             prev_point = p
             lines.append(self._format_movl(p, spd))
             # wait() injection
@@ -263,7 +267,8 @@ class LuaExporter:
                     wait_insert_count += 1
             return True
 
-        for seg in segments:
+        active = [s for s in segments if s.points]
+        for idx, seg in enumerate(active):
             if not seg.points:
                 continue
             seg_type = seg.type
@@ -273,22 +278,29 @@ class LuaExporter:
             if self.cfg.include_comments:
                 lines.extend(self._segment_comment_lines(seg))
 
-            # Arc state transition BEFORE emitting segment points
-            if seg.arc_enabled and not arc_on:
-                lines.append("arcOn()")
-                arc_on = True
-                arc_on_count += 1
-            elif not seg.arc_enabled and arc_on:
-                lines.append("arcOff()")
-                arc_on = False
-                arc_off_count += 1
-
             # Emit movL (skip travel/retreat if config says so)
             if seg_type in ("travel", "retreat") and not self.cfg.include_travel:
                 continue
 
-            for p in pts:
-                emit_movl(p, speed)
+            # 开弧：先 movL 到起弧点，再 arcOn（同位，不边走边起弧）
+            if seg.arc_enabled and not arc_on:
+                emit_movl(pts[0], speed, force=True)
+                lines.append("arcOn()")
+                arc_on = True
+                arc_on_count += 1
+                for p in pts[1:]:
+                    emit_movl(p, speed)
+            else:
+                for p in pts:
+                    emit_movl(p, speed)
+
+            # 收弧：走完本段末点后再 arcOff（与末点同位）
+            next_seg = active[idx + 1] if idx + 1 < len(active) else None
+            next_arc = bool(next_seg and next_seg.arc_enabled)
+            if seg.arc_enabled and arc_on and not next_arc:
+                lines.append("arcOff()")
+                arc_on = False
+                arc_off_count += 1
 
         # Safety: force arc off at end
         if arc_on:

@@ -18,27 +18,55 @@ from services.robot_realtime_state import PoseSource, RobotRealtimeState
 
 def _cri_pose_active(state: dict) -> bool:
     """CRI 推送已开且 UDP 为位姿权威。"""
-    cri_svc = state.get("cri_svc")
+    return _resolve_cri_ui_mode(state) == "udp"
+
+
+def _resolve_cri_ui_mode(state: dict | None) -> str:
+    """CRI 位姿 UI 模式：off | pending | udp | subscribe | bind_fail。"""
+    rt = RobotRealtimeState.instance()
+    if rt._cri_session_locked:
+        return "subscribe"
+    cri_svc = state.get("cri_svc") if state else None
     if not isinstance(cri_svc, CriService) or not cri_svc.is_enabled:
-        return False
-    return RobotRealtimeState.instance().is_cri_primary()
-
-
-def _pose_source_bar_text(rt: RobotRealtimeState) -> str:
-    if not rt.has_pose():
-        return ""
+        return "off"
     if rt.is_cri_primary():
-        return tr("status_pose_line_cri")
-    if rt.pose_source() == PoseSource.TCP_SUBSCRIBE:
-        return tr("status_pose_line_subscribe")
+        return "udp"
+    if not rt.has_pose() and not rt._cri_stale_announced:
+        return "pending"
+    return "subscribe"
+
+
+def _pose_source_bar_text(rt: RobotRealtimeState, mode: str) -> str:
+    if mode == "udp":
+        return tr("status_pose_line_cri") if rt.has_pose() else ""
+    if mode == "subscribe":
+        if rt.has_pose():
+            return tr("status_pose_line_subscribe")
+        return tr("status_pose_line_subscribe_wait")
     return ""
 
 
-def _refresh_pose_source_ui(main_win, state: dict | None = None) -> None:
+def _refresh_cri_ui(main_win, state: dict | None = None) -> None:
     rt = RobotRealtimeState.instance()
-    main_win._status_bar.set_pose_source(_pose_source_bar_text(rt))
-    if state is not None:
-        main_win.update_home_cri(_cri_pose_active(state))
+    mode = _resolve_cri_ui_mode(state) if state else "off"
+    main_win._status_bar.set_pose_source(_pose_source_bar_text(rt, mode))
+    main_win.update_home_cri_ui_mode(mode)
+
+
+def _refresh_pose_source_ui(main_win, state: dict | None = None) -> None:
+    _refresh_cri_ui(main_win, state)
+
+
+def _push_rt_pose_to_main_win(main_win, rt: RobotRealtimeState) -> None:
+    if not rt.has_pose():
+        return
+    main_win.update_joint_display(
+        rt.current_joints_deg(),
+        joint_rad=rt.current_joint_rad(),
+        drive_model=True,
+    )
+    x, y, z, a, b, c = rt.current_tcp_pose_mm_deg()
+    main_win.update_tcp_display(x, y, z, a, b, c)
 
 
 def _bind_login_flow(cm, login, main_win, stack, state):
@@ -84,6 +112,7 @@ def _bind_connection_state(cm, login, main_win, stack, state):
         connected = state_str == "connected"
         main_win.update_home_connection(connected)
         if connected:
+            RobotRealtimeState.instance().prepare_new_connection()
             main_win._command_bar.set_all_enabled(True)
             main_win._drawer.set_jog_enabled(True)
         else:
@@ -113,7 +142,7 @@ def _bind_connection_state(cm, login, main_win, stack, state):
 
 
 def _bind_subscriptions(cm, cri_svc, main_win, state):
-    """TCP 连接成功即订阅；toAuto/toRemote 仅切模式。CRI 正常时不使用订阅位姿。"""
+    """TCP 连接后 toAuto→toRemote 再订阅；CRI 失效时由 publish/RobotPosture 兜底。"""
     _last_robot_type = [""]
     _last_robot_mode = [None]
     _subscribed = [False]
@@ -141,11 +170,27 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
                 lambda t=topic, c=cb, ms=tc: cm.send_subscribe(t, c, interval_ms=ms),
             )
 
+    def _resubscribe_pose_topics():
+        """CRI 兜底后重新订阅，触发控制器「开始订阅时推送」。"""
+        log.info("[Login] re-subscribe pose topics (CRI fallback)")
+        cm.send_subscribe("publish/RobotPosture", None, interval_ms=0)
+        QTimer.singleShot(
+            100,
+            lambda: cm.send_subscribe("publish/RobotStatus", None, interval_ms=0),
+        )
+
+    state["resubscribe_pose"] = _resubscribe_pose_topics
+
+    def _after_to_remote(_db):
+        log.info("[Login] Robot/toRemote ok, start topic subscriptions")
+        _subscribe_all()
+        _refresh_cri_ui(main_win, state)
+
     def _after_to_auto(_db):
         log.info("[Login] Robot/toRemote")
         cm.send_call(
             "Robot/toRemote", {},
-            on_response=lambda d2: None,
+            on_response=_after_to_remote,
             on_error=lambda e2: log.info("[Login] Robot/toRemote failed: %s", e2),
         )
 
@@ -156,7 +201,6 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
         if sub_state != "connected":
             return
 
-        _subscribe_all()
         log.info("[Login] Robot/toAuto")
         cm.send_call(
             "Robot/toAuto", {},
@@ -176,7 +220,8 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
         ))
 
     def _on_robot_status(db: dict):
-        RobotRealtimeState.instance().update_robot_status(db)
+        rt = RobotRealtimeState.instance()
+        rt.update_robot_status(db)
         robot_type = db.get("type", "")
         state_num = db.get("state", 0)
         mode = (
@@ -227,28 +272,31 @@ def _bind_subscriptions(cm, cri_svc, main_win, state):
 
         moving = db.get("isMoving", False)
         main_win._command_bar.set_motion_paused(not moving)
+        if not rt.is_cri_primary():
+            main_win.update_home_runtime(
+                enabled=rt.is_enabled(),
+                moving=rt.is_moving(),
+            )
 
     def _on_project_state(db: dict):
         state_num = db.get("state", 0)
         main_win._command_bar.set_project_paused(state_num == 3)
 
     def _on_robot_posture(db: dict):
-        """CRI 解析正常时不驱动显示；始终缓存订阅供「更新」按钮使用。"""
+        """CRI 权威时不驱动显示；始终缓存订阅供兜底与「更新」按钮。"""
         rt = RobotRealtimeState.instance()
         rt.remember_posture(db)
         if _cri_pose_active(state):
             return
         if not rt.update_from_robot_posture(db):
-            return
-        if rt.has_pose():
-            main_win.update_joint_display(
-                rt.current_joints_deg(),
-                joint_rad=rt.current_joint_rad(),
-                drive_model=True,
+            log.warning(
+                "[Login] RobotPosture received but parse failed keys=%s",
+                list(db.keys()) if isinstance(db, dict) else type(db),
             )
-            x, y, z, a, b, c = rt.current_tcp_pose_mm_deg()
-            main_win.update_tcp_display(x, y, z, a, b, c)
-        _refresh_pose_source_ui(main_win, state)
+            return
+        log.info("[Login] RobotPosture applied pose_source=TCP_SUBSCRIBE")
+        _push_rt_pose_to_main_win(main_win, rt)
+        _refresh_cri_ui(main_win, state)
 
     _error_dialog_data = [None]
 
@@ -440,19 +488,32 @@ def _bind_cri(cri_svc, main_win, state):
     def _on_cri_stopped():
         RobotRealtimeState.instance().invalidate()
         main_win._status_bar.set_pose_source("")
-        main_win.update_home_cri(False)
+        main_win.update_home_cri_ui_mode("off")
+
+    def _fallback_to_subscribe_pose(reason: str):
+        rt = RobotRealtimeState.instance()
+        rt.invalidate_cri_primary(reason=reason)
+        resub = state.get("resubscribe_pose")
+        if callable(resub):
+            resub()
+        rt.apply_cached_posture_if_available()
+        _push_rt_pose_to_main_win(main_win, rt)
+        _refresh_cri_ui(main_win, state)
 
     def _on_cri_udp_stale():
-        RobotRealtimeState.instance().invalidate_cri_primary(
-            reason="50 consecutive incomplete/missing CRI frames",
+        _fallback_to_subscribe_pose(
+            "125 consecutive incomplete/missing CRI frames or StartDataPush failed",
         )
-        _refresh_pose_source_ui(main_win, state)
 
     def _on_bind_error(msg: str):
-        RobotRealtimeState.instance().invalidate_cri_primary(reason=f"UDP bind: {msg}")
-        _refresh_pose_source_ui(main_win, state)
+        _fallback_to_subscribe_pose(f"UDP bind: {msg}")
+        main_win.update_home_cri_ui_mode("bind_fail")
+
+    def _on_cri_started():
+        _refresh_cri_ui(main_win, state)
 
     cri_svc.cri_stopped.connect(_on_cri_stopped)
+    cri_svc.cri_started.connect(_on_cri_started)
     cri_svc.cri_udp_stale.connect(_on_cri_udp_stale)
     cri_svc.bind_error.connect(_on_bind_error)
 
@@ -461,22 +522,8 @@ def _bind_cri(cri_svc, main_win, state):
         rt = RobotRealtimeState.instance()
 
         joint_rad = frame.get("joint_position", [])
-        if joint_rad:
-            main_win.update_joint_display(
-                rad_list_to_deg(joint_rad),
-                joint_rad=joint_rad,
-                drive_model=True,
-            )
-
-        main_win.update_tcp_display(
-            m_to_mm(frame.get("tcp_x", 0)),
-            m_to_mm(frame.get("tcp_y", 0)),
-            m_to_mm(frame.get("tcp_z", 0)),
-            rad_to_deg(frame.get("tcp_rx", 0)),
-            rad_to_deg(frame.get("tcp_ry", 0)),
-            rad_to_deg(frame.get("tcp_rz", 0)),
-        )
-        _refresh_pose_source_ui(main_win, state)
+        _push_rt_pose_to_main_win(main_win, rt)
+        _refresh_cri_ui(main_win, state)
         main_win.update_home_runtime(
             enabled=rt.is_enabled(),
             moving=rt.is_moving(),
@@ -485,7 +532,7 @@ def _bind_cri(cri_svc, main_win, state):
 
     cri_svc.cri_frame_received.connect(_on_cri_frame)
 
-    # 连接后 3 秒自动启动 CRI
+    # 连接后 3 秒自动启动 CRI（默认位姿源）；失败或 125 帧无效则切订阅直至下次连接
     def _auto_start_cri(sub_state: str):
         config = state.get("cri_config")
         if sub_state == "connected" and config:

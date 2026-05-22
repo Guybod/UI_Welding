@@ -15,19 +15,6 @@ from PIL import Image, ImageDraw, ImageFont
 LINE_BOX_PADDING_PX = 0
 
 
-def _trim_binary_top(binary: np.ndarray) -> tuple[np.ndarray, int]:
-    """裁掉二值图顶部全空行，使墨迹顶边落在 y=0。"""
-    if binary.size == 0:
-        return binary, 0
-    rows = np.any(binary > 0, axis=1)
-    if not np.any(rows):
-        return binary, 0
-    top = int(np.argmax(rows))
-    if top == 0:
-        return binary, 0
-    return binary[top:, :].copy(), top
-
-
 def _ink_bbox_xyxy(binary: np.ndarray) -> tuple[int, int, int, int]:
     """墨迹 tight bbox (x0, y0, x1, y1)；无墨迹则 (0,0,0,0)。"""
     if binary.size == 0:
@@ -163,38 +150,40 @@ class FontRasterizer:
         font_path: str | None = None,
         font_size_px: int | None = None,
     ) -> LineboxGlyph:
-        """渲染单字：墨迹顶边对齐 y=0（tight bbox 绘制 + 裁顶空行）。"""
+        """渲染单字：固定行盒高度，同行字符共享 baseline_y（底线对齐，非顶边裁切）。"""
         fp = font_path or self.get_font_path()
         size = font_size_px or self.default_font_size_px
 
         font = ImageFont.truetype(fp, size)
         ascent, descent = font.getmetrics()
         padding = LINE_BOX_PADDING_PX
+        linebox_h = max(ascent + descent + 2 * padding, 1)
+        baseline_y = padding + ascent
 
         if not char or char.isspace():
             w = max(size // 4, 1)
-            h = max(ascent + descent, 1)
             return LineboxGlyph(
-                image=np.zeros((h, w), dtype=np.uint8),
-                linebox_height=h,
-                baseline_y=padding + ascent,
+                image=np.zeros((linebox_h, w), dtype=np.uint8),
+                linebox_height=linebox_h,
+                baseline_y=baseline_y,
                 ascent=ascent,
                 descent=descent,
                 glyph_bbox=(0, 0, 0, 0),
                 char_w_px=w,
             )
 
-        bbox = font.getbbox(char)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
+        try:
+            ink_bbox = font.getbbox(char, anchor="ls")
+        except TypeError:
+            ink_bbox = font.getbbox(char)
 
-        if w <= 0 or h <= 0:
+        w = max(ink_bbox[2] - ink_bbox[0], 1)
+        if w <= 0:
             blank_w = max(size // 2, 1)
-            blank_h = max(ascent + descent, 1)
             return LineboxGlyph(
-                image=np.zeros((blank_h, blank_w), dtype=np.uint8),
-                linebox_height=blank_h,
-                baseline_y=padding + ascent,
+                image=np.zeros((linebox_h, blank_w), dtype=np.uint8),
+                linebox_height=linebox_h,
+                baseline_y=baseline_y,
                 ascent=ascent,
                 descent=descent,
                 glyph_bbox=(0, 0, 0, 0),
@@ -202,18 +191,15 @@ class FontRasterizer:
             )
 
         img_w = w + 2 * padding
-        img_h = h + 2 * padding
-        draw_x = padding - bbox[0]
-        draw_y = padding - bbox[1]
-
-        img = Image.new("L", (img_w, img_h), 0)
+        img = Image.new("L", (img_w, linebox_h), 0)
         draw = ImageDraw.Draw(img)
-        draw.text((draw_x, draw_y), char, fill=255, font=font)
+        try:
+            draw.text((padding, baseline_y), char, fill=255, font=font, anchor="ls")
+        except TypeError:
+            bbox = font.getbbox(char)
+            draw.text((padding - bbox[0], baseline_y - bbox[3]), char, fill=255, font=font)
 
         binary = self.binarize(np.array(img))
-        binary, top_trim = _trim_binary_top(binary)
-        baseline_y = max(0, (draw_y + ascent) - top_trim)
-        linebox_h = int(binary.shape[0]) if binary.size else 0
         glyph_bbox = _ink_bbox_xyxy(binary)
         img_w_out = int(binary.shape[1]) if binary.size else img_w
 
