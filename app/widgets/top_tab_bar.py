@@ -7,11 +7,6 @@ from app.i18n import I18nManager, tr
 TAB_I18N_KEYS = {
     "home": "tab_home",
     "welding": "tab_welding",
-    "writing": "tab_writing",
-    "motion": "tab_motion",
-    "io": "tab_io",
-    "register": "tab_register",
-    "program": "tab_program",
     "upload": "tab_upload",
 }
 

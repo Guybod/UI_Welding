@@ -560,17 +560,7 @@ def bind_all(cm, cri_svc, login, main_win, stack):
     _bind_speed(cm, main_win, state)
     _bind_cri(cri_svc, main_win, state)
 
-    def _stop_motion_graph():
-        router = main_win._page_router
-        for page in router._cache.values():
-            editor = getattr(page, "_editor", None)
-            if editor is not None:
-                stop_fn = getattr(editor, "stop_execution", None)
-                if callable(stop_fn):
-                    stop_fn()
-
     def stop_all_motion(*, send_tcp: bool = True):
-        _stop_motion_graph()
         stop_jog = state.get("stop_jog")
         force_moveto = state.get("force_stop_moveto")
         if stop_jog:

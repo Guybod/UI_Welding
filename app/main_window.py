@@ -19,6 +19,8 @@ from app.widgets.global_command_bar import GlobalCommandBar
 from app.widgets.robot_control_drawer import RobotControlDrawer
 from app.page_router import PageRouter
 from app.page_registry import PAGE_REGISTRY
+from app.help_manuals import welding_manual_html, upload_manual_html
+from app.widgets.help_manual_dialog import HelpManualDialog
 
 
 VERSION = "v2.0.0"
@@ -311,6 +313,13 @@ class MainWindow(QMainWindow):
 
         # 帮助
         self._help_menu = menu_bar.addMenu(tr("menu_help"))
+        self._help_welding_action = QAction(tr("menu_help_welding"), self)
+        self._help_welding_action.triggered.connect(self._show_welding_help)
+        self._help_menu.addAction(self._help_welding_action)
+        self._help_upload_action = QAction(tr("menu_help_upload"), self)
+        self._help_upload_action.triggered.connect(self._show_upload_help)
+        self._help_menu.addAction(self._help_upload_action)
+        self._help_menu.addSeparator()
         self._about_action = QAction(tr("menu_about"), self)
         self._about_action.triggered.connect(self._show_about)
         self._help_menu.addAction(self._about_action)
@@ -326,6 +335,8 @@ class MainWindow(QMainWindow):
         self._settings_menu.setTitle(tr("menu_settings"))
         self._style_menu.setTitle(tr("menu_style"))
         self._help_menu.setTitle(tr("menu_help"))
+        self._help_welding_action.setText(tr("menu_help_welding"))
+        self._help_upload_action.setText(tr("menu_help_upload"))
         self._about_action.setText(tr("menu_about"))
         self._lang_zh_action.setText(tr("menu_lang_zh"))
         self._lang_en_action.setText(tr("menu_lang_en"))
@@ -344,6 +355,14 @@ class MainWindow(QMainWindow):
             QApplication.instance().setStyleSheet("")
         else:
             self._load_qss(path)
+
+    def _show_welding_help(self):
+        dlg = HelpManualDialog(tr("menu_help_welding"), welding_manual_html(), self)
+        dlg.exec()
+
+    def _show_upload_help(self):
+        dlg = HelpManualDialog(tr("menu_help_upload"), upload_manual_html(), self)
+        dlg.exec()
 
     def _show_about(self):
         QMessageBox.about(

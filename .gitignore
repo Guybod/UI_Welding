@@ -1,46 +1,57 @@
-# Python 虚拟环境
+# ── Python ──────────────────────────────────────────────
 .venv/
 venv/
 env/
 ENV/
+*.egg-info/
+dist/
+build/
 
-# Python 缓存
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+*.egg
 
-# 运行产出与日志
+# ── 运行产物与日志 ────────────────────────────────────────
 output/
 log/
 logs/
 
-# npm（曾用于 hanzi-writer 探测，正式程序不依赖）
+# ── Node（历史探测脚本，非运行时依赖）────────────────────
 node_modules/
 package-lock.json
 
-# 本机节点工程 / 寄存器配置（运行时数据）
+# ── 本机工程数据（运行时/个人配置，不入库）──────────────
 projects/register_cards.json
-projects/未命名.json
 projects/*_autosave*.json
+projects/未命名.json
 
-# 旧版参考工程（勿入库）
+# ── 旧版参考工程 ─────────────────────────────────────────
 write4.0/
 wledfont2_UI/
 
-# MakeMeAHanzi 大文件（本地放置，见 third_party/makemeahanzi/README.md）
+# ── 第三方大文件（本地放置，见各目录 README）────────────
 third_party/makemeahanzi/graphics.txt
-
-# chinese-hershey-font 黑体单线 JSON（见 third_party/chinese-hershey-font/README.md）
 third_party/chinese-hershey-font/STRK-Heiti.json
 
-# 可选：整包 third_party 仅保留 README 时取消下一行注释
-# third_party/
-
-# IDE / 本地 AI 配置
+# ── IDE / 本地 AI 助手配置 ───────────────────────────────
 .cursor/
+.claude/
 cursor.md
-.claude/settings.local.json
+*.local.json
+
+# ── 操作系统 ─────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ── 编辑器 ───────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~

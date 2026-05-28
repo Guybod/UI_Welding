@@ -54,12 +54,6 @@ except ImportError as exc:
     _OPTIONAL_IMPORT_ERRORS["plan_weld_paths"] = exc
 
 try:
-    from pipeline.pen_process import plan_pen_motion
-except ImportError as exc:
-    plan_pen_motion = None
-    _OPTIONAL_IMPORT_ERRORS["plan_pen_motion"] = exc
-
-try:
     from pipeline.trajectory_planner import plan_trajectory
 except ImportError as exc:
     plan_trajectory = None
@@ -74,11 +68,10 @@ except ImportError as exc:
     _OPTIONAL_IMPORT_ERRORS["file_output"] = exc
 
 try:
-    from pipeline.preview import preview_paths_2d, preview_weld_segments, preview_pen_segments
+    from pipeline.preview import preview_paths_2d, preview_weld_segments
 except ImportError as exc:
     preview_paths_2d = None
     preview_weld_segments = None
-    preview_pen_segments = None
     _OPTIONAL_IMPORT_ERRORS["preview"] = exc
 
 

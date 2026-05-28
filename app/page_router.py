@@ -30,7 +30,7 @@ class PageRouter(QObject):
             page.on_connection_changed(connected)
 
     def notify_robot_mode(self, mode: int) -> None:
-        """机器人模式变化时通知所有已缓存页面（IO/寄存器等需远程模式）。"""
+        """机器人模式变化时通知所有已缓存页面。"""
         for page in self._cache.values():
             handler = getattr(page, "on_robot_mode_changed", None)
             if callable(handler):

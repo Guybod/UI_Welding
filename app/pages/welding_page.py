@@ -189,7 +189,7 @@ def _find_system_fonts() -> list:
             # 中文字体
             "msyh.ttf", "msyh.ttc", "simhei.ttf",
             "simsun.ttc", "simsun.ttf",
-            "kaiti.ttf",
+            "kaiti.ttf", "simkai.ttf", "stkaiti.ttf",
             "fangsong.ttf", "fangsong.ttc",
             "nsimsun.ttf", "nsimsun.ttc",
             "msjh.ttf", "msjh.ttc",
@@ -220,6 +220,8 @@ _FONT_DISPLAY_NAMES: dict[str, str] = {
     "simsun.ttc": "宋体 (SimSun)",
     "simsun.ttf": "宋体 (SimSun)",
     "kaiti.ttf":  "楷体 (KaiTi)",
+    "simkai.ttf": "楷体 (KaiTi)",
+    "stkaiti.ttf": "楷体 (KaiTi)",
     "fangsong.ttf": "仿宋 (FangSong)",
     "fangsong.ttc": "仿宋 (FangSong)",
     "nsimsun.ttf": "新宋体 (NSimSun)",
