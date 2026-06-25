@@ -1,8 +1,12 @@
 # UI_Welding — Codroid 焊接上位机
 
+> **English:** [README_EN.md](README_EN.md)
+
 基于 **PySide6** 的 Codroid 协作机器人焊接控制终端：连接机器人、生成文字焊接轨迹、上传 Lua 工程到控制器，并提供首页状态监控与全局点动。
 
 **仓库地址：** https://github.com/Guybod/UI_Welding.git
+
+**当前版本：** v2.0.1 · [发布说明](docs/RELEASE_v2.0.1.md)
 
 ---
 
@@ -10,7 +14,7 @@
 
 | 模块 | 说明 |
 |------|------|
-| **登录** | 机器人 IP、本机网卡、UDP 端口；TCP 9001 连接 |
+| **登录** | 机器人 IP、本机网卡、UDP 端口；TCP 9001 连接；右上角中/英切换 |
 | **首页** | 连接/CRI 状态、关节与 TCP 概览、GLB 3D 预览 |
 | **焊接** | 轮廓字 / Hershey 骨架拉丁 / 汉字 medians → `points.txt`、`job.json`、Lua；三点工作空间标定 |
 | **上传** | HTTP/WebSocket 上传 Lua 工程、槽位绑定（0–127） |
@@ -28,6 +32,7 @@
 - Python **3.11+** 推荐
 - 与机器人控制器同一网段（示例 IP：`192.168.1.136`）
 - 端口：TCP **9001**、UDP **9030**（CRI）、本地 UDP（CRI 推送入站，登录页分配）
+- 显卡：支持 OpenGL 2.1+（首页 3D 预览）
 
 ---
 
@@ -44,7 +49,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-日志目录：`log/YYYYMMDD.txt`（若存在 `logs/` 则为历史路径，以实际配置为准）。
+日志目录：`log/YYYYMMDD.txt`。
 
 ---
 
@@ -62,21 +67,21 @@ third_party/makemeahanzi/graphics.txt
 
 ### 焊接字体
 
-- **轮廓字**：系统 TTF 或 `config/weld_font_presets.yaml` 预设  
-- **骨架拉丁**：`Hershey-Fonts`（见 `requirements.txt`、[docs/NOTICE.md](docs/NOTICE.md)）  
+- **轮廓字**：系统 TTF 或 `config/weld_font_presets.yaml` 预设
+- **骨架拉丁**：`Hershey-Fonts`（见 `requirements.txt`、[docs/NOTICE.md](docs/NOTICE.md)）
 - **骨架汉字**：依赖上述 `graphics.txt`
 
 ### 3D 模型（首页预览）
 
-`models/` 目录含多机型 GLB（若仓库已包含）。映射见 `config/robot_models.yaml`、`config/model_glb_map.yaml`。缺模型时 3D 区域为空，不影响焊接与上传。
+`models/` 目录放置各机型 GLB（若仓库已包含）。映射见 `config/robot_models.yaml`、`config/model_glb_map.yaml`。缺模型时 3D 区域为空，不影响焊接与上传。
 
 ---
 
 ## 典型工作流
 
-1. **登录** → 选择网卡与 UDP 端口，连接机器人。  
-2. **焊接** → 标定左上/右上/左下三点 → 输入文字与参数 →「生成焊接点」→ 查看 `output/` 下 Lua 与预览图。  
-3. **上传** → 选择生成的 `.lua`（可用「最新输出」）→ 填写工程名 → 上传并绑定槽位。  
+1. **登录** → 选择网卡与 UDP 端口，连接机器人（可按需切换界面语言）。
+2. **焊接** → 标定左上/右上/左下三点 → 输入文字与参数 →「生成焊接点」→ 查看 `output/` 下 Lua 与预览图。
+3. **上传** → 选择生成的 `.lua`（可用「最新输出」）→ 填写工程名 → 上传并绑定槽位。
 4. 在机器人端通过对应槽位或工程名运行焊接程序。
 
 ---
@@ -91,7 +96,7 @@ output/<时间戳>_<摘要>_<模式>/
   ...
 ```
 
-`output/`、`log/` 已在 `.gitignore` 中排除，勿提交运行产物。
+`output/`、`log/`、`dist/`、`build/` 已在 `.gitignore` 中排除，勿提交运行产物。
 
 ---
 
@@ -99,16 +104,15 @@ output/<时间戳>_<摘要>_<模式>/
 
 ```text
 main.py                 入口
-app/                    界面、路由、信号、帮助手册
+app/                    界面、路由、信号、帮助手册、QSS 主题
 network/                TCP/UDP、ConnectionManager
 services/               焊接、CRI、工程上传 SDK
 pipeline/               离线轨迹算法（无 Qt）
-core/                   类型、日志、配置
+core/                   类型、日志、路径、配置
 config/                 默认参数、机型、字体预设
 models/                 机器人 GLB（若已提交）
 view3d/                 首页 3D 预览
-styles/                 QSS 主题
-docs/                   API 与架构文档
+docs/                   API、架构与发布说明
 third_party/            第三方数据说明（大文件本地自备）
 tools/                  验收脚本、mock 等
 ```
@@ -117,25 +121,25 @@ tools/                  验收脚本、mock 等
 
 ## 配置与持久化
 
-- **QSettings**：`Codroid` / `RobotUI`（登录 IP、焊接/上传参数等）  
-- **主题与语言**：菜单「设置」→ 样式主题；「语言」中/英  
+- **QSettings**：`Codroid` / `RobotUI`（登录 IP、界面语言、焊接/上传参数等）
+- **主题与语言**：主界面菜单「设置」→ 样式主题；「语言」中/英（登录页右上角亦可切换）
 - **菜单「帮助」**：焊接页、上传页操作说明
 
 ---
 
 ## 开发与维护
 
-1. UI 不直接操作 socket；经 `ConnectionManager.send_call` 发 TCP。  
-2. 焊接算法改 `pipeline/` 与 `services/welding_service_v2.py`，用预览 PNG 与 `summary.json` 验收。  
-3. 改机器人接口时同步 **docs/planAPI.md**。  
+1. UI 不直接操作 socket；经 `ConnectionManager.send_call` 发 TCP。
+2. 焊接算法改 `pipeline/` 与 `services/welding_service_v2.py`，用预览 PNG 与 `summary.json` 验收。
+3. 改机器人接口时同步 **docs/planAPI.md**。
 4. 本地 mock：`tools/mock_robot_server.py`（按需）。
 
 ---
 
 ## 许可证与第三方
 
-- Hershey 字体：见 [docs/NOTICE.md](docs/NOTICE.md)  
-- MakeMeAHanzi / ARPHIC：汉字数据遵循上游许可  
+- Hershey 字体：见 [docs/NOTICE.md](docs/NOTICE.md)
+- MakeMeAHanzi / ARPHIC：汉字数据遵循上游许可
 
 ---
 
@@ -143,7 +147,9 @@ tools/                  验收脚本、mock 等
 
 | 文件 | 用途 |
 |------|------|
-| [README.md](README.md) | 本文件 |
+| [README.md](README.md) | 本文件（中文） |
+| [README_EN.md](README_EN.md) | English README |
+| [docs/RELEASE_v2.0.1.md](docs/RELEASE_v2.0.1.md) | v2.0.1 发布说明 |
 | [docs/planAPI.md](docs/planAPI.md) | 机器人 API |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构（参考） |
 | [docs/NOTICE.md](docs/NOTICE.md) | 第三方许可 |
