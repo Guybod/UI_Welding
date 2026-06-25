@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal, Qt, QSettings
 from core.connection_config import ConnectionConfig
 from core.connection_config import pick_available_udp_port
 from app.widgets.network_interface_selector import NetworkInterfaceSelector
+from app.i18n import I18nManager, tr
 
 
 class LoginPage(QWidget):
@@ -17,16 +18,44 @@ class LoginPage(QWidget):
         super().__init__(parent)
 
         self._settings = QSettings("Codroid", "RobotUI")
+        saved_lang = self._settings.value("ui/language", "zh")
+        I18nManager.instance().set_lang(saved_lang)
 
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(16, 12, 16, 0)
+        top_bar.addStretch()
+        self._btn_lang = QPushButton()
+        self._btn_lang.setCursor(Qt.PointingHandCursor)
+        self._btn_lang.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: 1px solid #666666;
+                border-radius: 4px;
+                padding: 4px 12px;
+                color: #cccccc;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                border-color: #e94560;
+                color: #e94560;
+            }
+        """)
+        self._btn_lang.clicked.connect(self._toggle_language)
+        top_bar.addWidget(self._btn_lang)
+        root.addLayout(top_bar)
+
+        layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
         layout.setSpacing(16)
 
-        # 标题
-        title = QLabel("Codroid 机器人控制终端")
-        title.setStyleSheet("font-size: 28px; font-weight: bold; color: #e94560;")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        self._title = QLabel()
+        self._title.setStyleSheet("font-size: 28px; font-weight: bold; color: #e94560;")
+        self._title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._title)
 
         version = QLabel("v2.0.0")
         version.setStyleSheet("font-size: 12px; color: #888888;")
@@ -35,31 +64,30 @@ class LoginPage(QWidget):
 
         layout.addSpacing(20)
 
-        form_width = 420
         form_layout = QVBoxLayout()
         form_layout.setAlignment(Qt.AlignCenter)
 
-        # 机器人 IP (恢复上次输入)
         saved_ip = self._settings.value("login/robot_ip", "192.168.1.136")
         ip_row = QHBoxLayout()
-        ip_row.addWidget(QLabel("机器人 IP:"))
+        self._lbl_ip = QLabel()
+        ip_row.addWidget(self._lbl_ip)
         self._robot_ip = QLineEdit(saved_ip)
         self._robot_ip.setFixedWidth(250)
         ip_row.addWidget(self._robot_ip)
         ip_row.addStretch()
         form_layout.addLayout(ip_row)
 
-        # 本机网卡
         nic_row = QHBoxLayout()
-        nic_row.addWidget(QLabel("本机网卡:"))
+        self._lbl_nic = QLabel()
+        nic_row.addWidget(self._lbl_nic)
         self._nic_selector = NetworkInterfaceSelector()
         nic_row.addWidget(self._nic_selector)
         form_layout.addLayout(nic_row)
 
-        # UDP 端口 (恢复上次值，否则自动分配)
         saved_port = self._settings.value("login/udp_port", 0)
         port_row = QHBoxLayout()
-        port_row.addWidget(QLabel("UDP 端口:"))
+        self._lbl_port = QLabel()
+        port_row.addWidget(self._lbl_port)
         self._udp_port = QLineEdit()
         self._udp_port.setFixedWidth(100)
         if saved_port and saved_port != 0:
@@ -69,12 +97,11 @@ class LoginPage(QWidget):
                 auto_port = pick_available_udp_port()
                 self._udp_port.setText(str(auto_port))
             except RuntimeError:
-                self._udp_port.setPlaceholderText("请手动输入")
+                self._udp_port.setPlaceholderText(tr("login_udp_port_ph"))
         port_row.addWidget(self._udp_port)
         port_row.addStretch()
         form_layout.addLayout(port_row)
 
-        # 居中表单
         form_wrapper = QHBoxLayout()
         form_wrapper.addStretch()
         form_wrapper.addLayout(form_layout)
@@ -83,12 +110,11 @@ class LoginPage(QWidget):
 
         layout.addSpacing(20)
 
-        # 按钮
         btn_row = QHBoxLayout()
         btn_row.setAlignment(Qt.AlignCenter)
         btn_row.setSpacing(16)
 
-        self._btn_connect = QPushButton("连接机器人")
+        self._btn_connect = QPushButton()
         self._btn_connect.setFixedHeight(40)
         self._btn_connect.setMinimumWidth(140)
         self._btn_connect.setCursor(Qt.PointingHandCursor)
@@ -102,25 +128,51 @@ class LoginPage(QWidget):
         self._btn_connect.clicked.connect(self._on_connect)
         btn_row.addWidget(self._btn_connect)
 
-
         layout.addLayout(btn_row)
-
         layout.addSpacing(10)
 
-        # 状态
-        self._status = QLabel("准备连接")
+        self._status = QLabel()
         self._status.setStyleSheet("color: #888888; font-size: 12px;")
         self._status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self._status)
+
+        root.addLayout(layout, stretch=1)
+
+        I18nManager.instance().language_changed.connect(self._on_language_changed)
+        self._refresh_ui()
+
+    def _toggle_language(self):
+        cur = I18nManager.instance().lang
+        new_lang = "en" if cur == "zh" else "zh"
+        I18nManager.instance().set_lang(new_lang)
+        self._settings.setValue("ui/language", new_lang)
+
+    def _on_language_changed(self, _lang: str):
+        self._refresh_ui()
+
+    def _refresh_ui(self):
+        lang = I18nManager.instance().lang
+        self._btn_lang.setText(
+            tr("menu_lang_en") if lang == "zh" else tr("menu_lang_zh")
+        )
+        self._title.setText(tr("login_title"))
+        self._lbl_ip.setText(tr("login_robot_ip"))
+        self._lbl_nic.setText(tr("login_local_nic"))
+        self._lbl_port.setText(tr("login_udp_port"))
+        if not self._udp_port.text().strip():
+            self._udp_port.setPlaceholderText(tr("login_udp_port_ph"))
+        self._btn_connect.setText(tr("login_connect_btn"))
+        if self._btn_connect.isEnabled():
+            self._status.setText(tr("login_status_ready"))
 
     def _on_connect(self):
         robot_ip = self._robot_ip.text().strip()
         nic = self._nic_selector.current_interface()
         if not robot_ip:
-            QMessageBox.warning(self, "输入错误", "请输入机器人 IP 地址")
+            QMessageBox.warning(self, tr("login_err_title"), tr("login_err_ip_empty"))
             return
         if nic is None or not nic.ipv4:
-            QMessageBox.warning(self, "输入错误", "请选择本机网卡")
+            QMessageBox.warning(self, tr("login_err_title"), tr("login_err_nic_empty"))
             return
 
         try:
@@ -128,10 +180,9 @@ class LoginPage(QWidget):
             if port < 10000 or port > 65535:
                 raise ValueError
         except ValueError:
-            QMessageBox.warning(self, "输入错误", "UDP 端口需在 10000~65535 范围")
+            QMessageBox.warning(self, tr("login_err_title"), tr("login_err_port_invalid"))
             return
 
-        # 持久化用户输入
         self._settings.setValue("login/robot_ip", robot_ip)
         self._settings.setValue("login/udp_port", port)
 
@@ -141,7 +192,7 @@ class LoginPage(QWidget):
             local_interface=nic,
             udp_port=port,
         )
-        self._status.setText("正在连接...")
+        self._status.setText(tr("login_status_connecting"))
         self._btn_connect.setEnabled(False)
         self.connect_requested.emit(config)
 
@@ -150,3 +201,5 @@ class LoginPage(QWidget):
 
     def set_enabled(self, enabled: bool):
         self._btn_connect.setEnabled(enabled)
+        if enabled:
+            self._status.setText(tr("login_status_ready"))

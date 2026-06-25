@@ -73,7 +73,7 @@ def _bind_login_flow(cm, login, main_win, stack, state):
     """Login → Main → Login 三窗口切换"""
     def on_connect(config):
         state["cri_config"] = config
-        login.set_status("连接中...")
+        login.set_status(tr("login_status_connecting"))
         log.info("[Login] user connect request %s:9001", config.robot_ip)
         cm.connect_to_robot(config)
 
@@ -93,7 +93,7 @@ def _bind_login_flow(cm, login, main_win, stack, state):
         main_win.update_home_cri(False)
         main_win._drawer.set_jog_enabled(False)
         login.set_enabled(True)
-        login.set_status("准备连接")
+        login.set_status(tr("login_status_ready"))
         stack.setCurrentWidget(login)
 
     login.connect_requested.connect(on_connect)
@@ -131,9 +131,12 @@ def _bind_connection_state(cm, login, main_win, stack, state):
             main_win._page_router.notify_robot_mode(ROBOT_MODE_UNKNOWN)
 
     def on_connection_failed(error_msg: str):
-        QMessageBox.critical(login, "连接失败",
-                             f"无法连接到机器人:\n{error_msg}")
-        login.set_status("未连接")
+        QMessageBox.critical(
+            login,
+            tr("login_connect_failed_title"),
+            tr("login_connect_failed_msg").format(err=error_msg),
+        )
+        login.set_status(tr("login_status_disconnected"))
         login.set_enabled(True)
 
     cm.connection_state_changed.connect(on_connected_state)

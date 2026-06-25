@@ -16,6 +16,26 @@ _STRINGS = {
     "menu_lang_en":     {"zh": "English",    "en": "English"},
     "menu_style":       {"zh": "样式",       "en": "Style"},
 
+    # 登录页
+    "login_title":           {"zh": "Codroid 机器人控制终端", "en": "Codroid Robot Control Terminal"},
+    "login_robot_ip":        {"zh": "机器人 IP:", "en": "Robot IP:"},
+    "login_local_nic":       {"zh": "本机网卡:", "en": "Local NIC:"},
+    "login_udp_port":        {"zh": "UDP 端口:", "en": "UDP Port:"},
+    "login_udp_port_ph":     {"zh": "请手动输入", "en": "Enter manually"},
+    "login_connect_btn":     {"zh": "连接机器人", "en": "Connect"},
+    "login_status_ready":    {"zh": "准备连接", "en": "Ready to connect"},
+    "login_status_connecting":{"zh": "正在连接...", "en": "Connecting..."},
+    "login_status_disconnected":{"zh": "未连接", "en": "Disconnected"},
+    "login_connect_failed_title":{"zh": "连接失败", "en": "Connection Failed"},
+    "login_connect_failed_msg": {
+        "zh": "无法连接到机器人:\n{err}",
+        "en": "Could not connect to the robot:\n{err}",
+    },
+    "login_err_title":       {"zh": "输入错误", "en": "Invalid Input"},
+    "login_err_ip_empty":    {"zh": "请输入机器人 IP 地址", "en": "Please enter the robot IP address"},
+    "login_err_nic_empty":   {"zh": "请选择本机网卡", "en": "Please select a local network interface"},
+    "login_err_port_invalid":{"zh": "UDP 端口需在 10000~65535 范围", "en": "UDP port must be between 10000 and 65535"},
+
     # 顶部标签
     "tab_home":     {"zh": "首页",   "en": "Home"},
     "tab_welding":  {"zh": "焊接",   "en": "Welding"},
